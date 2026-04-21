@@ -1,8 +1,9 @@
 use crate::data::assets;
 use anyhow::Result;
+use ratatui_image::picker::ProtocolType;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
+use std::{env, fs};
 
 const DEFAULT_EQ_BANDS_DB: [f32; crate::tmplayer::app::state::EQ_BANDS] =
     [0.0; crate::tmplayer::app::state::EQ_BANDS];
@@ -19,15 +20,48 @@ pub enum GraphicsProtocol {
     #[serde(alias = "kitty")]
     #[serde(alias = "iterm2")]
     Halfblocks,
+    NeoAuto,
 }
 
+fn check_terminal_and_choose_image_display_protocol() -> Option<ratatui_image::picker::ProtocolType>
+{
+    let term_envirment_variable = env::var("TERM");
+    let term_program_envirment_variable = env::var("TERM_PROGRAM");
+    if let std::result::Result::Ok(term_envirment_variable_value) = term_envirment_variable {
+        match term_envirment_variable_value.as_str() {
+            // xterm -ti vt340 -- sixel
+            "xterm" => return Some(ProtocolType::Sixel),
+            // foot -- sixel
+            "foot" => return Some(ProtocolType::Sixel),
+            // konsole -- sixel 据说支持，未测试
+            "konsole" => return Some(ProtocolType::Sixel),
+            "xterm-256color" => {
+                if let std::result::Result::Ok(term_program_envirment_variable_value) =
+                    term_program_envirment_variable
+                {
+                    match term_program_envirment_variable_value.as_str() {
+                        // WezTerm => sixel
+                        "WezTerm" => return Some(ProtocolType::Sixel),
+                        _ => return Some(ProtocolType::Halfblocks),
+                    }
+                }
+            }
+            "xterm-kitty" => return Some(ProtocolType::Kitty),
+            "xterm-ghostty" => return Some(ProtocolType::Kitty),
+            "alacritty" => return Some(ProtocolType::Halfblocks),
+            _ => return Some(ProtocolType::Halfblocks),
+        }
+    }
+    return Some(ProtocolType::Halfblocks);
+}
 impl GraphicsProtocol {
-    const ALL: [Self; 2] = [Self::Off, Self::Halfblocks];
+    const ALL: [Self; 3] = [Self::Off, Self::Halfblocks, Self::NeoAuto];
 
     pub fn to_ratatui_protocol(self) -> Option<ratatui_image::picker::ProtocolType> {
         match self {
             GraphicsProtocol::Off => None,
             GraphicsProtocol::Halfblocks => Some(ratatui_image::picker::ProtocolType::Halfblocks),
+            GraphicsProtocol::NeoAuto => check_terminal_and_choose_image_display_protocol(),
         }
     }
 
@@ -39,6 +73,7 @@ impl GraphicsProtocol {
         let current = match self {
             GraphicsProtocol::Off => 0,
             GraphicsProtocol::Halfblocks => 1,
+            GraphicsProtocol::NeoAuto => 2,
         };
         let next = (current as i32 + delta).rem_euclid(Self::ALL.len() as i32) as usize;
         Self::ALL[next]
@@ -48,6 +83,7 @@ impl GraphicsProtocol {
         match self {
             GraphicsProtocol::Off => "off",
             GraphicsProtocol::Halfblocks => "Halfblocks",
+            GraphicsProtocol::NeoAuto => "NeoAuto",
         }
     }
 }
@@ -680,6 +716,7 @@ mod tests {
             ("sixel", GraphicsProtocol::Halfblocks),
             ("kitty", GraphicsProtocol::Halfblocks),
             ("iterm2", GraphicsProtocol::Halfblocks),
+            ("neoauto", GraphicsProtocol::NeoAuto),
         ];
 
         for (raw, expected) in cases {

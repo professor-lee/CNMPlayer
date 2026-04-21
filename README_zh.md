@@ -47,7 +47,9 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 ## 注意事项
 
-- 当前图像协议只实现 `off` / `halfblocks`；旧的 `auto`、`sixel`、`kitty`、`iterm2` 会自动迁移到 `halfblocks`
+- ~~当前图像协议只实现 `off` / `halfblocks`；旧的 `auto`、`sixel`、`kitty`、`iterm2` 会自动迁移到 `halfblocks`~~
+  - 当前持图像协议`off` / `halfblocks` / `neoauto`：旧的 `auto`、`sixel`、`kitty`、`iterm2` 会自动迁移到 `halfblocks`
+  - `neoauto`图像协议需要推出从进才生效，实测支持kitty协议的终端图像不能占满，主要由zhengyi0119-114514维护 =>(issue)[https://github.com/professor-lee/CNMPlayer/issues/16]
 - 目前没有独立的“专辑页”；专辑搜索结果会以歌单页样式展示
 - `Esc`、`Ctrl+K` 和 `Ctrl+Up/Down` 属于固定快捷键，不在可重绑项内
 - 应用启动后会自动补齐缺失配置字段，并在需要时重写 `config/default.toml`
@@ -207,6 +209,12 @@ cargo build --release
 - `Ctrl+Alt+R`：恢复默认快捷键
 - `Esc`：返回
 
+## NeoAuto 维护相关
+
+在[维护者的issue](https://github.com/professor-lee/CNMPlayer/issues/16)下回复，需要附带终端名称，
+最好附带运行环境，命令`env`的返回值以及所支持的图像协议（因为维护者不一定有对应设备）
+
+
 ## 相关项目
 
 - [TMPlayer](https://github.com/professor-lee/TMPlayer)：CNMPlayer 使用的全屏播放页实现
@@ -224,3 +232,4 @@ CNMPlayer 采用 [AGPL-3.0-only](LICENSE) 许可证。
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/image?repos=professor-lee/CNMPlayer&type=date&legend=top-left)](https://www.star-history.com/?repos=professor-lee%2FCNMPlayer&type=date&legend=top-left)
+

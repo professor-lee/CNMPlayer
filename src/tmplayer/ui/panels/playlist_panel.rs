@@ -1,4 +1,3 @@
-use crate::data::config::GraphicsProtocol;
 use crate::tmplayer::app::state::AppState;
 use crate::tmplayer::app::state::{LocalFolderKind, Overlay, PlayMode};
 use crate::tmplayer::render::cover_cache::CoverKey;
@@ -138,8 +137,18 @@ fn render_album_cover(f: &mut Frame, area: Rect, app: &mut AppState) {
         && app.playlist_slide_x == 0
         && app.playlist_slide_target_x == 0;
 
-    let kitty_enabled = app.config.graphics_protocol != GraphicsProtocol::Off
-        && app.local_view_album_cover.is_some();
+    // let kitty_enabled = app.config.graphics_protocol != GraphicsProtocol::Off
+    //     && app.local_view_album_cover.is_some();
+    let ratatui_protocol = app.config.graphics_protocol.to_ratatui_protocol();
+    let kitty_enabled = match ratatui_protocol {
+        None => false,
+        Some(ratatui_protocol_value) => {
+            match ratatui_protocol_value {
+                ratatui_image::picker::ProtocolType::Kitty => true,
+                _ => false,
+            }
+        }
+    } && app.local_view_album_cover.is_some();
 
     if kitty_enabled {
         // During expansion, show a solid theme color to avoid any heavy work.
