@@ -3051,7 +3051,8 @@ impl App {
                 )
                 .await
                 {
-                    Ok(reader) => match self.audio_player.play_streaming(reader, progress_rx) {
+                    Ok(reader) => match self.audio_player.play_streaming(reader, progress_rx).await
+                    {
                         Ok(()) => ok(self),
                         Err(err) => fail(err, self),
                     },

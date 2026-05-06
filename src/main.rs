@@ -17,6 +17,7 @@ use crossterm::terminal::{
 };
 use data::config::Config;
 use data::theme_loader::ThemeLoader;
+use futures::future::pending;
 use futures::{FutureExt, Stream, StreamExt, select_biased};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -269,10 +270,8 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         })?;
 
         select_biased! {
-            f = input.next() => match f {
-                Some(f) => f(app).await,
-                None => (),
-            },
+            f = input.next() => if let Some(f) = f { f(app).await },
+            _ = app.cava.as_mut().map_or_else(|| pending().left_future(),|x| x.event.changed().right_future()).fuse() => (),
             _ = sleep(Duration::from_secs(1)).fuse() => (),
         }
     }
