@@ -22,6 +22,7 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use cyper::Client;
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures::{FutureExt, future::Shared};
 use http::header;
 use image::{DynamicImage, GenericImageView};
@@ -44,8 +45,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::watch;
 use unicode_width::UnicodeWidthChar;
 
 use api::ApiState;
@@ -1557,7 +1556,7 @@ async fn loop_cover_fetch(
         let bytes = resp.bytes().await.ok()?;
         (!bytes.is_empty()).then(|| bytes.to_vec())
     };
-    while let Some(req) = rx.recv().await {
+    while let Ok(req) = rx.recv().await {
         let bytes = process_fn(&req).await;
         let _ = tx.send(CoverFetchResult {
             song_id: req.song_id,
@@ -1581,7 +1580,7 @@ async fn loop_lyric_fetch(
         let lrc = lyric.body.pointer("/lrc/lyric")?.as_str()?;
         parse_lrc(lrc).or_else(|| parse_plain_lyrics(lrc))
     };
-    while let Some(req) = rx.recv().await {
+    while let Ok(req) = rx.recv().await {
         let lyrics = process_fn(&req).await;
         let _ = tx.send(LyricFetchResult {
             song_id: req.song_id,
@@ -1683,14 +1682,14 @@ impl App {
         }
         let _ = fs::create_dir_all(&cover_cache_dir);
 
-        let (cover_fetch_tx, cover_fetch_req_rx) = unbounded_channel();
+        let (cover_fetch_tx, cover_fetch_req_rx) = unbounded();
         let (cover_fetch_res_tx, cover_fetch_rx) = mpsc::channel::<CoverFetchResult>();
         let worker = loop_cover_fetch(cover_fetch_req_rx, cover_fetch_res_tx, http_client.clone());
         launch(worker);
 
         let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
 
-        let (lyric_fetch_tx, lyric_fetch_req_rx) = unbounded_channel();
+        let (lyric_fetch_tx, lyric_fetch_req_rx) = unbounded();
         let (lyric_fetch_res_tx, lyric_fetch_rx) = mpsc::channel::<LyricFetchResult>();
         let worker = loop_lyric_fetch(lyric_fetch_req_rx, lyric_fetch_res_tx, api.clone());
         launch(worker);
@@ -3042,7 +3041,7 @@ impl App {
 
         match self.api.song_stream_url_with_quality(id, quality).await {
             Ok(url) => {
-                let (progress_tx, progress_rx) = watch::channel::<(u64, u64)>((0, 0));
+                let (progress_tx, progress_rx) = see::sync::channel((0, 0));
                 match StreamingReader::new(
                     &self.api.http_client(),
                     &url,
@@ -3187,7 +3186,7 @@ impl App {
             song_id,
             url: url.trim().into(),
         };
-        if self.cover_fetch_tx.send(req).is_ok() {
+        if self.cover_fetch_tx.start_send(req).is_ok() {
             self.cover_fetch_inflight_url = Some(url);
             self.cover_fetch_last_attempt_at = Some(now_at);
         }
@@ -3274,7 +3273,7 @@ impl App {
                 .map(|value| value.to_string())
                 .or_else(|| self.session_cookie.clone()),
         };
-        if self.lyric_fetch_tx.send(req).is_ok() {
+        if self.lyric_fetch_tx.start_send(req).is_ok() {
             self.lyric_fetch_inflight_song_id = Some(song_id);
             self.lyric_fetch_last_attempt_at = Some(now_at);
         }

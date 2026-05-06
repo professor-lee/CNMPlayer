@@ -7,6 +7,7 @@ use directories::BaseDirs;
 use rodio::decoder::DecoderBuilder;
 use rodio::source::SeekError;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
+use see::sync::Receiver;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
@@ -15,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, SystemTime};
-use tokio::sync::watch::Receiver;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioPlayerState {

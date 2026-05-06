@@ -17,18 +17,16 @@ use crossterm::terminal::{
 };
 use data::config::Config;
 use data::theme_loader::ThemeLoader;
-use futures::future::pending;
 use futures::{FutureExt, Stream, StreamExt, select_biased};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear};
+use see::sync::Receiver;
 use std::io::{self, Stdout};
 use std::pin::pin;
 use std::time::Duration;
-use tokio::select;
-use tokio::sync::watch::{self, Receiver};
 
 struct AppFullscreenBridge<'a> {
     app: &'a mut App,
@@ -212,7 +210,7 @@ where
     T: Default + Send + Sync + 'static,
     S: Stream<Item = T> + Send + Unpin + 'static,
 {
-    let (tx, rx) = watch::channel(T::default());
+    let (tx, rx) = see::sync::channel(T::default());
 
     launch(async move {
         while let Some(item) = source.next().await {
@@ -276,7 +274,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
                 None => (),
             },
             _ = sleep(Duration::from_secs(1)).fuse() => (),
-            complete => continue,
         }
     }
 }

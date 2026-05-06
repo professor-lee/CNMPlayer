@@ -7,13 +7,13 @@ use anyhow::{Context, Result, bail};
 use compio::runtime::{JoinHandle, spawn};
 use cyper::Response;
 use futures::StreamExt;
+use see::sync::Sender;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-use tokio::sync::watch::Sender;
 
 /// A streaming reader that downloads data while allowing reads.
 /// Blocks on read() when the requested position hasn't been downloaded yet.

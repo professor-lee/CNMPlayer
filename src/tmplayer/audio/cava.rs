@@ -1,5 +1,6 @@
 use crate::state;
 use anyhow::{Context, Result};
+use see::sync::Receiver;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -8,7 +9,6 @@ use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::watch::Receiver;
 use tokio::time::interval;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::IntervalStream;
