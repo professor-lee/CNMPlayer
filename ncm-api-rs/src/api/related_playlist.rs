@@ -14,7 +14,7 @@ impl ApiClient {
         let id = query.get_or("id", "0");
         let url = format!("https://music.163.com/playlist?id={}", id);
 
-        let resp = self.client.get(&url).send().await?;
+        let resp = self.client.get(&url)?.send().await?;
         let status = resp.status().as_u16() as i64;
         let html = resp.text().await?;
 

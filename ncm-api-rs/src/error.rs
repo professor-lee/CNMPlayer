@@ -5,7 +5,7 @@ use thiserror::Error;
 pub enum NcmError {
     /// HTTP 请求失败（网络错误、DNS 解析失败等）
     #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(#[from] cyper::Error),
 
     /// API 业务错误（网易云返回非 200 状态码）
     #[error("API error (code={code}): {msg}")]

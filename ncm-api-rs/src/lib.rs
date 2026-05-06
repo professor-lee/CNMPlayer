@@ -12,9 +12,6 @@ pub mod error;
 pub mod request;
 pub mod util;
 
-#[cfg(feature = "server")]
-pub mod server;
-
 pub use api::Query;
 pub use error::NcmError;
 pub use request::{ApiClient, ApiResponse, CryptoType, RequestOption};

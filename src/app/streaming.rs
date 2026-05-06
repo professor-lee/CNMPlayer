@@ -2,8 +2,11 @@
 //!
 //! Implements a Read + Seek trait that blocks when data isn't yet downloaded.
 
+use crate::app::api::error_for_status;
 use anyhow::{Context, Result, bail};
-use reqwest::Response;
+use compio::runtime::{JoinHandle, spawn};
+use cyper::Response;
+use futures::StreamExt;
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -11,8 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tokio::sync::watch::Sender;
-use tokio::task::AbortHandle;
-use tokio::time::sleep;
 
 /// A streaming reader that downloads data while allowing reads.
 /// Blocks on read() when the requested position hasn't been downloaded yet.
@@ -24,7 +25,7 @@ pub struct StreamingReader {
     /// Temp path for cleanup on drop
     tmp_path: PathBuf,
     /// Handle to cancel writer
-    writer: AbortHandle,
+    _writer: JoinHandle<()>,
 }
 
 #[derive(Default)]
@@ -45,8 +46,6 @@ struct StreamingState {
 
 impl Drop for StreamingReader {
     fn drop(&mut self) {
-        self.writer.abort();
-
         // Clean up temp file if download not complete
         let done = self.state.done.load(Ordering::SeqCst);
         if done != 1 {
@@ -68,7 +67,7 @@ impl StreamingReader {
     /// Create a new streaming reader, starting the background download.
     /// Progress updates are sent to `progress_tx` via a watch channel.
     pub async fn new(
-        http: &reqwest::Client,
+        http: &cyper::Client,
         url: &str,
         cache_path: PathBuf,
         cookie: Option<&str>,
@@ -87,9 +86,9 @@ impl StreamingReader {
             .open(&tmp_path)
             .context("create streaming temp file")?;
 
-        let mut request = http.get(url);
+        let mut request = http.get(url)?;
         if let Some(cookie) = cookie {
-            request = request.header("Cookie", cookie);
+            request = request.header("Cookie", cookie)?;
         }
         let response = request.send().await?;
         let total = response
@@ -107,7 +106,7 @@ impl StreamingReader {
         );
 
         let state_clone = state.clone();
-        let hnd = tokio::spawn(async move {
+        let hnd = spawn(async move {
             if let Err(e) = download.await {
                 let mut err = state.error.lock().unwrap();
                 *err = Some(e.to_string());
@@ -120,7 +119,7 @@ impl StreamingReader {
             state: state_clone,
             file,
             tmp_path: tmp_path,
-            writer: hnd.abort_handle(),
+            _writer: hnd,
         };
 
         Ok(reader)
@@ -256,9 +255,7 @@ async fn download_streaming(
     state: Arc<StreamingState>,
     progress_tx: Sender<(u64, u64)>,
 ) -> Result<()> {
-    let mut response = response
-        .error_for_status()
-        .context("streaming response status")?;
+    let response = error_for_status(response)?;
 
     // Open file with append mode
     let mut file = {
@@ -271,16 +268,13 @@ async fn download_streaming(
     };
 
     let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
 
     loop {
-        let chunk = match response.chunk().await {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => break, // EOF
-            Err(e) if e.is_timeout() || e.is_connect() => {
-                sleep(Duration::from_millis(10)).await;
-                continue;
-            }
-            Err(e) => bail!("download chunk error: {}", e),
+        let chunk = match stream.next().await {
+            Some(Ok(chunk)) => chunk,
+            None => break,
+            Some(Err(e)) => bail!(e),
         };
 
         if chunk.is_empty() {

@@ -6,6 +6,8 @@ mod ui;
 
 use anyhow::Result;
 use app::App;
+use compio::runtime::spawn;
+use compio::time::sleep;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, MouseEventKind,
 };
@@ -16,19 +18,17 @@ use crossterm::terminal::{
 use data::config::Config;
 use data::theme_loader::ThemeLoader;
 use futures::future::pending;
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt, select_biased};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear};
-use rustls::crypto::ring;
 use std::io::{self, Stdout};
 use std::pin::pin;
 use std::time::Duration;
 use tokio::select;
-use tokio::sync::watch::{self, Receiver as WReceiver};
-use tokio::time::sleep;
+use tokio::sync::watch::{self, Receiver};
 
 struct AppFullscreenBridge<'a> {
     app: &'a mut App,
@@ -172,9 +172,8 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
     }
 }
 
-#[tokio::main]
+#[compio::main]
 async fn main() -> Result<()> {
-    ring::default_provider().install_default().unwrap();
     let config = Config::load_or_default()?;
     let theme = ThemeLoader::load(&config.theme).unwrap_or_default();
     let mut app = App::new(config, theme).await?;
@@ -204,14 +203,18 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     Ok(())
 }
 
-pub fn state<T, S>(mut source: S) -> WReceiver<T>
+pub fn launch<F: Future + 'static>(future: F) {
+    spawn(future).detach();
+}
+
+pub fn state<T, S>(mut source: S) -> Receiver<T>
 where
     T: Default + Send + Sync + 'static,
     S: Stream<Item = T> + Send + Unpin + 'static,
 {
     let (tx, rx) = watch::channel(T::default());
 
-    tokio::spawn(async move {
+    launch(async move {
         while let Some(item) = source.next().await {
             if tx.send(item).is_err() {
                 break;
@@ -247,7 +250,7 @@ fn input_event() -> impl Stream<Item = impl AsyncFn(&mut App)> {
 }
 
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
-    let mut input = pin!(input_event());
+    let mut input = pin!(input_event().fuse());
 
     loop {
         app.tick().await;
@@ -267,10 +270,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             ui::draw_settings(frame, app);
         })?;
 
-        select! {
-            biased; Some(f) = input.next() => f(app).await,
-            _ = app.cava.as_mut().map_or_else(|| pending().left_future(),|x| x.event.changed().right_future()) => (),
-            _ = sleep(Duration::from_secs(1)) => ()
+        select_biased! {
+            f = input.next() => match f {
+                Some(f) => f(app).await,
+                None => (),
+            },
+            _ = sleep(Duration::from_secs(1)).fuse() => (),
+            complete => continue,
         }
     }
 }

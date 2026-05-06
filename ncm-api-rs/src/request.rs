@@ -8,7 +8,7 @@ use crate::util::cookie::{cookie_obj_to_string, cookie_to_json};
 use crate::util::device::{generate_device_id, generate_wnmcid, random_hex};
 use crate::util::ip::generate_random_chinese_ip;
 
-use reqwest::header::{HeaderMap, HeaderValue, COOKIE, REFERER, USER_AGENT};
+use http::header::{HeaderMap, HeaderValue, COOKIE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -96,7 +96,7 @@ pub struct ApiResponse {
 /// API 客户端
 #[derive(Debug, Clone)]
 pub struct ApiClient {
-    pub(crate) client: reqwest::Client,
+    pub(crate) client: cyper::Client,
     cookie: Option<String>,
     anonymous_token: Option<String>,
     /// 自定义设备 ID，None 则使用全局默认值
@@ -105,7 +105,7 @@ pub struct ApiClient {
 
 impl ApiClient {
     /// 使用外部提供的 Client 创建 API 客户端
-    pub fn new(cookie: Option<String>, client: reqwest::Client) -> Self {
+    pub fn new(cookie: Option<String>, client: cyper::Client) -> Self {
         Self {
             client,
             cookie,
@@ -397,7 +397,7 @@ impl ApiClient {
 
         // 设置 Content-Type
         headers.insert(
-            reqwest::header::CONTENT_TYPE,
+            http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/x-www-form-urlencoded"),
         );
 
@@ -409,7 +409,7 @@ impl ApiClient {
 
         let response = self
             .client
-            .post(&url)
+            .post(&url)?
             .headers(headers)
             .body(body)
             .send()

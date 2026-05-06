@@ -3,12 +3,14 @@ mod mpris_bridge;
 pub(crate) mod player;
 pub(crate) mod streaming;
 
+use crate::app::api::error_for_status;
 use crate::app::player::is_nonempty_file;
 use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
 use crate::data::config::{Config, GraphicsProtocol};
 use crate::data::playback_session;
 use crate::data::session;
 use crate::data::theme_loader::ThemeLoader;
+use crate::launch;
 use crate::render::cover_renderer::render_cover_ascii;
 use crate::render::graphics_overlay::cover_viewport;
 use crate::tmplayer::app::state::LyricLine;
@@ -19,7 +21,9 @@ use anyhow::{Result, anyhow};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use cyper::Client;
 use futures::{FutureExt, future::Shared};
+use http::header;
 use image::{DynamicImage, GenericImageView};
 use ncm_api::ApiResponse;
 use ratatui::Frame;
@@ -29,7 +33,6 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use reqwest::{Client, header};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -43,7 +46,6 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
-use tokio::task;
 use unicode_width::UnicodeWidthChar;
 
 use api::ApiState;
@@ -256,7 +258,7 @@ where
     F::Output: Clone + Sync + Send,
 {
     let shared = fut.shared();
-    tokio::spawn(shared.clone());
+    launch(shared.clone());
     shared
 }
 
@@ -339,10 +341,7 @@ impl CoverFetchState {
 }
 
 fn make_ascii_future(bytes: Arc<DynamicImage>, width: u16, height: u16) -> AsciiFuture {
-    let fut = Box::pin(async move {
-        let hnd = task::spawn_blocking(move || render_cover_ascii(bytes, width, height));
-        hnd.await.ok().flatten()
-    });
+    let fut = Box::pin(async move { render_cover_ascii(bytes, width, height) });
     shot_and_share(fut)
 }
 
@@ -1553,8 +1552,8 @@ async fn loop_cover_fetch(
         if req.url.is_empty() {
             return None;
         }
-        let resp = client.get(req.url.as_str()).send().await.ok()?;
-        let resp = resp.error_for_status().ok()?;
+        let resp = client.get(req.url.as_str()).ok()?.send().await.ok()?;
+        let resp = error_for_status(resp).ok()?;
         let bytes = resp.bytes().await.ok()?;
         (!bytes.is_empty()).then(|| bytes.to_vec())
     };
@@ -1675,10 +1674,7 @@ impl App {
             header::REFERER,
             header::HeaderValue::from_static("https://music.163.com/"),
         );
-        let http_client = Client::builder()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(3))
-            .build()?;
+        let http_client = Client::builder().default_headers(headers).build();
         let cache_root = resolve_cache_root(&config);
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let mpris_bridge = MprisBridge::new(&cache_root, &config.cache);
@@ -1690,14 +1686,14 @@ impl App {
         let (cover_fetch_tx, cover_fetch_req_rx) = unbounded_channel();
         let (cover_fetch_res_tx, cover_fetch_rx) = mpsc::channel::<CoverFetchResult>();
         let worker = loop_cover_fetch(cover_fetch_req_rx, cover_fetch_res_tx, http_client.clone());
-        tokio::spawn(worker);
+        launch(worker);
 
         let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
 
         let (lyric_fetch_tx, lyric_fetch_req_rx) = unbounded_channel();
         let (lyric_fetch_res_tx, lyric_fetch_rx) = mpsc::channel::<LyricFetchResult>();
         let worker = loop_lyric_fetch(lyric_fetch_req_rx, lyric_fetch_res_tx, api.clone());
-        tokio::spawn(worker);
+        launch(worker);
 
         let mut app = Self {
             config,

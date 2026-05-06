@@ -1,6 +1,7 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
+use cyper::{Client, Response};
+use futures::StreamExt;
 use ncm_api::{ApiClient, ApiResponse, Query};
-use reqwest::Client;
 
 const MAX_COVER_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
@@ -338,8 +339,8 @@ impl ApiState {
             return Ok(Vec::new());
         }
 
-        let response = self.http.get(url).send().await?;
-        let mut response = response.error_for_status()?;
+        let response = self.http.get(url)?.send().await?;
+        let response = error_for_status(response)?;
 
         if let Some(content_len) = response.content_length() {
             if content_len > MAX_COVER_IMAGE_BYTES as u64 {
@@ -351,7 +352,8 @@ impl ApiState {
         }
 
         let mut bytes = Vec::with_capacity(64 * 1024);
-        while let Some(chunk) = response.chunk().await? {
+        let mut stream = response.bytes_stream();
+        while let Some(Ok(chunk)) = stream.next().await {
             if chunk.is_empty() {
                 continue;
             }
@@ -387,5 +389,16 @@ impl ApiState {
         let merged = response.cookie.join("; ");
         self.cookie = Some(merged.clone());
         self.client.set_cookie(merged);
+    }
+}
+
+pub fn error_for_status(resp: Response) -> Result<Response> {
+    let status = resp.status();
+    let url = resp.url();
+    let reason = status.canonical_reason().unwrap_or_default();
+    if status.is_client_error() || status.is_server_error() {
+        bail!("{url} {status} {reason}");
+    } else {
+        Ok(resp)
     }
 }
