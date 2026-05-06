@@ -24,7 +24,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 cyper = { version = "0.9.0-rc.2", features = ["json", "cookies", "stream", "http2"] }
 compio = { version = "0.19.0-rc.1", features = ["macros"] }
 http = "1.4"
-see = "0.1"
+see = { git = "https://github.com/compio-rs/see" }
 unicode-width = "0.2"
 rodio = { git = "https://github.com/RustAudio/rodio", default-features = false, features = ["playback", "symphonia"] }
 cpal = { git = "https://github.com/RustAudio/cpal", features = ["pipewire"] }
