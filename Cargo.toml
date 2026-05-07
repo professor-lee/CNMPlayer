@@ -13,7 +13,7 @@ env_logger = "0.11"
 libc = "0.2"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
 ratatui-image = { version = "10", default-features = false, features = ["crossterm", "chafa-dyn"] }
-crossterm = { version = "0.29", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream", "use-dev-tty"] }
 directories = "6"
 futures = "0.3"
 ncm-api = { path = "./ncm-api-rs" }
@@ -37,11 +37,12 @@ chromaprint = "0.2"
 # 沉浸环绕声 杜比全景声 超清母带 flac !SVIP
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac"] }
 
+[patch.crates-io]
+compio = { git = "https://github.com/Berrysoft/compio", branch = "fix/shutdown-error" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"
 
 [profile.release]
 codegen-units = 1
 panic = "abort"
-lto = true
-strip = true
