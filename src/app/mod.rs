@@ -247,14 +247,14 @@ impl LoginState {
     }
 }
 
-type SharedFuture<T> = Shared<Pin<Box<dyn Future<Output = Option<T>> + Send>>>;
+type SharedFuture<T> = Shared<Pin<Box<dyn Future<Output = Option<T>>>>>;
 type CoverFuture = SharedFuture<Arc<DynamicImage>>;
 type AsciiFuture = SharedFuture<String>;
 
 fn shot_and_share<F>(fut: F) -> Shared<F>
 where
-    F: Future + Sized + Send + 'static,
-    F::Output: Clone + Sync + Send,
+    F: Future + Sized + 'static,
+    F::Output: Clone,
 {
     let shared = fut.shared();
     launch(shared.clone());

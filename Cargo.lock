@@ -313,6 +313,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audio_thread_priority"
+version = "0.35.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b1b4a0adbf971420cca66a75361a1190f34a6762d66361e5cde03dda35d1ed3"
+dependencies = [
+ "cfg-if",
+ "dbus",
+ "libc",
+ "log",
+ "mach2 0.4.3",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -681,7 +695,7 @@ dependencies = [
 [[package]]
 name = "compio"
 version = "0.19.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "compio-buf",
  "compio-driver",
@@ -698,7 +712,7 @@ dependencies = [
 [[package]]
 name = "compio-buf"
 version = "0.8.2-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "arrayvec",
  "bytes",
@@ -708,7 +722,7 @@ dependencies = [
 [[package]]
 name = "compio-driver"
 version = "0.12.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
@@ -737,7 +751,7 @@ dependencies = [
 [[package]]
 name = "compio-executor"
 version = "0.1.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "cfg-if",
  "compio-log",
@@ -750,7 +764,7 @@ dependencies = [
 [[package]]
 name = "compio-fs"
 version = "0.12.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "cfg-if",
  "cfg_aliases",
@@ -769,7 +783,7 @@ dependencies = [
 [[package]]
 name = "compio-io"
 version = "0.10.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "cfg-if",
  "compio-buf",
@@ -784,7 +798,7 @@ dependencies = [
 [[package]]
 name = "compio-log"
 version = "0.1.0"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "tracing",
 ]
@@ -792,7 +806,7 @@ dependencies = [
 [[package]]
 name = "compio-macros"
 version = "0.1.2"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -803,7 +817,7 @@ dependencies = [
 [[package]]
 name = "compio-net"
 version = "0.12.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "cfg-if",
  "compio-buf",
@@ -824,7 +838,7 @@ dependencies = [
 [[package]]
 name = "compio-runtime"
 version = "0.12.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "cfg-if",
  "compio-buf",
@@ -855,7 +869,7 @@ dependencies = [
 [[package]]
 name = "compio-tls"
 version = "0.10.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "compio-buf",
  "compio-io",
@@ -867,7 +881,7 @@ dependencies = [
 [[package]]
 name = "compio-ws"
 version = "0.4.0-rc.1"
-source = "git+https://github.com/Berrysoft/compio?branch=fix%2Fshutdown-error#1c8c181305e03aefa9274e4f66d05141342d9386"
+source = "git+https://github.com/compio-rs/compio#02da4a005314c48218657b07d3074157b7fad75b"
 dependencies = [
  "async-tungstenite",
  "compio-buf",
@@ -993,16 +1007,17 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.18.0"
-source = "git+https://github.com/RustAudio/cpal#078787ee8061c41fc3198e3a39d55238bc68fa4d"
+source = "git+https://github.com/RustAudio/cpal#f5c25e9a90815357878f3233aed5540e175dc3c4"
 dependencies = [
  "alsa",
+ "audio_thread_priority",
  "block2",
  "coreaudio-rs",
  "dasp_sample",
  "jni",
  "js-sys",
  "libc",
- "mach2",
+ "mach2 0.6.0",
  "ndk",
  "ndk-context",
  "num-derive",
@@ -1172,8 +1187,7 @@ dependencies = [
 [[package]]
 name = "cyper"
 version = "0.9.0-rc.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4661d5759df01f50a870a8a449c6da4db3f5f9ef61674d386dd562e74fab3cd0"
+source = "git+https://github.com/compio-rs/cyper#373e0ef8b89feffa65a2d70fa97a0162080dad6e"
 dependencies = [
  "async-stream",
  "base64",
@@ -1193,6 +1207,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "synchrony",
  "thiserror 2.0.18",
  "tower-service",
  "url",
@@ -1201,8 +1216,7 @@ dependencies = [
 [[package]]
 name = "cyper-core"
 version = "0.9.0-rc.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1add00f3980143f1c7bef1ace2a88b800199548eeedaf4d82c8d6d407ce070cf"
+source = "git+https://github.com/compio-rs/cyper#373e0ef8b89feffa65a2d70fa97a0162080dad6e"
 dependencies = [
  "compio",
  "futures-util",
@@ -1255,6 +1269,16 @@ name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+
+[[package]]
+name = "dbus"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48b5f0f36f1eebe901b0e6bee369a77ed3396334bf3f09abd46454a576f71819"
+dependencies = [
+ "libc",
+ "libdbus-sys",
+]
 
 [[package]]
 name = "der"
@@ -2209,9 +2233,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.97"
+version = "0.3.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1840c94c045fbcf8ba2812c95db44499f7c64910a912551aaaa541decebcacf"
+checksum = "67df7112613f8bfd9150013a0314e196f4800d3201ae742489d999db2f979f08"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -2247,6 +2271,15 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "libdbus-sys"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043"
+dependencies = [
+ "pkg-config",
+]
 
 [[package]]
 name = "libloading"
@@ -2404,6 +2437,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 dependencies = [
  "hashbrown 0.16.1",
+]
+
+[[package]]
+name = "mach2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -4050,9 +4092,9 @@ dependencies = [
 
 [[package]]
 name = "synchrony"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c174d82fd56da8214ec095cfe4568e59e5ccb49d060e70c2f98e3ba352b23e45"
+checksum = "416090a4d8f6358526df5f9f65dfe28750b8b7bfd1fd8a5620f483fc4a75722c"
 dependencies = [
  "event-listener",
  "futures-util",
@@ -4587,9 +4629,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.120"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df52b6d9b87e0c74c9edfa1eb2d9bf85e5d63515474513aa50fa181b3c4f5db1"
+checksum = "49ace1d07c165b0864824eee619580c4689389afa9dc9ed3a4c75040d82e6790"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -4600,9 +4642,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.120"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78b1041f495fb322e64aca85f5756b2172e35cd459376e67f2a6c9dffcedb103"
+checksum = "8e68e6f4afd367a562002c05637acb8578ff2dea1943df76afb9e83d177c8578"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -4610,9 +4652,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.120"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dcd0ff20416988a18ac686d4d4d0f6aae9ebf08a389ff5d29012b05af2a1b41"
+checksum = "d95a9ec35c64b2a7cb35d3fead40c4238d0940c86d107136999567a4703259f2"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -4623,9 +4665,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.120"
+version = "0.2.121"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49757b3c82ebf16c57d69365a142940b384176c24df52a087fb748e2085359ea"
+checksum = "c4e0100b01e9f0d03189a92b96772a1fb998639d981193d7dbab487302513441"
 dependencies = [
  "unicode-ident",
 ]
@@ -4666,9 +4708,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.97"
+version = "0.3.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2eadbac71025cd7b0834f20d1fe8472e8495821b4e9801eb0a60bd1f19827602"
+checksum = "4b572dff8bcf38bad0fa19729c89bb5748b2b9b1d8be70cf90df697e3a8f32aa"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
