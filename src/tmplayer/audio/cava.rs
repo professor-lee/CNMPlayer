@@ -1,32 +1,17 @@
 use crate::state;
 use anyhow::{Context as _, Result};
 use compio::time::{Interval, interval};
-use futures::{FutureExt, Stream, StreamExt};
-use see::sync::Receiver;
+use futures::stream::unfold;
+use futures::{Stream, StreamExt};
+use see::unsync::Receiver;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::pin::{Pin, pin};
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-struct IntervalStream(Interval);
-
-impl Stream for IntervalStream {
-    type Item = Instant;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Instant>> {
-        pin!(self.0.tick()).poll_unpin(cx).map(Some)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (usize::MAX, None)
-    }
-}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,13 +24,19 @@ pub struct MiniCavaState {
     pub event: Receiver<[f32; 20]>,
 }
 
+fn interval_stream(interval: Interval) -> impl Stream<Item = Instant> {
+    unfold(interval, async |mut interval| {
+        Some((interval.tick().await, interval))
+    })
+}
+
 impl MiniCavaState {
     pub fn try_new(cfg: CavaConfig) -> Result<Self> {
         let freq = cfg.framerate_hz;
         let runner = CavaRunner::start(cfg)?;
         let period = Duration::from_millis((1000 / freq).into());
         let interval = interval(period);
-        let stream = IntervalStream(interval).map(move |_| {
+        let stream = interval_stream(interval).map(move |_| {
             let vec = runner.latest_bars();
             let mut arr = [0.0; 20];
             let len = vec.len().min(20);
