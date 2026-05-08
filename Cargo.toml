@@ -46,3 +46,5 @@ mpris-server = "0.10"
 [profile.release]
 codegen-units = 1
 panic = "abort"
+lto = true
+strip = true
