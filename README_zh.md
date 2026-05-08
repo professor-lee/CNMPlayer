@@ -56,7 +56,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 - Rust 2024
 - TUI：ratatui + crossterm
-- 网络：tokio + reqwest + ncm-api-rs
+- 网络：compio + cyper + ncm-api-rs
 - 播放：rodio + symphonia + cpal
 - 元数据与封面：lofty + image + qrcode
 - 图像渲染：ratatui-image + chafa

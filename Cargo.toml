@@ -19,8 +19,8 @@ futures = "0.3"
 ncm-api = { path = "./ncm-api-rs" }
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-cyper = { git = "https://github.com/compio-rs/cyper", features = ["json", "cookies", "stream"] }
-compio = { version = "0.19.0-rc.1", features = ["macros"] }
+cyper = { git = "https://github.com/compio-rs/cyper", default-features = false, features = ["json", "cookies", "stream", "rustls"] }
+compio = { git = "https://github.com/compio-rs/compio", features = ["macros"] }
 http = "1.4"
 see = { git = "https://github.com/compio-rs/see" }
 unicode-width = "0.2"

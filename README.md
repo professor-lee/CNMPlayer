@@ -56,7 +56,7 @@ When you switch into fullscreen playback, CNMPlayer hands control to the embedde
 
 - Rust 2024
 - TUI: ratatui + crossterm
-- Networking: tokio + reqwest + ncm-api-rs
+- Networking: compio + cyper + ncm-api-rs
 - Playback: rodio + symphonia + cpal
 - Metadata and artwork: lofty + image + qrcode
 - Image rendering: ratatui-image + chafa
