@@ -35,6 +35,10 @@ symphonia = { version = "0.5", default-features = false, features = ["mp3", "fla
 [patch.crates-io]
 compio = { git = "https://github.com/compio-rs/compio" }
 
+[patch."https://github.com/RustAudio/cpal"]
+cpal = { git = "https://github.com/revonateB0T/cpal"
+}
+
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"
 
