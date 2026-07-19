@@ -4,6 +4,11 @@ mod imp {
     use anyhow::{Result, anyhow};
 
     pub struct SystemVolume {
+        // Keep the mixer open for the process lifetime. Reopening it per call
+        // spawns a fresh PipeWire client context each time on PipeWire systems,
+        // which performs a D-Bus RTKit handshake per open; polled every frame
+        // that floods the session bus with ~30 connections/s.
+        mixer: Mixer,
         selem_id: SelemId,
         elem_name: String,
     }
@@ -17,17 +22,20 @@ mod imp {
             // 1) Prefer common element names.
             for name in preferred {
                 let id = SelemId::new(name, 0);
-                if let Some(selem) = mixer.find_selem(&id) {
-                    if selem.has_playback_volume() {
-                        return Ok(Self {
-                            selem_id: id,
-                            elem_name: name.to_string(),
-                        });
-                    }
+                let found = mixer
+                    .find_selem(&id)
+                    .is_some_and(|selem| selem.has_playback_volume());
+                if found {
+                    return Ok(Self {
+                        mixer,
+                        selem_id: id,
+                        elem_name: name.to_string(),
+                    });
                 }
             }
 
             // 2) Fall back to the first element that has playback volume.
+            let mut fallback = None;
             for elem in mixer.iter() {
                 let Some(selem) = Selem::new(elem) else {
                     continue;
@@ -37,7 +45,12 @@ mod imp {
                 }
                 let sid = selem.get_id();
                 let name = sid.get_name().unwrap_or("Unknown").to_string();
+                fallback = Some((sid, name));
+                break;
+            }
+            if let Some((sid, name)) = fallback {
                 return Ok(Self {
+                    mixer,
                     selem_id: sid,
                     elem_name: name,
                 });
@@ -47,8 +60,10 @@ mod imp {
         }
 
         pub fn get(&self) -> Result<f32> {
-            let mixer = Mixer::new("default", false)?;
-            let selem = mixer
+            // Pump pending mixer events so cached element values are current.
+            self.mixer.handle_events()?;
+            let selem = self
+                .mixer
                 .find_selem(&self.selem_id)
                 .ok_or_else(|| anyhow!("ALSA element not found: {}", self.elem_name))?;
 
@@ -85,8 +100,9 @@ mod imp {
         }
 
         pub fn set(&self, volume: f32) -> Result<()> {
-            let mixer = Mixer::new("default", false)?;
-            let selem = mixer
+            self.mixer.handle_events()?;
+            let selem = self
+                .mixer
                 .find_selem(&self.selem_id)
                 .ok_or_else(|| anyhow!("ALSA element not found: {}", self.elem_name))?;
 
