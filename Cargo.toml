@@ -9,25 +9,21 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1.1"
 log = "0.4"
-env_logger = "0.11"
-libc = "0.2"
-ratatui = "0.30"
-ratatui-image = { version = "10", default-features = false, features = ["crossterm", "chafa-dyn"] }
-crossterm = "0.29"
+ftail = "0.3"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "chafa-dyn"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 directories = "6"
-tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 ncm-api = { path = "./ncm-api-rs" }
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+cyper = { version = "0.9", features = ["json", "cookies", "stream", "http2"] }
+compio = { version = "0.19", features = ["macros"] }
+http = "1.4"
+see = { git = "https://github.com/compio-rs/see" }
 unicode-width = "0.2"
-rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia"] }
-lofty = "0.24"
-base64 = "0.22"
-ureq = { version = "3", features = ["json"] }
-chromaprint = "0.2"
+rodio = { git = "https://github.com/RustAudio/rodio", default-features = false, features = ["playback", "symphonia", "pipewire"] }
 
 # 标准 较高 极高 mp3
 # 无损 Hi-Res 高清环绕声 flac !VIP
@@ -35,10 +31,10 @@ chromaprint = "0.2"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-mpris = "2.0"
-alsa = "0.11"
-mpris-server = "0.9"
+mpris-server = "0.10"
 
 [profile.release]
 codegen-units = 1
+panic = "abort"
 lto = true
+strip = true

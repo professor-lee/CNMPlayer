@@ -1,98 +1,10 @@
-use crate::tmplayer::app::state::{LyricLine, TrackMetadata};
-use anyhow::Result;
-use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
-use lofty::tag::{Accessor, ItemKey, Tag};
+use crate::tmplayer::app::state::LyricLine;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 const MAX_LOCAL_COVER_BYTES: u64 = 8 * 1024 * 1024;
-
-pub fn read_metadata(path: &Path) -> Result<TrackMetadata> {
-    let mut meta = TrackMetadata::default();
-
-    let tagged = lofty::read_from_path(path)?;
-    let properties = tagged.properties();
-    meta.duration = properties.duration();
-
-    if let Some(tag) = tagged.primary_tag() {
-        if let Some(t) = tag.title() {
-            meta.title = t.to_string();
-        }
-        if let Some(a) = tag.artist() {
-            meta.artist = a.to_string();
-        }
-        if let Some(al) = tag.album() {
-            meta.album = al.to_string();
-        }
-    }
-
-    // Embedded cover (prefer any embedded picture across all tags; best-effort)
-    if meta.cover.is_none() {
-        if let Some((bytes, hash)) = read_embedded_cover(&tagged) {
-            meta.cover_hash = Some(hash);
-            meta.cover = Some(bytes);
-            meta.cover_folder = path.parent().map(|p| p.to_path_buf());
-        }
-    }
-
-    // Per-track cover in subfolder: <dir>/cover/<stem>.(jpg|png)
-    if meta.cover.is_none() {
-        if let Some((bytes, hash)) = read_cover_for_audio(path) {
-            meta.cover_hash = Some(hash);
-            meta.cover = Some(bytes);
-            meta.cover_folder = path.parent().map(|p| p.to_path_buf());
-        }
-    }
-
-    // Fallback: local folder cover image near the audio file.
-    if meta.cover.is_none() {
-        let folder = path.parent().unwrap_or(Path::new("."));
-        if let Some((bytes, hash)) = read_cover_from_folder(folder) {
-            meta.cover_hash = Some(hash);
-            meta.cover = Some(bytes);
-            meta.cover_folder = Some(folder.to_path_buf());
-        }
-    }
-
-    // fallback title from filename
-    if meta.title == "Unknown" {
-        if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-            meta.title = name.to_string();
-        }
-    }
-
-    // Embedded lyrics first; fallback to local .lrc.
-    meta.lyrics = read_embedded_lyrics(&tagged).or_else(|| read_lrc_for_audio(path));
-
-    Ok(meta)
-}
-
-fn read_embedded_cover(tagged: &TaggedFile) -> Option<(Vec<u8>, u64)> {
-    // Try primary tag first, then other tags.
-    if let Some(t) = tagged.primary_tag() {
-        if let Some((b, h)) = read_cover_from_tag(t) {
-            return Some((b, h));
-        }
-    }
-    for t in tagged.tags() {
-        if let Some((b, h)) = read_cover_from_tag(t) {
-            return Some((b, h));
-        }
-    }
-    None
-}
-
-fn read_cover_from_tag(tag: &Tag) -> Option<(Vec<u8>, u64)> {
-    let pic = tag.pictures().first()?;
-    let bytes = pic.data();
-    if bytes.is_empty() || bytes.len() as u64 > MAX_LOCAL_COVER_BYTES {
-        return None;
-    }
-    let hash = hash_bytes(bytes);
-    Some((bytes.to_vec(), hash))
-}
 
 pub fn read_cover_from_folder(dir: &Path) -> Option<(Vec<u8>, u64)> {
     // Common filenames used by many players.
@@ -108,24 +20,6 @@ pub fn read_cover_from_folder(dir: &Path) -> Option<(Vec<u8>, u64)> {
             if let Some(cover) = read_cover_file(&p) {
                 return Some(cover);
             }
-        }
-    }
-    None
-}
-
-fn read_cover_for_audio(audio_path: &Path) -> Option<(Vec<u8>, u64)> {
-    let Some(folder) = audio_path.parent() else {
-        return None;
-    };
-    let Some(stem) = audio_path.file_stem().and_then(|s| s.to_str()) else {
-        return None;
-    };
-    let exts = ["jpg", "jpeg", "png"];
-    let cover_dir = folder.join("cover");
-    for ext in exts {
-        let p = cover_dir.join(format!("{stem}.{ext}"));
-        if let Some(cover) = read_cover_file(&p) {
-            return Some(cover);
         }
     }
     None
@@ -149,72 +43,6 @@ fn read_cover_file(path: &Path) -> Option<(Vec<u8>, u64)> {
 
     let hash = hash_bytes(&bytes);
     Some((bytes, hash))
-}
-
-fn read_embedded_lyrics(tagged: &TaggedFile) -> Option<Vec<LyricLine>> {
-    // Try primary tag first, then other tags.
-    if let Some(t) = tagged.primary_tag() {
-        if let Some(lines) = read_lyrics_from_tag(t) {
-            return Some(lines);
-        }
-    }
-    for t in tagged.tags() {
-        if let Some(lines) = read_lyrics_from_tag(t) {
-            return Some(lines);
-        }
-    }
-    None
-}
-
-fn read_lyrics_from_tag(tag: &Tag) -> Option<Vec<LyricLine>> {
-    let raw = tag.get_string(ItemKey::Lyrics)?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-
-    // If it's LRC-like, parse timestamps.
-    if let Some(parsed) = parse_lrc(raw) {
-        return Some(parsed);
-    }
-
-    // Otherwise treat it as unsynchronized lyrics: show first 1-2 lines statically.
-    let mut non_empty = raw.lines().map(str::trim).filter(|l| !l.is_empty());
-    let first = non_empty.next()?.to_string();
-    let second = non_empty.next().map(|s| s.to_string());
-
-    let mut out = Vec::new();
-    out.push(LyricLine {
-        start_ms: 0,
-        text: first,
-    });
-    if let Some(s2) = second {
-        out.push(LyricLine {
-            start_ms: u64::MAX,
-            text: s2,
-        });
-    }
-    Some(out)
-}
-
-fn read_lrc_for_audio(audio_path: &Path) -> Option<Vec<LyricLine>> {
-    let mut candidates = Vec::new();
-    candidates.push(audio_path.with_extension("lrc"));
-
-    if let (Some(folder), Some(stem)) = (
-        audio_path.parent(),
-        audio_path.file_stem().and_then(|s| s.to_str()),
-    ) {
-        candidates.push(folder.join("lrc").join(format!("{stem}.lrc")));
-    }
-
-    for p in candidates {
-        if let Ok(content) = fs::read_to_string(&p) {
-            if let Some(lines) = parse_lrc(&content).or_else(|| parse_plain_lyrics(&content)) {
-                return Some(lines);
-            }
-        }
-    }
-    None
 }
 
 pub fn parse_lrc(content: &str) -> Option<Vec<LyricLine>> {

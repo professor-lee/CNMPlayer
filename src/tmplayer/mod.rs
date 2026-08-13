@@ -89,6 +89,7 @@ pub struct HostPlaybackRuntimeSnapshot {
     pub state: HostPlaybackState,
     pub repeat_mode: HostRepeatMode,
     pub position: Duration,
+    pub volume: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +126,7 @@ pub trait HostPlaybackBridge {
     async fn play_next(&mut self);
     async fn play_queue_index(&mut self, index: usize);
     fn seek_to_ratio(&mut self, ratio: f32);
+    fn set_volume(&mut self, volume: f32);
     fn toggle_repeat_mode(&mut self);
     async fn toggle_like_current(&mut self);
 }
@@ -134,11 +136,6 @@ pub async fn run_fullscreen(
     bootstrap: FullscreenBootstrap,
     host_bridge: Option<&mut impl HostPlaybackBridge>,
 ) -> Result<FullscreenExit> {
-    let _ = env_logger::builder().is_test(false).try_init();
-
-    // Avoid ALSA stderr noise from breaking full-screen TUI rendering.
-    utils::stderr_filter::install_alsa_stderr_filter();
-
     let config = tm_config_from_host(host_config);
     let theme = data::theme_loader::ThemeLoader::load(&host_config.theme)?;
 
@@ -214,6 +211,8 @@ fn tm_config_from_host(host: &HostConfig) -> data::config::Config {
         keybind_settings: host.keybind_settings.clone(),
         keybind_sidebar: host.keybind_sidebar.clone(),
         keybind_quit: host.keybind_quit.clone(),
+        keybind_page_up: host.keybind_page_up.clone(),
+        keybind_page_down: host.keybind_page_down.clone(),
         keybind_prev: host.keybind_prev.clone(),
         keybind_next: host.keybind_next.clone(),
         keybind_toggle_play_pause: host.keybind_toggle_play_pause.clone(),

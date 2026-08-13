@@ -20,9 +20,6 @@ impl ApiClient {
 
         if let Some(captcha) = query.get("captcha") {
             data["captcha"] = Value::String(captcha.to_string());
-            // Node.js 在有 captcha 时同时设置 captcha 字段（上面已设置）
-            // 且 password 字段也设为 captcha 的值
-            data["password"] = Value::String(captcha.to_string());
         } else {
             let password = if let Some(md5_pwd) = query.get("md5_password") {
                 md5_pwd.to_string()

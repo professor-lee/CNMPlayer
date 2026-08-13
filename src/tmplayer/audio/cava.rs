@@ -1,4 +1,9 @@
-use anyhow::{Context, Result};
+use crate::state;
+use anyhow::{Context as _, Result};
+use compio::time::{Interval, interval};
+use futures::stream::unfold;
+use futures::{Stream, StreamExt};
+use see::unsync::Receiver;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -6,13 +11,45 @@ use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CavaChannels {
     Stereo,
     Mono,
+}
+
+pub struct MiniCavaState {
+    pub event: Receiver<[f32; 20]>,
+}
+
+fn interval_stream(interval: Interval) -> impl Stream<Item = Instant> {
+    unfold(interval, async |mut interval| {
+        Some((interval.tick().await, interval))
+    })
+}
+
+impl MiniCavaState {
+    pub fn try_new(cfg: CavaConfig) -> Result<Self> {
+        let freq = cfg.framerate_hz;
+        let runner = CavaRunner::start(cfg)?;
+        let period = Duration::from_millis((1000 / freq).into());
+        let interval = interval(period);
+        let stream = interval_stream(interval).map(move |_| {
+            let vec = runner.latest_bars();
+            let mut arr = [0.0; 20];
+            let len = vec.len().min(20);
+            arr[..len].copy_from_slice(&vec[..len]);
+            arr
+        });
+        let event = state(stream);
+        Ok(Self { event })
+    }
+
+    pub fn bars(&self) -> [f32; 20] {
+        *self.event.borrow()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

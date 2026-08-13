@@ -81,9 +81,9 @@ impl ApiClient {
 
         let init_res = self
             .client
-            .post(&init_url)
-            .header("x-nos-token", &token)
-            .header("X-Nos-Meta-Content-Type", mimetype)
+            .post(&init_url)?
+            .header("x-nos-token", &token)?
+            .header("X-Nos-Meta-Content-Type", mimetype)?
             .send()
             .await
             .map_err(crate::error::NcmError::Http)?;
@@ -119,9 +119,9 @@ impl ApiClient {
 
             let part_res = self
                 .client
-                .put(&part_url)
-                .header("x-nos-token", &token)
-                .header("Content-Type", mimetype)
+                .put(&part_url)?
+                .header("x-nos-token", &token)?
+                .header("Content-Type", mimetype)?
                 .body(chunk)
                 .send()
                 .await
@@ -152,10 +152,10 @@ impl ApiClient {
         );
 
         self.client
-            .post(&complete_url)
-            .header("Content-Type", "text/plain;charset=UTF-8")
-            .header("X-Nos-Meta-Content-Type", mimetype)
-            .header("x-nos-token", &token)
+            .post(&complete_url)?
+            .header("Content-Type", "text/plain;charset=UTF-8")?
+            .header("X-Nos-Meta-Content-Type", mimetype)?
+            .header("x-nos-token", &token)?
             .body(complete_xml)
             .send()
             .await

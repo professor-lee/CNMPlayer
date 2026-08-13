@@ -56,7 +56,7 @@ When you switch into fullscreen playback, CNMPlayer hands control to the embedde
 
 - Rust 2024
 - TUI: ratatui + crossterm
-- Networking: tokio + reqwest + ncm-api-rs
+- Networking: compio + cyper + ncm-api-rs
 - Playback: rodio + symphonia + cpal
 - Metadata and artwork: lofty + image + qrcode
 - Image rendering: ratatui-image + chafa
@@ -76,7 +76,7 @@ Install the build dependencies provided by your distribution. On Debian/Ubuntu, 
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake pkg-config libasound2-dev libdbus-1-dev libchromaprint-dev
+sudo apt install -y build-essential cmake pkg-config libasound2-dev libdbus-1-dev
 ```
 
 ### Spectrum Visualization (`cava`)

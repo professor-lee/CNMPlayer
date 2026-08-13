@@ -2,17 +2,20 @@
 //!
 //! Implements a Read + Seek trait that blocks when data isn't yet downloaded.
 
+use crate::app::api::error_for_status;
 use anyhow::{Context, Result, bail};
-use reqwest::Client;
-use std::fs::{File, OpenOptions};
-use std::io::{Error, ErrorKind, Read, Seek, SeekFrom, Write};
+use compio::fs::rename;
+use compio::io::{AsyncWrite, AsyncWriteExt};
+use compio::runtime::{JoinHandle, spawn};
+use cyper::Response;
+use futures::StreamExt;
+use see::sync::Sender;
+use std::fs::File;
+use std::io::{Cursor, Error, ErrorKind, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-use tokio::sync::watch::Sender;
-use tokio::task::AbortHandle;
-use tokio::time::sleep;
 
 /// A streaming reader that downloads data while allowing reads.
 /// Blocks on read() when the requested position hasn't been downloaded yet.
@@ -24,7 +27,7 @@ pub struct StreamingReader {
     /// Temp path for cleanup on drop
     tmp_path: PathBuf,
     /// Handle to cancel writer
-    writer: AbortHandle,
+    _writer: JoinHandle<()>,
 }
 
 #[derive(Default)]
@@ -32,7 +35,7 @@ struct StreamingState {
     /// How many bytes have been written to the file
     downloaded: AtomicU64,
     /// Total content length (0 if unknown until headers parsed)
-    total: AtomicU64,
+    total: u64,
     /// Mutex + Condvar for efficient blocking waits
     condvar: Condvar,
     /// Mutex to serialize file operations
@@ -45,8 +48,6 @@ struct StreamingState {
 
 impl Drop for StreamingReader {
     fn drop(&mut self) {
-        self.writer.abort();
-
         // Clean up temp file if download not complete
         let done = self.state.done.load(Ordering::SeqCst);
         if done != 1 {
@@ -55,44 +56,60 @@ impl Drop for StreamingReader {
     }
 }
 
+impl StreamingState {
+    fn of(total: u64) -> Self {
+        StreamingState {
+            total,
+            ..Default::default()
+        }
+    }
+}
+
 impl StreamingReader {
     /// Create a new streaming reader, starting the background download.
     /// Progress updates are sent to `progress_tx` via a watch channel.
     pub async fn new(
-        http: &reqwest::Client,
+        http: &cyper::Client,
         url: &str,
         cache_path: PathBuf,
         cookie: Option<&str>,
         progress_tx: Sender<(u64, u64)>,
     ) -> Result<Self> {
-        let state = Arc::new(StreamingState::default());
-
         // Create temp file
         if let Some(parent) = cache_path.parent() {
             std::fs::create_dir_all(parent).context("create streaming cache dir")?;
         }
         let tmp_path = cache_path.with_extension("part");
+
+        use std::fs::OpenOptions;
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .read(true)
+            .write(true)
             .truncate(true)
-            .open(&tmp_path)
-            .context("create streaming temp file")?;
+            .open(&tmp_path)?;
+
+        let mut request = http.get(url)?;
+        if let Some(cookie) = cookie {
+            request = request.header("Cookie", cookie)?;
+        }
+        let response = request.send().await?;
+        let total = response
+            .content_length()
+            .context("Music no content_length!")?;
+        let state = Arc::new(StreamingState::of(total));
 
         // Start background download
         let download = download_streaming(
-            http.clone(),
-            url.to_string(),
+            response,
             tmp_path.clone(),
             cache_path,
             state.clone(),
-            cookie.map(|s| s.to_string()),
             progress_tx,
         );
 
         let state_clone = state.clone();
-        let hnd = tokio::spawn(async move {
+        let hnd = spawn(async move {
             if let Err(e) = download.await {
                 let mut err = state.error.lock().unwrap();
                 *err = Some(e.to_string());
@@ -105,7 +122,7 @@ impl StreamingReader {
             state: state_clone,
             file,
             tmp_path: tmp_path,
-            writer: hnd.abort_handle(),
+            _writer: hnd,
         };
 
         Ok(reader)
@@ -144,6 +161,10 @@ impl StreamingReader {
                 .0;
         }
     }
+
+    pub fn total(&self) -> u64 {
+        self.state.total
+    }
 }
 
 impl Read for StreamingReader {
@@ -172,7 +193,7 @@ impl Seek for StreamingReader {
                 loop {
                     let done = self.state.done.load(Ordering::SeqCst);
                     if done == 1 {
-                        let total = self.state.total.load(Ordering::SeqCst);
+                        let total = self.state.total;
                         break total.wrapping_add_signed(p);
                     }
                     if done == 2 {
@@ -231,72 +252,52 @@ impl Seek for StreamingReader {
 }
 
 async fn download_streaming(
-    http: Client,
-    url: String,
+    response: Response,
     tmp_path: PathBuf,
     cache_path: PathBuf,
     state: Arc<StreamingState>,
-    cookie: Option<String>,
     progress_tx: Sender<(u64, u64)>,
 ) -> Result<()> {
-    let mut request = http.get(url);
-    if let Some(cookie) = cookie {
-        request = request.header("Cookie", cookie);
-    }
-    let response = request.send().await.context("send streaming request")?;
-
-    let total = response.content_length().unwrap_or(0);
-    state.total.store(total, Ordering::SeqCst);
-
-    let mut response = response
-        .error_for_status()
-        .context("streaming response status")?;
+    let response = error_for_status(response)?;
 
     // Open file with append mode
-    let mut file = {
+    let file = {
         let _guard = state.file_lock.lock().unwrap();
-        OpenOptions::new()
-            .write(true)
-            .append(true)
-            .open(&tmp_path)
-            .context("open streaming temp file for write")?
+        use compio::fs::OpenOptions;
+        OpenOptions::new().write(true).open(&tmp_path).await?
     };
+    let mut cursor = Cursor::new(&file);
 
     let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
 
     loop {
-        let chunk = match response.chunk().await {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => break, // EOF
-            Err(e) if e.is_timeout() || e.is_connect() => {
-                sleep(Duration::from_millis(10)).await;
-                continue;
-            }
-            Err(e) => bail!("download chunk error: {}", e),
+        let chunk = match stream.next().await {
+            Some(Err(e)) => bail!(e),
+            Some(Ok(chunk)) if !chunk.is_empty() => chunk,
+            _ => break,
         };
 
-        if chunk.is_empty() {
-            break;
-        }
+        let len = chunk.len();
 
         // Must hold lock when writing to ensure atomic append and proper read visibility
         {
             let _guard = state.file_lock.lock().unwrap();
-            file.write_all(&chunk).context("write streaming chunk")?;
-            file.flush().context("flush streaming chunk")?;
+            cursor.write_all(chunk).await.0?;
+            cursor.flush().await?
         }
 
-        downloaded = downloaded.wrapping_add(chunk.len() as u64);
+        downloaded += len as u64;
         state.downloaded.store(downloaded, Ordering::SeqCst);
-        let _ = progress_tx.send((downloaded, state.total.load(Ordering::SeqCst)));
+        let _ = progress_tx.send((downloaded, state.total));
         state.condvar.notify_all();
     }
 
     // Rename to final cache path (do this with lock held to ensure no readers in middle of read)
     {
         let _guard = state.file_lock.lock().unwrap();
-        drop(file);
-        std::fs::rename(&tmp_path, cache_path).context("rename streaming temp file")?;
+        file.close().await?;
+        rename(&tmp_path, cache_path).await?;
     }
 
     state.done.store(1, Ordering::SeqCst);

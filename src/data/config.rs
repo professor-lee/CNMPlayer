@@ -146,6 +146,12 @@ pub struct Config {
     #[serde(default = "default_keybind_quit")]
     pub keybind_quit: String,
 
+    #[serde(default = "default_keybind_page_up")]
+    pub keybind_page_up: String,
+
+    #[serde(default = "default_keybind_page_down")]
+    pub keybind_page_down: String,
+
     #[serde(default = "default_keybind_prev")]
     pub keybind_prev: String,
 
@@ -436,6 +442,14 @@ fn default_keybind_quit() -> String {
     "Q".to_string()
 }
 
+fn default_keybind_page_up() -> String {
+    "pageUP".to_string()
+}
+
+fn default_keybind_page_down() -> String {
+    "pageDown".to_string()
+}
+
 fn default_keybind_prev() -> String {
     "Alt+Left".to_string()
 }
@@ -489,7 +503,7 @@ impl Default for Config {
         Self {
             theme: "frappe".to_string(),
             ui_fps: 30,
-            spectrum_hz: 60,
+            spectrum_hz: 30,
             mpris_poll_ms: 100,
             visualize: default_visualize(),
             eq_bands_db: default_eq_bands_db(),
@@ -520,6 +534,8 @@ impl Default for Config {
             keybind_settings: default_keybind_settings(),
             keybind_sidebar: default_keybind_sidebar(),
             keybind_quit: default_keybind_quit(),
+            keybind_page_up: default_keybind_page_up(),
+            keybind_page_down: default_keybind_page_down(),
             keybind_prev: default_keybind_prev(),
             keybind_next: default_keybind_next(),
             keybind_toggle_play_pause: default_keybind_toggle_play_pause(),
@@ -556,7 +572,7 @@ impl Config {
             cfg.ui_fps = 30;
         }
         if cfg.spectrum_hz == 0 {
-            cfg.spectrum_hz = 60;
+            cfg.spectrum_hz = 30;
         }
 
         let mut forced_visualize_off = false;
@@ -589,6 +605,8 @@ impl Config {
             || !raw.contains("keybind_settings")
             || !raw.contains("keybind_sidebar")
             || !raw.contains("keybind_quit")
+            || !raw.contains("keybind_page_up")
+            || !raw.contains("keybind_page_down")
             || !raw.contains("keybind_prev")
             || forced_visualize_off
             || !raw.contains("keybind_next")

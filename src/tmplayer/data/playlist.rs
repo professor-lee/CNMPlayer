@@ -38,63 +38,6 @@ impl Playlist {
         }
     }
 
-    pub fn move_selected_item_up(&mut self) -> bool {
-        if self.items.len() < 2 || self.selected == 0 {
-            return false;
-        }
-        let s = self.selected;
-        self.items.swap(s, s - 1);
-        self.selected = s - 1;
-
-        if let Some(cur) = self.current {
-            if cur == s {
-                self.current = Some(s - 1);
-            } else if cur == s - 1 {
-                self.current = Some(s);
-            }
-        }
-        true
-    }
-
-    pub fn move_selected_item_down(&mut self) -> bool {
-        if self.items.len() < 2 {
-            return false;
-        }
-        let s = self.selected;
-        if s + 1 >= self.items.len() {
-            return false;
-        }
-        self.items.swap(s, s + 1);
-        self.selected = s + 1;
-
-        if let Some(cur) = self.current {
-            if cur == s {
-                self.current = Some(s + 1);
-            } else if cur == s + 1 {
-                self.current = Some(s);
-            }
-        }
-        true
-    }
-
-    pub fn current_path(&self) -> Option<&PathBuf> {
-        self.current
-            .and_then(|i| self.items.get(i))
-            .map(|it| &it.path)
-    }
-
-    pub fn selected_path(&self) -> Option<&PathBuf> {
-        self.items.get(self.selected).map(|it| &it.path)
-    }
-
-    pub fn set_current_selected(&mut self) {
-        if self.items.is_empty() {
-            self.current = None;
-        } else {
-            self.current = Some(self.selected);
-        }
-    }
-
     pub fn next_index_sequence(&self) -> Option<usize> {
         let cur = self.current?;
         if self.items.is_empty() {

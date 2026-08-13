@@ -3,22 +3,28 @@ mod mpris_bridge;
 pub(crate) mod player;
 pub(crate) mod streaming;
 
-use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language};
+use crate::app::api::error_for_status;
+use crate::app::player::is_nonempty_file;
+use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
 use crate::data::config::{Config, GraphicsProtocol};
 use crate::data::playback_session;
 use crate::data::session;
 use crate::data::theme_loader::ThemeLoader;
+use crate::launch;
 use crate::render::cover_renderer::render_cover_ascii;
 use crate::render::graphics_overlay::cover_viewport;
 use crate::tmplayer::app::state::LyricLine;
-use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, CavaRunner};
+use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, MiniCavaState};
 use crate::tmplayer::playback::metadata::{parse_lrc, parse_plain_lyrics};
 use crate::ui::theme::Theme;
 use anyhow::{Result, anyhow};
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use cyper::Client;
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use futures::{FutureExt, future::Shared};
+use http::header;
 use image::{DynamicImage, GenericImageView};
 use ncm_api::ApiResponse;
 use ratatui::Frame;
@@ -28,7 +34,6 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui_image::StatefulImage;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use reqwest::{Client, header};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
@@ -40,9 +45,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::watch;
-use tokio::task;
 use unicode_width::UnicodeWidthChar;
 
 use api::ApiState;
@@ -56,7 +58,7 @@ const SEARCH_BOX_TARGET_HEIGHT: u16 = 3;
 const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 const SETTINGS_ROOT_ITEMS: usize = 10;
 const SETTINGS_PLAYBACK_ITEMS: usize = 9;
-pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 17;
+pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 19;
 const CONTENT_DOUBLE_CLICK_MS: u64 = 400;
 const GLOBAL_HOTKEY_COOLDOWN_MS: u64 = 120;
 const STARTUP_LOADING_MIN_VISIBLE_SECS: f32 = 0.75;
@@ -66,13 +68,14 @@ const RESERVED_RESET_KEYBIND: &str = "Ctrl+Alt+R";
 const COVER_CACHE_SUBDIR: &str = "cover";
 const COVER_FETCH_RETRY_MS: u64 = 1500;
 const LYRICS_FETCH_RETRY_MS: u64 = 1500;
-const SIDEBAR_SLIDE_STEP_CELLS: f32 = 4.0;
 
 const DEFAULT_KEYBIND_SEARCH_BOX: &str = "Ctrl+S";
 const DEFAULT_KEYBIND_FULLSCREEN: &str = "Ctrl+F";
 const DEFAULT_KEYBIND_SETTINGS: &str = "T";
 const DEFAULT_KEYBIND_SIDEBAR: &str = "P";
 const DEFAULT_KEYBIND_QUIT: &str = "Q";
+const DEFAULT_KEYBIND_PAGE_UP: &str = "pageUP";
+const DEFAULT_KEYBIND_PAGE_DOWN: &str = "pageDown";
 const DEFAULT_KEYBIND_PREV: &str = "Alt+Left";
 const DEFAULT_KEYBIND_NEXT: &str = "Alt+Right";
 const DEFAULT_KEYBIND_TOGGLE_PLAY_PAUSE: &str = "Alt+Space";
@@ -93,6 +96,8 @@ enum KeybindAction {
     Settings,
     Sidebar,
     Quit,
+    PageUp,
+    PageDown,
     Prev,
     Next,
     TogglePlayPause,
@@ -242,17 +247,17 @@ impl LoginState {
     }
 }
 
-type SharedFuture<T> = Shared<Pin<Box<dyn Future<Output = Option<T>> + Send>>>;
+type SharedFuture<T> = Shared<Pin<Box<dyn Future<Output = Option<T>>>>>;
 type CoverFuture = SharedFuture<Arc<DynamicImage>>;
 type AsciiFuture = SharedFuture<String>;
 
 fn shot_and_share<F>(fut: F) -> Shared<F>
 where
-    F: Future + Sized + Send + 'static,
-    F::Output: Clone + Sync + Send,
+    F: Future + Sized + 'static,
+    F::Output: Clone,
 {
     let shared = fut.shared();
-    tokio::spawn(shared.clone());
+    launch(shared.clone());
     shared
 }
 
@@ -335,10 +340,7 @@ impl CoverFetchState {
 }
 
 fn make_ascii_future(bytes: Arc<DynamicImage>, width: u16, height: u16) -> AsciiFuture {
-    let fut = Box::pin(async move {
-        let hnd = task::spawn_blocking(move || render_cover_ascii(bytes, width, height));
-        hnd.await.ok().flatten()
-    });
+    let fut = Box::pin(async move { render_cover_ascii(bytes, width, height) });
     shot_and_share(fut)
 }
 
@@ -1512,6 +1514,7 @@ pub struct FullscreenRuntimeSnapshot {
     pub state: PlaybackRuntimeState,
     pub repeat_mode: PlaybackRepeatMode,
     pub position: Duration,
+    pub volume: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -1548,12 +1551,12 @@ async fn loop_cover_fetch(
         if req.url.is_empty() {
             return None;
         }
-        let resp = client.get(req.url.as_str()).send().await.ok()?;
-        let resp = resp.error_for_status().ok()?;
+        let resp = client.get(req.url.as_str()).ok()?.send().await.ok()?;
+        let resp = error_for_status(resp).ok()?;
         let bytes = resp.bytes().await.ok()?;
         (!bytes.is_empty()).then(|| bytes.to_vec())
     };
-    while let Some(req) = rx.recv().await {
+    while let Ok(req) = rx.recv().await {
         let bytes = process_fn(&req).await;
         let _ = tx.send(CoverFetchResult {
             song_id: req.song_id,
@@ -1577,7 +1580,7 @@ async fn loop_lyric_fetch(
         let lrc = lyric.body.pointer("/lrc/lyric")?.as_str()?;
         parse_lrc(lrc).or_else(|| parse_plain_lyrics(lrc))
     };
-    while let Some(req) = rx.recv().await {
+    while let Ok(req) = rx.recv().await {
         let lyrics = process_fn(&req).await;
         let _ = tx.send(LyricFetchResult {
             song_id: req.song_id,
@@ -1633,9 +1636,7 @@ pub struct App {
     startup_loading_complete_requested: bool,
     last_global_hotkey_at: Option<Instant>,
     last_content_click: Option<(Instant, Page, usize)>,
-    main_cava: Option<CavaRunner>,
-    main_cava_bars: [f32; 20],
-    main_cava_last_tick: Instant,
+    pub cava: Option<MiniCavaState>,
     cover_cache_dir: PathBuf,
     cover_fetch_tx: UnboundedSender<CoverFetchRequest>,
     cover_fetch_rx: Receiver<CoverFetchResult>,
@@ -1660,8 +1661,8 @@ impl App {
     }
 
     pub async fn new(config: Config, theme: Theme) -> Result<Self> {
+        let audio_player = AudioPlayer::new(&config)?;
         let saved_cookie = session::load_cookie().ok().flatten();
-        let audio_player = AudioPlayer::new(&config);
 
         let mut headers = header::HeaderMap::new();
         headers.insert(
@@ -1672,10 +1673,7 @@ impl App {
             header::REFERER,
             header::HeaderValue::from_static("https://music.163.com/"),
         );
-        let http_client = Client::builder()
-            .default_headers(headers)
-            .connect_timeout(Duration::from_secs(3))
-            .build()?;
+        let http_client = Client::builder().default_headers(headers).build()?;
         let cache_root = resolve_cache_root(&config);
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let mpris_bridge = MprisBridge::new(&cache_root, &config.cache);
@@ -1684,17 +1682,17 @@ impl App {
         }
         let _ = fs::create_dir_all(&cover_cache_dir);
 
-        let (cover_fetch_tx, cover_fetch_req_rx) = unbounded_channel();
+        let (cover_fetch_tx, cover_fetch_req_rx) = unbounded();
         let (cover_fetch_res_tx, cover_fetch_rx) = mpsc::channel::<CoverFetchResult>();
         let worker = loop_cover_fetch(cover_fetch_req_rx, cover_fetch_res_tx, http_client.clone());
-        tokio::spawn(worker);
+        launch(worker);
 
         let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
 
-        let (lyric_fetch_tx, lyric_fetch_req_rx) = unbounded_channel();
+        let (lyric_fetch_tx, lyric_fetch_req_rx) = unbounded();
         let (lyric_fetch_res_tx, lyric_fetch_rx) = mpsc::channel::<LyricFetchResult>();
         let worker = loop_lyric_fetch(lyric_fetch_req_rx, lyric_fetch_res_tx, api.clone());
-        tokio::spawn(worker);
+        launch(worker);
 
         let mut app = Self {
             config,
@@ -1743,9 +1741,7 @@ impl App {
             startup_loading_complete_requested: false,
             last_global_hotkey_at: None,
             last_content_click: None,
-            main_cava: None,
-            main_cava_bars: [0.0; 20],
-            main_cava_last_tick: Instant::now(),
+            cava: None,
             cover_cache_dir,
             cover_fetch_tx,
             cover_fetch_rx,
@@ -1774,7 +1770,7 @@ impl App {
             app.graphics_picker.set_protocol_type(protocol);
         }
 
-        app.ensure_main_cava();
+        app.sync_cava();
 
         if let Some(cookie) = saved_cookie {
             match app.api.validate_cookie(&cookie).await {
@@ -1808,9 +1804,7 @@ impl App {
         self.tick_lyric_fetch();
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
-        self.tick_main_cava();
         self.tick_search_box_animation();
-        self.tick_home_sidebar_animation();
         self.tick_startup_loading();
 
         if self.page == Page::Login && self.login.method == LoginMethod::Qr {
@@ -1828,53 +1822,6 @@ impl App {
             self.qr_last_poll_at = Some(now);
             self.check_qr_status_and_login().await;
         }
-    }
-
-    pub fn main_should_continuous_redraw(&self) -> bool {
-        if self.page == Page::Loading {
-            return true;
-        }
-
-        if self.playback_state == PlaybackRuntimeState::Playing {
-            return true;
-        }
-
-        if self.playback_state == PlaybackRuntimeState::Paused && self.main_has_spectrum_tail() {
-            return true;
-        }
-
-        if matches!(self.overlay, Some(Overlay::SearchBox)) || self.search_box_anim_height > 0 {
-            return true;
-        }
-
-        let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
-        if (self.home_sidebar.anim_progress - target).abs() > 0.001 {
-            return true;
-        }
-
-        false
-    }
-
-    pub fn main_active_fps(&self) -> u32 {
-        let base = self.config.ui_fps.clamp(10, 60);
-        if self.playback_state == PlaybackRuntimeState::Playing {
-            return self.config.spectrum_hz.clamp(base, 60);
-        }
-
-        if self.playback_state == PlaybackRuntimeState::Paused && self.main_has_spectrum_tail() {
-            return self.config.spectrum_hz.clamp(base, 60);
-        }
-
-        base
-    }
-
-    pub fn main_idle_fps(&self) -> u32 {
-        self.config.ui_fps.clamp(4, 12)
-    }
-
-    fn main_has_spectrum_tail(&self) -> bool {
-        const TAIL_EPS: f32 = 0.003;
-        self.main_cava_bars.iter().any(|&v| v > TAIL_EPS)
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
@@ -2133,11 +2080,16 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub fn main_spectrum_braille(&self) -> String {
+    pub fn cava_bars(&self) -> [f32; 20] {
+        self.cava.as_ref().map(|x| x.bars()).unwrap_or_default()
+    }
+
+    pub fn main_spectrum_braille(&mut self) -> String {
         let mut out = String::with_capacity(10);
         for i in 0..10 {
-            let left = self.main_cava_bars[i * 2].clamp(0.0, 1.0);
-            let right = self.main_cava_bars[i * 2 + 1].clamp(0.0, 1.0);
+            let bar = self.cava_bars();
+            let left = bar[i * 2].clamp(0.0, 1.0);
+            let right = bar[i * 2 + 1].clamp(0.0, 1.0);
             let left_h = (left * 4.0).round() as u8;
             let right_h = (right * 4.0).round() as u8;
             out.push(braille_from_two_bars(left_h.min(4), right_h.min(4)));
@@ -2145,69 +2097,36 @@ impl App {
         out
     }
 
-    fn ensure_main_cava(&mut self) {
-        if !crate::tmplayer::audio::cava::is_available() {
-            self.main_cava = None;
-            self.main_cava_bars.fill(0.0);
+    pub fn sync_on_change(&mut self) {
+        self.sync_cava();
+    }
+
+    fn sync_cava(&mut self) {
+        let available = crate::tmplayer::audio::cava::is_available();
+        let enable = self.config.visualize != VisualizeMode::Off;
+        if !available || !enable {
+            self.cava = None;
             return;
         }
 
-        if self.main_cava.is_some() {
-            return;
+        if self.cava.is_none() {
+            let cfg = CavaConfig {
+                framerate_hz: self.config.spectrum_hz.clamp(1, 30),
+                bars: 20,
+                channels: CavaChannels::Mono,
+                reverse: false,
+            };
+
+            self.cava = MiniCavaState::try_new(cfg).ok();
         }
-
-        let cfg = CavaConfig {
-            framerate_hz: self.config.spectrum_hz.max(20),
-            bars: self.main_cava_bars.len(),
-            channels: CavaChannels::Mono,
-            reverse: false,
-        };
-
-        self.main_cava = CavaRunner::start(cfg).ok();
     }
 
     pub fn suspend_main_cava_for_fullscreen(&mut self) {
-        self.main_cava = None;
-        self.main_cava_bars.fill(0.0);
+        self.cava = None;
     }
 
     pub fn resume_main_cava_after_fullscreen(&mut self) {
-        self.ensure_main_cava();
-    }
-
-    fn tick_main_cava(&mut self) {
-        if !crate::tmplayer::audio::cava::is_available() {
-            self.main_cava = None;
-            self.main_cava_bars.fill(0.0);
-            return;
-        }
-
-        let now = Instant::now();
-        let interval = Duration::from_millis((1000 / self.config.spectrum_hz.max(1)) as u64);
-        if now.duration_since(self.main_cava_last_tick) < interval {
-            return;
-        }
-        self.main_cava_last_tick = now;
-
-        if self.main_cava.is_none() {
-            self.ensure_main_cava();
-        }
-
-        let Some(cava) = self.main_cava.as_ref() else {
-            self.main_cava_bars.fill(0.0);
-            return;
-        };
-
-        let bars = cava.latest_bars();
-        self.main_cava_bars.fill(0.0);
-        for (idx, value) in bars
-            .iter()
-            .copied()
-            .take(self.main_cava_bars.len())
-            .enumerate()
-        {
-            self.main_cava_bars[idx] = value.clamp(0.0, 1.0);
-        }
+        self.sync_cava();
     }
 
     fn seek_to_ratio(&mut self, ratio: f32) {
@@ -2351,6 +2270,7 @@ impl App {
             state: self.playback_state,
             repeat_mode: self.playback_repeat_mode,
             position: self.audio_player.position(),
+            volume: self.audio_player.volume(),
         }
     }
 
@@ -2410,6 +2330,10 @@ impl App {
 
     pub fn fullscreen_seek_to_ratio(&mut self, ratio: f32) {
         self.seek_to_ratio(ratio);
+    }
+
+    pub fn fullscreen_set_volume(&mut self, volume: f32) {
+        self.audio_player.set_volume(volume);
     }
 
     pub fn fullscreen_toggle_repeat_mode(&mut self) {
@@ -2478,6 +2402,8 @@ impl App {
             KeybindAction::Quit => {
                 self.should_quit = true;
             }
+            KeybindAction::PageUp => self.quick_page_up_hotkey().await,
+            KeybindAction::PageDown => self.quick_page_down_hotkey().await,
             KeybindAction::Prev => self.play_previous_hotkey().await,
             KeybindAction::Next => self.play_next_hotkey().await,
             KeybindAction::TogglePlayPause => self.toggle_play_pause_hotkey().await,
@@ -2500,10 +2426,14 @@ impl App {
 
         if self.home_sidebar.expanded {
             self.home_sidebar.expanded = false;
+            let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
+            self.home_sidebar.anim_progress = target;
             return;
         }
 
         self.home_sidebar.expanded = true;
+        let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
+        self.home_sidebar.anim_progress = target;
 
         if !self.home_sidebar.created_playlists.is_empty()
             || !self.home_sidebar.collected_playlists.is_empty()
@@ -2563,6 +2493,8 @@ impl App {
                 self.playlist_return_page = Page::Home;
                 self.playlist_section_return_snapshot = None;
                 self.home_sidebar.expanded = false;
+                let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
+                self.home_sidebar.anim_progress = target;
                 self.page = Page::Playlist;
                 self.home.status_line = format!("{} {}", self.lang_text("已打开", "Opened"), title);
             }
@@ -2583,6 +2515,8 @@ impl App {
             KeybindAction::Settings,
             KeybindAction::Sidebar,
             KeybindAction::Quit,
+            KeybindAction::PageUp,
+            KeybindAction::PageDown,
             KeybindAction::Prev,
             KeybindAction::Next,
             KeybindAction::TogglePlayPause,
@@ -2609,6 +2543,8 @@ impl App {
             KeybindAction::Settings => &self.config.keybind_settings,
             KeybindAction::Sidebar => &self.config.keybind_sidebar,
             KeybindAction::Quit => &self.config.keybind_quit,
+            KeybindAction::PageUp => &self.config.keybind_page_up,
+            KeybindAction::PageDown => &self.config.keybind_page_down,
             KeybindAction::Prev => &self.config.keybind_prev,
             KeybindAction::Next => &self.config.keybind_next,
             KeybindAction::TogglePlayPause => &self.config.keybind_toggle_play_pause,
@@ -2633,18 +2569,20 @@ impl App {
             2 => Some(&mut self.config.keybind_settings),
             3 => Some(&mut self.config.keybind_sidebar),
             4 => Some(&mut self.config.keybind_quit),
-            5 => Some(&mut self.config.keybind_prev),
-            6 => Some(&mut self.config.keybind_next),
-            7 => Some(&mut self.config.keybind_toggle_play_pause),
-            8 => Some(&mut self.config.keybind_fullscreen_prev),
-            9 => Some(&mut self.config.keybind_fullscreen_next),
-            10 => Some(&mut self.config.keybind_fullscreen_toggle_play_pause),
-            11 => Some(&mut self.config.keybind_fullscreen_toggle_mode),
-            12 => Some(&mut self.config.keybind_fullscreen_eq),
-            13 => Some(&mut self.config.keybind_fullscreen_eq_reset),
-            14 => Some(&mut self.config.keybind_toggle_like_fullscreen),
-            15 => Some(&mut self.config.keybind_toggle_mode),
-            16 => Some(&mut self.config.keybind_toggle_like_collapsed),
+            5 => Some(&mut self.config.keybind_page_up),
+            6 => Some(&mut self.config.keybind_page_down),
+            7 => Some(&mut self.config.keybind_prev),
+            8 => Some(&mut self.config.keybind_next),
+            9 => Some(&mut self.config.keybind_toggle_play_pause),
+            10 => Some(&mut self.config.keybind_fullscreen_prev),
+            11 => Some(&mut self.config.keybind_fullscreen_next),
+            12 => Some(&mut self.config.keybind_fullscreen_toggle_play_pause),
+            13 => Some(&mut self.config.keybind_fullscreen_toggle_mode),
+            14 => Some(&mut self.config.keybind_fullscreen_eq),
+            15 => Some(&mut self.config.keybind_fullscreen_eq_reset),
+            16 => Some(&mut self.config.keybind_toggle_like_fullscreen),
+            17 => Some(&mut self.config.keybind_toggle_mode),
+            18 => Some(&mut self.config.keybind_toggle_like_collapsed),
             _ => None,
         }
     }
@@ -2656,18 +2594,20 @@ impl App {
             2 => Some(self.config.keybind_settings.as_str()),
             3 => Some(self.config.keybind_sidebar.as_str()),
             4 => Some(self.config.keybind_quit.as_str()),
-            5 => Some(self.config.keybind_prev.as_str()),
-            6 => Some(self.config.keybind_next.as_str()),
-            7 => Some(self.config.keybind_toggle_play_pause.as_str()),
-            8 => Some(self.config.keybind_fullscreen_prev.as_str()),
-            9 => Some(self.config.keybind_fullscreen_next.as_str()),
-            10 => Some(self.config.keybind_fullscreen_toggle_play_pause.as_str()),
-            11 => Some(self.config.keybind_fullscreen_toggle_mode.as_str()),
-            12 => Some(self.config.keybind_fullscreen_eq.as_str()),
-            13 => Some(self.config.keybind_fullscreen_eq_reset.as_str()),
-            14 => Some(self.config.keybind_toggle_like_fullscreen.as_str()),
-            15 => Some(self.config.keybind_toggle_mode.as_str()),
-            16 => Some(self.config.keybind_toggle_like_collapsed.as_str()),
+            5 => Some(self.config.keybind_page_up.as_str()),
+            6 => Some(self.config.keybind_page_down.as_str()),
+            7 => Some(self.config.keybind_prev.as_str()),
+            8 => Some(self.config.keybind_next.as_str()),
+            9 => Some(self.config.keybind_toggle_play_pause.as_str()),
+            10 => Some(self.config.keybind_fullscreen_prev.as_str()),
+            11 => Some(self.config.keybind_fullscreen_next.as_str()),
+            12 => Some(self.config.keybind_fullscreen_toggle_play_pause.as_str()),
+            13 => Some(self.config.keybind_fullscreen_toggle_mode.as_str()),
+            14 => Some(self.config.keybind_fullscreen_eq.as_str()),
+            15 => Some(self.config.keybind_fullscreen_eq_reset.as_str()),
+            16 => Some(self.config.keybind_toggle_like_fullscreen.as_str()),
+            17 => Some(self.config.keybind_toggle_mode.as_str()),
+            18 => Some(self.config.keybind_toggle_like_collapsed.as_str()),
             _ => None,
         }
     }
@@ -2698,18 +2638,20 @@ impl App {
             2 => self.lang_text("设置弹窗", "Settings Modal"),
             3 => self.lang_text("侧边栏", "Sidebar"),
             4 => self.lang_text("退出应用", "Quit"),
-            5 => self.lang_text("上一首", "Previous"),
-            6 => self.lang_text("下一首", "Next"),
-            7 => self.lang_text("播放/暂停", "Play/Pause"),
-            8 => self.lang_text("全屏上一首", "Fullscreen Previous"),
-            9 => self.lang_text("全屏下一首", "Fullscreen Next"),
-            10 => self.lang_text("全屏暂停/播放", "Fullscreen Pause/Play"),
-            11 => self.lang_text("全屏模式切换", "Fullscreen Mode Switch"),
-            12 => self.lang_text("全屏页EQ", "Fullscreen EQ"),
-            13 => self.lang_text("全屏EQ重置", "Fullscreen EQ Reset"),
-            14 => self.lang_text("全屏收藏/取消收藏", "Fullscreen Like/Unlike"),
-            15 => self.lang_text("折叠栏模式切换", "Collapsed Mode Switch"),
-            16 => self.lang_text("折叠栏收藏/取消收藏", "Collapsed Like/Unlike"),
+            5 => self.lang_text("快速上翻页", "Quick Page Up"),
+            6 => self.lang_text("快速下翻页", "Quick Page Down"),
+            7 => self.lang_text("上一首", "Previous"),
+            8 => self.lang_text("下一首", "Next"),
+            9 => self.lang_text("播放/暂停", "Play/Pause"),
+            10 => self.lang_text("全屏上一首", "Fullscreen Previous"),
+            11 => self.lang_text("全屏下一首", "Fullscreen Next"),
+            12 => self.lang_text("全屏暂停/播放", "Fullscreen Pause/Play"),
+            13 => self.lang_text("全屏模式切换", "Fullscreen Mode Switch"),
+            14 => self.lang_text("全屏页EQ", "Fullscreen EQ"),
+            15 => self.lang_text("全屏EQ重置", "Fullscreen EQ Reset"),
+            16 => self.lang_text("全屏收藏/取消收藏", "Fullscreen Like/Unlike"),
+            17 => self.lang_text("折叠栏模式切换", "Collapsed Mode Switch"),
+            18 => self.lang_text("折叠栏收藏/取消收藏", "Collapsed Like/Unlike"),
             _ => self.lang_text("未知", "Unknown"),
         }
     }
@@ -2720,6 +2662,8 @@ impl App {
         self.config.keybind_settings = DEFAULT_KEYBIND_SETTINGS.to_string();
         self.config.keybind_sidebar = DEFAULT_KEYBIND_SIDEBAR.to_string();
         self.config.keybind_quit = DEFAULT_KEYBIND_QUIT.to_string();
+        self.config.keybind_page_up = DEFAULT_KEYBIND_PAGE_UP.to_string();
+        self.config.keybind_page_down = DEFAULT_KEYBIND_PAGE_DOWN.to_string();
         self.config.keybind_prev = DEFAULT_KEYBIND_PREV.to_string();
         self.config.keybind_next = DEFAULT_KEYBIND_NEXT.to_string();
         self.config.keybind_toggle_play_pause = DEFAULT_KEYBIND_TOGGLE_PLAY_PAUSE.to_string();
@@ -2745,18 +2689,20 @@ impl App {
             2 => KeybindAction::Settings,
             3 => KeybindAction::Sidebar,
             4 => KeybindAction::Quit,
-            5 => KeybindAction::Prev,
-            6 => KeybindAction::Next,
-            7 => KeybindAction::TogglePlayPause,
-            8 => KeybindAction::FullscreenPrev,
-            9 => KeybindAction::FullscreenNext,
-            10 => KeybindAction::FullscreenTogglePlayPause,
-            11 => KeybindAction::FullscreenToggleMode,
-            12 => KeybindAction::FullscreenEq,
-            13 => KeybindAction::FullscreenEqReset,
-            14 => KeybindAction::ToggleLikeFullscreen,
-            15 => KeybindAction::ToggleMode,
-            16 => KeybindAction::ToggleLikeCollapsed,
+            5 => KeybindAction::PageUp,
+            6 => KeybindAction::PageDown,
+            7 => KeybindAction::Prev,
+            8 => KeybindAction::Next,
+            9 => KeybindAction::TogglePlayPause,
+            10 => KeybindAction::FullscreenPrev,
+            11 => KeybindAction::FullscreenNext,
+            12 => KeybindAction::FullscreenTogglePlayPause,
+            13 => KeybindAction::FullscreenToggleMode,
+            14 => KeybindAction::FullscreenEq,
+            15 => KeybindAction::FullscreenEqReset,
+            16 => KeybindAction::ToggleLikeFullscreen,
+            17 => KeybindAction::ToggleMode,
+            18 => KeybindAction::ToggleLikeCollapsed,
             _ => KeybindAction::SearchBox,
         });
         format!("{}: {}", self.keybind_name_for_index(index), value)
@@ -2850,6 +2796,55 @@ impl App {
             }
         ));
         self.persist_playback_memory();
+    }
+
+    async fn quick_page_up_hotkey(&mut self) {
+        match self.page {
+            Page::Search => {
+                let step = self.search.visible_rows.max(1);
+                for _ in 0..step {
+                    if !self.search.focus_prev() {
+                        break;
+                    }
+                }
+            }
+            Page::Playlist => {
+                let step = self.playlist.visible_rows.max(1);
+                for _ in 0..step {
+                    if !self.playlist.focus_prev() {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn quick_page_down_hotkey(&mut self) {
+        match self.page {
+            Page::Search => {
+                let step = self.search.visible_rows.max(1);
+                for _ in 0..step {
+                    let before_idx = self.search.focused_idx;
+                    let before_len = self.search.results.len();
+                    self.advance_search_focus().await;
+                    if self.search.focused_idx == before_idx
+                        && self.search.results.len() == before_len
+                    {
+                        break;
+                    }
+                }
+            }
+            Page::Playlist => {
+                let step = self.playlist.visible_rows.max(1);
+                for _ in 0..step {
+                    if !self.playlist.focus_next() {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     async fn refresh_now_playing_like_state(&mut self) {
@@ -3005,80 +3000,62 @@ impl App {
         self.persist_playback_memory();
 
         let quality = self.config.audio_quality.as_api_level();
-        let fail = move |err, app: &mut Self| {
+        let fail = |err, app: &mut Self| {
             app.now_playing_liked = false;
             app.playback_state = PlaybackRuntimeState::Stopped;
             app.set_runtime_status(format!(
-                "{}: {}",
+                "{}: {err}",
                 app.lang_text("播放失败", "Playback failed"),
-                err
             ));
         };
-        match self.audio_player.play_cached_song(&track.song_id, quality) {
-            Ok(true) => {
-                self.playback_state = PlaybackRuntimeState::Playing;
-                if announce {
-                    self.set_runtime_status(format!(
-                        "{}: {} - {}",
-                        self.lang_text("正在播放", "Now Playing"),
-                        enriched.title,
-                        enriched.artist
-                    ));
-                }
-            }
-            Ok(false) => {
-                // Song not cached - start streaming playback while prefetching in background.
-                self.audio_player.stop();
-                self.set_runtime_status(format!(
+        let ok = |app: &mut Self| {
+            app.playback_state = PlaybackRuntimeState::Playing;
+            if announce {
+                app.set_runtime_status(format!(
                     "{}: {} - {}",
-                    self.lang_text("正在缓冲", "Buffering"),
+                    app.lang_text("正在播放", "Now Playing"),
                     enriched.title,
                     enriched.artist
                 ));
+            };
+        };
 
-                // Start streaming playback
-                let cache_path = self.audio_player.cached_song_path(&track.song_id, quality);
+        let id = &track.song_id;
+        let path = self.audio_player.cached_song_path(id, quality);
 
-                match self
-                    .api
-                    .song_stream_url_with_quality(&track.song_id, quality)
-                    .await
+        if is_nonempty_file(&path) {
+            return match self.audio_player.play_from_file(&path) {
+                Ok(_) => ok(self),
+                Err(err) => fail(err, self),
+            };
+        }
+
+        // Song not cached - start streaming playback while prefetching in background.
+        self.audio_player.stop();
+        self.set_runtime_status(format!(
+            "{}: {} - {}",
+            self.lang_text("正在缓冲", "Buffering"),
+            enriched.title,
+            enriched.artist
+        ));
+
+        match self.api.song_stream_url_with_quality(id, quality).await {
+            Ok(url) => {
+                let (progress_tx, progress_rx) = see::sync::channel((0, 0));
+                match StreamingReader::new(
+                    &self.api.http_client(),
+                    &url,
+                    path.clone(),
+                    self.api.session_cookie(),
+                    progress_tx,
+                )
+                .await
                 {
-                    Ok(url) => {
-                        let (progress_tx, progress_rx) = watch::channel::<(u64, u64)>((0, 0));
-                        match StreamingReader::new(
-                            &self.api.http_client(),
-                            &url,
-                            cache_path.clone(),
-                            self.api.session_cookie(),
-                            progress_tx,
-                        )
-                        .await
-                        {
-                            Ok(reader) => {
-                                match self.audio_player.play_streaming(
-                                    reader,
-                                    &track.song_id,
-                                    cache_path,
-                                    progress_rx,
-                                ) {
-                                    Ok(()) => {
-                                        self.playback_state = PlaybackRuntimeState::Playing;
-                                        if announce {
-                                            self.set_runtime_status(format!(
-                                                "{}: {} - {}",
-                                                self.lang_text("正在播放", "Now Playing"),
-                                                enriched.title,
-                                                enriched.artist
-                                            ));
-                                        }
-                                    }
-                                    Err(err) => fail(err, self),
-                                }
-                            }
-                            Err(err) => fail(err, self),
-                        }
-                    }
+                    Ok(reader) => match self.audio_player.play_streaming(reader, progress_rx).await
+                    {
+                        Ok(()) => ok(self),
+                        Err(err) => fail(err, self),
+                    },
                     Err(err) => fail(err, self),
                 }
             }
@@ -3210,7 +3187,7 @@ impl App {
             song_id,
             url: url.trim().into(),
         };
-        if self.cover_fetch_tx.send(req).is_ok() {
+        if self.cover_fetch_tx.start_send(req).is_ok() {
             self.cover_fetch_inflight_url = Some(url);
             self.cover_fetch_last_attempt_at = Some(now_at);
         }
@@ -3297,7 +3274,7 @@ impl App {
                 .map(|value| value.to_string())
                 .or_else(|| self.session_cookie.clone()),
         };
-        if self.lyric_fetch_tx.send(req).is_ok() {
+        if self.lyric_fetch_tx.start_send(req).is_ok() {
             self.lyric_fetch_inflight_song_id = Some(song_id);
             self.lyric_fetch_last_attempt_at = Some(now_at);
         }
@@ -4232,9 +4209,15 @@ impl App {
             KeyCode::BackTab | KeyCode::Up => self.login.prev_focus(),
             KeyCode::Enter => self.submit_login_action().await,
             KeyCode::Backspace => self.login.pop_char(),
-            KeyCode::Char('q') | KeyCode::Char('Q') => {
+            KeyCode::Char(ch) if matches!(ch, 'q' | 'Q') => {
                 if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                    self.should_quit = true;
+                    let typing_username_or_password =
+                        self.login.method == LoginMethod::Username && self.login.focus_index <= 1;
+                    if typing_username_or_password {
+                        self.login.push_char(ch);
+                    } else {
+                        self.should_quit = true;
+                    }
                 }
             }
             KeyCode::Char(ch) => {
@@ -4265,6 +4248,8 @@ impl App {
             match key.code {
                 KeyCode::Esc => {
                     self.home_sidebar.expanded = false;
+                    let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
+                    self.home_sidebar.anim_progress = target;
                 }
                 KeyCode::Up | KeyCode::BackTab => self.home_sidebar.focus_prev(),
                 KeyCode::Down | KeyCode::Tab => self.home_sidebar.focus_next(),
@@ -4340,19 +4325,6 @@ impl App {
                 (self.search_box_anim_height + 1).min(SEARCH_BOX_TARGET_HEIGHT);
         } else {
             self.search_box_anim_height = 0;
-        }
-    }
-
-    fn tick_home_sidebar_animation(&mut self) {
-        let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
-        // Keep home sidebar speed in sync with TMPlayer sidebar (4 cells per frame).
-        let span = self.home_sidebar_anim_span_cells.max(1) as f32;
-        let step = (SIDEBAR_SLIDE_STEP_CELLS / span).clamp(0.01, 1.0);
-
-        if self.home_sidebar.anim_progress < target {
-            self.home_sidebar.anim_progress = (self.home_sidebar.anim_progress + step).min(target);
-        } else if self.home_sidebar.anim_progress > target {
-            self.home_sidebar.anim_progress = (self.home_sidebar.anim_progress - step).max(target);
         }
     }
 
@@ -5337,10 +5309,16 @@ impl App {
         self.login.status_line = format!("登录失败({}): {}", code, response_message(&response));
     }
 
-    async fn fetch_playlist_first_song_cover(&mut self, playlist_id: &str) -> Option<String> {
+    async fn fetch_home_private_radar_cover(&mut self, playlist_id: &str) -> Option<String> {
         let response = self.api.playlist_detail(playlist_id).await.ok()?;
         if response_code(&response) != 200 {
             return None;
+        }
+
+        if let Some(playlist) = response.body.get("playlist") {
+            if let Some(cover_url) = first_non_empty(playlist, &["/coverImgUrl", "/picUrl"]) {
+                return Some(cover_url);
+            }
         }
 
         response
@@ -5398,8 +5376,7 @@ impl App {
 
             if pinned_title == Some("私人雷达") {
                 if let Some(playlist_id) = tile.id.clone() {
-                    if let Some(cover_url) =
-                        self.fetch_playlist_first_song_cover(&playlist_id).await
+                    if let Some(cover_url) = self.fetch_home_private_radar_cover(&playlist_id).await
                     {
                         tile.cover.load(self.api.clone(), cover_url);
                     }

@@ -87,16 +87,16 @@ impl GraphicsOverlay {
         let playlist_image_fn = || playlist_cover.and_then(|x| image::load_from_memory(x).ok());
 
         let halfblocks_mode = self.picker.protocol_type() == ProtocolType::Halfblocks;
-        let (font_w, font_h) = self.picker.font_size();
-        let cell_w_px = if font_w == 0 {
+        let size = self.picker.font_size();
+        let cell_w_px = if size.width == 0 {
             FALLBACK_CELL_W_PX
         } else {
-            u32::from(font_w)
+            u32::from(size.width)
         };
-        let cell_h_px = if font_h == 0 {
+        let cell_h_px = if size.height == 0 {
             FALLBACK_CELL_H_PX
         } else {
-            u32::from(font_h)
+            u32::from(size.height)
         };
 
         let mut paint = |rect: Rect, slot: TmCoverSlot, img: &dyn Fn() -> Option<DynamicImage>| {

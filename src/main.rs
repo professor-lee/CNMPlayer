@@ -4,24 +4,36 @@ mod render;
 mod tmplayer;
 mod ui;
 
+use crate::tmplayer::audio::cava::MiniCavaState;
 use anyhow::Result;
 use app::App;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use compio::fs::{create_dir_all, remove_file};
+use compio::runtime::spawn;
+use compio::time::sleep;
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use data::config::Config;
 use data::theme_loader::ThemeLoader;
+use directories::BaseDirs;
+use ftail::Ftail;
+use futures::{FutureExt, Stream, StreamExt, select_biased};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Borders, Clear};
-use rustls::crypto::ring;
+use see::unsync::Receiver;
+use std::future::pending;
 use std::io::{self, Stdout};
-use std::time::{Duration, Instant};
-use tokio::time::sleep;
+use std::path::PathBuf;
+use std::pin::pin;
+use std::sync::LazyLock;
+use std::time::Duration;
 
 struct AppFullscreenBridge<'a> {
     app: &'a mut App,
@@ -53,6 +65,7 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
                 app::PlaybackRepeatMode::LoopOne => tmplayer::HostRepeatMode::LoopOne,
             },
             position: runtime.position,
+            volume: runtime.volume,
         }
     }
 
@@ -151,6 +164,10 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
         self.app.fullscreen_seek_to_ratio(ratio);
     }
 
+    fn set_volume(&mut self, volume: f32) {
+        self.app.fullscreen_set_volume(volume);
+    }
+
     fn toggle_repeat_mode(&mut self) {
         self.app.fullscreen_toggle_repeat_mode();
     }
@@ -160,9 +177,38 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
     }
 }
 
-#[tokio::main]
+pub struct Storage {
+    cache: PathBuf,
+    config: PathBuf,
+}
+
+fn try_get_storage() -> Option<Storage> {
+    let app = "cnmplayer";
+    let base = BaseDirs::new()?;
+    let cache = base.cache_dir().join(&app);
+    let config = base.config_dir().join(&app);
+    let storage = Storage { cache, config };
+    Some(storage)
+}
+
+fn stroage_or_abort() -> Storage {
+    let msg = "Failed to initialize workdir, abort!";
+    try_get_storage().expect(&msg)
+}
+
+pub static STORAGE: LazyLock<Storage> = LazyLock::new(|| stroage_or_abort());
+
+async fn init_logger() -> Result<()> {
+    create_dir_all(&STORAGE.cache).await?;
+    let log_file = STORAGE.cache.join("Player.log");
+    let _ = remove_file(&log_file).await;
+    let ftail = Ftail::new().single_file_env_level(&log_file, false);
+    Ok(ftail.init()?)
+}
+
+#[compio::main]
 async fn main() -> Result<()> {
-    ring::default_provider().install_default().unwrap();
+    init_logger().await?;
     let config = Config::load_or_default()?;
     let theme = ThemeLoader::load(&config.theme).unwrap_or_default();
     let mut app = App::new(config, theme).await?;
@@ -192,74 +238,89 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     Ok(())
 }
 
+pub fn launch<F: Future + 'static>(future: F) {
+    spawn(future).detach();
+}
+
+pub fn state<T, S>(source: S) -> Receiver<T>
+where
+    T: Default + 'static,
+    S: Stream<Item = T> + 'static,
+{
+    let (tx, rx) = see::unsync::channel(T::default());
+    launch(async move {
+        let mut source = pin!(source);
+        while let Some(item) = source.next().await {
+            if tx.send(item).is_err() {
+                break;
+            }
+        }
+    });
+
+    rx
+}
+
+fn input_event() -> impl Stream<Item = impl AsyncFn(&mut App)> {
+    EventStream::new().filter_map(async |x| {
+        let x = x.ok()?;
+        match x {
+            Event::Key(_) | Event::Resize(_, _) => (),
+            Event::Mouse(e)
+                if matches!(
+                    e.kind,
+                    MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                ) => {}
+            _ => return None,
+        }
+        let d = async move |app: &mut App| {
+            match x {
+                Event::Key(key) => app.handle_key(key).await,
+                Event::Mouse(mouse) => app.handle_mouse(mouse).await,
+                _ => {}
+            };
+            app.sync_on_change();
+        };
+        Some(d)
+    })
+}
+
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
-    let mut needs_redraw = true;
-    let mut active_graphics_protocol = app.config.graphics_protocol;
-    let mut last_draw_at = Instant::now()
-        .checked_sub(Duration::from_millis(250))
-        .unwrap_or_else(Instant::now);
+    let mut input = pin!(input_event());
 
     loop {
         app.tick().await;
 
-        if app.config.graphics_protocol != active_graphics_protocol {
-            active_graphics_protocol = app.config.graphics_protocol;
-            needs_redraw = true;
-        }
-
         if app.consume_fullscreen_launch_request() {
             let bootstrap = app.build_fullscreen_bootstrap().await;
             launch_tmplayer_fullscreen(terminal, app, bootstrap).await?;
-            needs_redraw = true;
             continue;
         }
 
-        let animating = app.main_should_continuous_redraw();
-        let target_fps = if animating {
-            app.main_active_fps()
-        } else {
-            app.main_idle_fps()
-        };
-        let frame_dt = Duration::from_millis((1000_u64 / u64::from(target_fps.max(1))).max(8));
-
-        if needs_redraw || last_draw_at.elapsed() >= frame_dt {
-            terminal.draw(|frame| {
-                ui::draw(frame, app);
-                ui::draw_settings(frame, app);
-            })?;
-            last_draw_at = Instant::now();
-            needs_redraw = false;
-            if app.should_quit {
-                app.persist_playback_memory_on_exit();
-                break;
-            }
+        if app.should_quit {
+            app.persist_playback_memory_on_exit();
+            break Ok(());
         }
+        terminal.draw(|frame| {
+            ui::draw(frame, app);
+            ui::draw_settings(frame, app);
+        })?;
 
-        let wait_timeout = if animating {
-            frame_dt.saturating_sub(last_draw_at.elapsed())
-        } else {
-            Duration::from_millis(160)
-        };
-
-        if event::poll(wait_timeout)? {
-            match event::read()? {
-                Event::Key(key) => {
-                    app.handle_key(key).await;
-                    needs_redraw = true;
-                }
-                Event::Mouse(mouse) => {
-                    app.handle_mouse(mouse).await;
-                    needs_redraw = true;
-                }
-                Event::Resize(_, _) => {
-                    needs_redraw = true;
-                }
-                _ => {}
-            }
+        select_biased! {
+            f = input.next().fuse() => if let Some(f) = f { f(app).await },
+            _ = wait_cava_event(&mut app.cava).fuse() => (),
+            _ = sleep(Duration::from_secs(1)).fuse() => (),
         }
     }
+}
 
-    Ok(())
+async fn wait_cava_event(cava: &mut Option<MiniCavaState>) {
+    match cava {
+        Some(cava) => {
+            let _ = cava.event.changed().await;
+            cava.event.mark_unchanged();
+        }
+        None => pending().await,
+    }
 }
 
 async fn launch_tmplayer_fullscreen(

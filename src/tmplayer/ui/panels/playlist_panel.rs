@@ -1,6 +1,6 @@
 use crate::data::config::GraphicsProtocol;
 use crate::tmplayer::app::state::AppState;
-use crate::tmplayer::app::state::{LocalFolderKind, Overlay, PlayMode};
+use crate::tmplayer::app::state::{LocalFolderKind, Overlay};
 use crate::tmplayer::render::cover_cache::CoverKey;
 use crate::tmplayer::ui::borders::SOLID_BORDER;
 use ratatui::Frame;
@@ -56,10 +56,7 @@ pub fn compute_layout(area: Rect, app: &AppState) -> PlaylistPanelLayout {
         vertical: 1,
     });
 
-    let show_cover = app.local_view_album_cover.is_some()
-        || (app.player.mode == PlayMode::LocalPlayback
-            && (app.local_folder_kind == LocalFolderKind::Album
-                || app.local_folder_kind == LocalFolderKind::MultiAlbum));
+    let show_cover = app.local_view_album_cover.is_some();
 
     if !show_cover || inner.width < MIN_COVER_LAYOUT_WIDTH || inner.height < MIN_COVER_LAYOUT_HEIGHT
     {
@@ -578,77 +575,4 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
     render_album_cover(f, l.cover_area, app);
     render_separator(f, l.separator_area, app);
     render_playlist_list(f, l.list_area, app);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::data::config::Language;
-    use crate::tmplayer::data::config::Config;
-    use crate::tmplayer::ui::theme::{ColorCapability, Theme, ThemeName, ThemePalette};
-
-    fn test_app_state() -> AppState {
-        AppState::new(
-            Config::default(),
-            Theme {
-                name: ThemeName::System,
-                palette: ThemePalette {
-                    text: (0, 0, 0),
-                    subtext: (0, 0, 0),
-                    base: (0, 0, 0),
-                    surface: (0, 0, 0),
-                    buff: (10, 10, 10),
-                    accent: (0, 0, 0),
-                    accent2: (0, 0, 0),
-                    accent3: (0, 0, 0),
-                },
-                capability: ColorCapability::NoColor,
-            },
-            Language::Zh,
-        )
-    }
-
-    #[test]
-    fn compute_layout_falls_back_to_list_for_zero_inner_rect() {
-        let mut app = test_app_state();
-        app.player.mode = PlayMode::LocalPlayback;
-        app.local_folder_kind = LocalFolderKind::MultiAlbum;
-
-        let layout = compute_layout(
-            Rect {
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 8,
-            },
-            &app,
-        );
-
-        assert_eq!(layout.cover_area.height, 0);
-        assert_eq!(layout.list_area.width, 0);
-        assert_eq!(layout.list_area.height, 0);
-    }
-
-    #[test]
-    fn compute_layout_falls_back_to_list_for_short_inner_height() {
-        let mut app = test_app_state();
-        app.player.mode = PlayMode::LocalPlayback;
-        app.local_folder_kind = LocalFolderKind::Album;
-
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 16,
-            height: 6,
-        };
-        let layout = compute_layout(area, &app);
-        let inner = area.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
-
-        assert_eq!(layout.cover_area.height, 0);
-        assert_eq!(layout.list_area, inner);
-        assert_eq!(layout.list_inner, inner);
-    }
 }

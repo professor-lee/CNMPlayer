@@ -26,18 +26,15 @@ pub enum MprisControlEvent {
 mod imp {
     use super::{CacheConfig, MprisControlEvent, MprisSyncPayload, Path};
     use crate::app::player::cleanup_cache_dir;
+    use crate::launch;
     use mpris_server::{Metadata, PlaybackStatus, Player, Time, zbus};
     use std::collections::hash_map::DefaultHasher;
     use std::fs;
     use std::hash::{Hash, Hasher};
     use std::sync::mpsc::{self as std_mpsc, Receiver, Sender};
-    use std::thread;
-    use tokio::runtime::Builder;
-    use tokio::sync::watch;
-    use tokio::task::LocalSet;
 
     pub struct MprisBridge {
-        tx: watch::Sender<Option<MprisSyncPayload>>,
+        tx: see::unsync::Sender<Option<MprisSyncPayload>>,
         event_rx: Receiver<MprisControlEvent>,
     }
 
@@ -47,60 +44,50 @@ mod imp {
             let _ = fs::create_dir_all(&art_dir);
             let _ = cleanup_cache_dir(&art_dir, cache_policy);
 
-            let (tx, mut rx) = watch::channel::<Option<MprisSyncPayload>>(None);
+            let (tx, mut rx) = see::unsync::channel(None);
             let (event_tx, event_rx) = std_mpsc::channel::<MprisControlEvent>();
             let cache_policy = cache_policy.clone();
 
-            thread::spawn(move || {
-                let rt = match Builder::new_current_thread().enable_all().build() {
-                    Ok(rt) => rt,
+            let task = async move {
+                let player = match Player::builder("cnmplayer")
+                    .can_play(true)
+                    .can_pause(true)
+                    .can_seek(true)
+                    .can_go_next(true)
+                    .can_go_previous(true)
+                    .build()
+                    .await
+                {
+                    Ok(player) => player,
                     Err(err) => {
-                        log::warn!("mpris runtime init failed: {err}");
+                        log::warn!("mpris player init failed: {err}");
                         return;
                     }
                 };
 
-                let local = LocalSet::new();
-                local.block_on(&rt, async move {
-                    let player = match Player::builder("cnmplayer")
-                        .can_play(true)
-                        .can_pause(true)
-                        .can_seek(true)
-                        .can_go_next(true)
-                        .can_go_previous(true)
-                        .build()
-                        .await
-                    {
-                        Ok(player) => player,
-                        Err(err) => {
-                            log::warn!("mpris player init failed: {err}");
-                            return;
-                        }
+                bind_control_callbacks(&player, &event_tx);
+
+                launch(player.run());
+
+                while rx.changed().await.is_ok() {
+                    let Some(payload) = rx.borrow_and_update().clone() else {
+                        continue;
                     };
 
-                    bind_control_callbacks(&player, &event_tx);
-
-                    tokio::task::spawn_local(player.run());
-
-                    while rx.changed().await.is_ok() {
-                        let Some(payload) = rx.borrow_and_update().clone() else {
-                            continue;
-                        };
-
-                        if let Err(err) =
-                            apply_snapshot(&player, &art_dir, &cache_policy, payload).await
-                        {
-                            log::debug!("mpris sync failed: {err}");
-                        }
+                    if let Err(err) =
+                        apply_snapshot(&player, &art_dir, &cache_policy, payload).await
+                    {
+                        log::debug!("mpris sync failed: {err}");
                     }
-                });
-            });
+                }
+            };
+            launch(task);
 
             Self { tx, event_rx }
         }
 
         pub fn update(&self, payload: MprisSyncPayload) {
-            self.tx.send_replace(Some(payload));
+            let _ = self.tx.send_replace(Some(payload));
         }
 
         pub fn drain_control_events(&self) -> Vec<MprisControlEvent> {

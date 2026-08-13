@@ -52,26 +52,6 @@ pub enum Action {
 }
 
 pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
-    if overlay == Overlay::FolderInput {
-        if ev.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(ev.code, KeyCode::Char('f') | KeyCode::Char('F'))
-        {
-            return Action::CloseOverlay;
-        }
-        match ev.code {
-            KeyCode::Esc => return Action::CloseOverlay,
-            KeyCode::Enter => return Action::Confirm,
-            KeyCode::Backspace => return Action::FolderBackspace,
-            KeyCode::Char(c) => return Action::FolderChar(c),
-            KeyCode::Left => return Action::None,
-            KeyCode::Right => return Action::None,
-            KeyCode::Up => return Action::None,
-            KeyCode::Down => return Action::None,
-            _ => {}
-        }
-        return Action::None;
-    }
-
     if overlay == Overlay::AcoustIdModal {
         match ev.code {
             KeyCode::Esc => return Action::CloseOverlay,

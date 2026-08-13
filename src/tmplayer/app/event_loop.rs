@@ -1,4 +1,3 @@
-use crate::tmplayer::app::mode_manager::ModeManager;
 use crate::tmplayer::app::state::{
     AppState, CoverSnapshot, LocalFolderKind, Overlay, PlayMode, PlaybackState, RepeatMode,
 };
@@ -8,7 +7,6 @@ use crate::tmplayer::data::theme_loader::ThemeLoader;
 use crate::tmplayer::ui::theme::ThemeName;
 use crate::tmplayer::ui::tui::{Tui, UiLayout};
 use crate::tmplayer::utils::input::{Action, map_key, map_mouse};
-use crate::tmplayer::utils::system_volume::SystemVolume;
 use crate::tmplayer::{
     HostConfigSync, HostPlaybackBridge, HostPlaybackRuntimeSnapshot, HostPlaybackSnapshot,
     HostPlaybackState, HostRepeatMode,
@@ -49,77 +47,6 @@ fn has_spectrum_data(app: &AppState) -> bool {
         || app.spectrum.bars_right.iter().any(|&v| v > 0.0)
         || app.spectrum.stereo_left.iter().any(|&v| v > 0.0)
         || app.spectrum.stereo_right.iter().any(|&v| v > 0.0)
-}
-
-fn open_local_folder(
-    app: &mut AppState,
-    mode_manager: &mut ModeManager,
-    folder: &std::path::Path,
-) -> Result<()> {
-    let res = mode_manager.local.load_path(folder)?;
-    mode_manager.pause_other(PlayMode::LocalPlayback);
-    app.player.mode = PlayMode::LocalPlayback;
-    app.player.liked = false;
-    app.playlist = res.playlist;
-    app.playlist_view = app.playlist.clone();
-    app.player.track = res.track;
-    app.player.volume = mode_manager.local.volume();
-    app.player.playback = mode_manager.local.playback_state();
-
-    // Apply persisted EQ to the local player when entering local mode.
-    app.eq.bands_db = app.config.eq_bands_db;
-    let _ = mode_manager.local.set_eq(app.eq);
-
-    app.local_folder = Some(res.playback_folder.clone());
-    app.local_root_folder = Some(res.root_folder);
-    app.local_folder_kind = res.kind;
-    app.local_album_folders = res.album_folders;
-    app.local_view_album_index = res.album_index;
-    app.local_view_album_folder = Some(res.playback_folder);
-
-    app.local_view_album_cover = res.album_cover.as_ref().map(|(b, _)| b.clone());
-    app.local_view_album_cover_hash = res.album_cover.map(|(_, h)| Some(h)).unwrap_or(None);
-
-    if app.config.resume_last_position {
-        if let (Some(folder), Some(cur_path)) = (
-            app.local_folder.as_deref(),
-            app.playlist.current_path().cloned(),
-        ) {
-            if let Some(sec) = crate::tmplayer::playback::local_player::read_last_position_for_song(
-                folder, &cur_path,
-            ) {
-                if sec > 0 {
-                    let target = Duration::from_secs(sec);
-                    if mode_manager.local.seek(target).is_ok() {
-                        app.player.position = target;
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(cur_path) = app.playlist.current_path().cloned() {
-        app.queue_remote_fetch(Some(&cur_path));
-    }
-
-    // Ensure .order.toml exists and tracks last album/song for local browsing.
-    if app.local_folder_kind == LocalFolderKind::MultiAlbum {
-        if let (Some(root), Some(play_folder)) = (
-            app.local_root_folder.as_deref(),
-            app.local_folder.as_deref(),
-        ) {
-            let _ = crate::tmplayer::playback::local_player::write_last_album(root, play_folder);
-        }
-    }
-    if let (Some(play_folder), Some(cur_path)) = (
-        app.local_folder.as_deref(),
-        app.playlist.current_path().cloned(),
-    ) {
-        let _ =
-            crate::tmplayer::playback::local_player::write_last_opened_song(play_folder, &cur_path);
-    }
-
-    Ok(())
 }
 
 fn map_host_state(state: HostPlaybackState) -> PlaybackState {
@@ -254,15 +181,10 @@ async fn save_and_sync_host_config(
 
 async fn sync_eq_config(
     app: &mut AppState,
-    mode_manager: &mut ModeManager,
     host_bridge: &mut Option<&mut impl HostPlaybackBridge>,
 ) {
     app.eq = app.eq.clamp();
     app.config.eq_bands_db = app.eq.bands_db;
-
-    if app.player.mode == PlayMode::LocalPlayback {
-        let _ = mode_manager.local.set_eq(app.eq);
-    }
 
     save_and_sync_host_config(app, host_bridge).await;
 }
@@ -496,6 +418,12 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         changed = true;
     }
 
+    let runtime_volume = runtime.volume.clamp(0.0, 1.0);
+    if (app.player.volume - runtime_volume).abs() > f32::EPSILON {
+        app.player.volume = runtime_volume;
+        changed = true;
+    }
+
     if let Some(index) = runtime.current_index {
         if !app.playlist.items.is_empty() {
             let idx = index.min(app.playlist.len().saturating_sub(1));
@@ -552,17 +480,12 @@ pub async fn run(
     let mut tui = Tui::new(app)?;
     tui.enter()?;
 
-    let mut mode_manager = ModeManager::new();
-
     // Prefer cava for system-wide visualization (keeps our renderer/style; cava only provides bars).
     // If cava isn't installed, we leave the spectrum empty.
     let mut cava: Option<CavaRunner> = None;
     let mut cava_cfg: Option<CavaConfig> = None;
 
-    let system_volume = SystemVolume::try_new().ok();
-
     let mut last_spectrum = Instant::now();
-    let mut last_mpris = Instant::now();
     let mut last_host_config_sync = Instant::now()
         .checked_sub(Duration::from_millis(400))
         .unwrap_or_else(Instant::now);
@@ -606,39 +529,16 @@ pub async fn run(
         )
         .await;
 
-        // poll input (non-blocking-ish)
-        // apply async remote metadata results (lyrics/cover/fingerprint)
-        let results = app.drain_remote_fetch_results();
-        if !results.is_empty() {
-            apply_remote_fetch_results(app, &mut mode_manager, results);
-            state_changed = true;
-        }
         while event::poll(Duration::from_millis(0))? {
             match event::read()? {
                 Event::Key(k) => {
                     let action = map_key(k, app.overlay, &app.config);
-                    handle_action(
-                        app,
-                        &mut mode_manager,
-                        system_volume.as_ref(),
-                        &mut host_bridge,
-                        action,
-                        &last_layout,
-                    )
-                    .await?;
+                    handle_action(app, &mut host_bridge, action, &last_layout).await?;
                     state_changed = true;
                 }
                 Event::Mouse(m) => {
                     let action = map_mouse(m);
-                    handle_action(
-                        app,
-                        &mut mode_manager,
-                        system_volume.as_ref(),
-                        &mut host_bridge,
-                        action,
-                        &last_layout,
-                    )
-                    .await?;
+                    handle_action(app, &mut host_bridge, action, &last_layout).await?;
                     state_changed = true;
                 }
                 Event::Resize(_, _) => {
@@ -659,54 +559,6 @@ pub async fn run(
         if app.config.visualize == VisualizeMode::Bars {
             let bars = desired_bar_count(app, &last_layout);
             ensure_bar_buffers(app, bars);
-        }
-
-        // mpris poll (only when explicitly in system monitor mode)
-        if app.player.mode == PlayMode::SystemMonitor
-            && frame_start.duration_since(last_mpris)
-                >= Duration::from_millis(app.config.mpris_poll_ms)
-        {
-            last_mpris = frame_start;
-            if let Ok(Some(snapshot)) = mode_manager.mpris.poll_snapshot() {
-                let before_track = app.player.track.clone();
-
-                app.player.track = snapshot.track;
-                app.player.position = snapshot.position;
-                app.player.playback = snapshot.playback;
-
-                if let Some(sysvol) = system_volume.as_ref() {
-                    if let Ok(v) = sysvol.get() {
-                        app.player.volume = v;
-                    } else {
-                        app.player.volume = snapshot.volume;
-                    }
-                } else {
-                    app.player.volume = snapshot.volume;
-                }
-
-                let changed_any = before_track.title != app.player.track.title
-                    || before_track.artist != app.player.track.artist
-                    || before_track.album != app.player.track.album
-                    || before_track.cover_hash != app.player.track.cover_hash;
-                if changed_any {
-                    app.queue_remote_fetch(None);
-                    state_changed = true;
-                }
-
-                // If user requested next/prev in SystemMonitor, animate when the track actually changes.
-                if let Some((from, dir, _at)) = app.pending_system_cover_anim.take() {
-                    let changed = before_track.title != app.player.track.title
-                        || before_track.artist != app.player.track.artist
-                        || before_track.album != app.player.track.album
-                        || before_track.cover_hash != app.player.track.cover_hash;
-                    if changed {
-                        let to = CoverSnapshot::from(&app.player.track);
-                        app.start_cover_anim(from, to, dir, frame_start);
-                        app.queue_remote_fetch(None);
-                        state_changed = true;
-                    }
-                }
-            }
         }
 
         // spectrum update
@@ -757,24 +609,6 @@ pub async fn run(
             }
         }
 
-        // local player position update
-        if app.player.mode == PlayMode::LocalPlayback {
-            state_changed = true;
-            // Detect end-of-track and stop position accumulation.
-            let just_finished = mode_manager.local.poll_end();
-            if just_finished {
-                handle_local_track_finished(app, &mut mode_manager);
-            }
-            if let Some(pos) = mode_manager.local.position() {
-                app.player.position = pos;
-            }
-            if let Some(dur) = mode_manager.local.duration() {
-                app.player.track.duration = dur;
-            }
-            app.player.volume = mode_manager.local.volume();
-            app.player.playback = mode_manager.local.playback_state();
-        }
-
         if app.player.mode == PlayMode::Idle && app.player.playback == PlaybackState::Playing {
             let dt = frame_start.saturating_duration_since(app.last_frame);
             if dt > Duration::from_millis(0) {
@@ -785,12 +619,6 @@ pub async fn run(
                     next
                 };
                 state_changed = true;
-            }
-        }
-
-        if let Some(sysvol) = system_volume.as_ref() {
-            if let Ok(v) = sysvol.get() {
-                app.player.volume = v;
             }
         }
 
@@ -848,55 +676,6 @@ fn fps_to_dt(fps: u32) -> Duration {
     Duration::from_millis((1000 / fps) as u64)
 }
 
-fn handle_local_track_finished(app: &mut AppState, mode_manager: &mut ModeManager) {
-    // 自动续播仅用于本地播放。
-    if app.player.mode != PlayMode::LocalPlayback {
-        return;
-    }
-    if app.playlist.items.is_empty() {
-        return;
-    }
-
-    let from = CoverSnapshot::from(&app.player.track);
-    let next = match app.player.repeat_mode {
-        RepeatMode::Sequence => app.playlist.next_index_no_wrap(),
-        RepeatMode::LoopAll => app.playlist.next_index_sequence(),
-        RepeatMode::LoopOne => app.playlist.current,
-        RepeatMode::Shuffle => pick_shuffle_index(&app.playlist),
-    };
-
-    let Some(i) = next else {
-        // Sequence mode at end: stop.
-        app.player.playback = PlaybackState::Stopped;
-        return;
-    };
-
-    app.playlist.current = Some(i);
-    let Some(path) = app.playlist.current_path().cloned() else {
-        app.player.playback = PlaybackState::Stopped;
-        return;
-    };
-
-    match mode_manager.local.play_file(&path) {
-        Ok(track) => {
-            app.player.track = track;
-            let to = CoverSnapshot::from(&app.player.track);
-            app.start_cover_anim(from, to, -1, Instant::now());
-
-            app.queue_remote_fetch(Some(&path));
-
-            if let Some(folder) = app.local_folder.as_deref() {
-                let _ =
-                    crate::tmplayer::playback::local_player::write_last_opened_song(folder, &path);
-            }
-        }
-        Err(e) => {
-            app.player.playback = PlaybackState::Stopped;
-            app.set_toast(format!("Play error: {e}"));
-        }
-    }
-}
-
 fn switch_idle_track(app: &mut AppState, dir: i8) {
     if app.api_tracks.is_empty() {
         return;
@@ -942,25 +721,12 @@ fn switch_idle_track(app: &mut AppState, dir: i8) {
 
 async fn handle_action(
     app: &mut AppState,
-    mode_manager: &mut ModeManager,
-    system_volume: Option<&SystemVolume>,
     host_bridge: &mut Option<&mut impl HostPlaybackBridge>,
     action: Action,
     layout: &UiLayout,
 ) -> Result<()> {
     match action {
         Action::Quit => {
-            if app.player.mode == PlayMode::LocalPlayback && app.config.resume_last_position {
-                if let (Some(folder), Some(cur_path)) = (
-                    app.local_folder.as_deref(),
-                    app.playlist.current_path().cloned(),
-                ) {
-                    let pos = mode_manager.local.position().unwrap_or(app.player.position);
-                    let _ = crate::tmplayer::playback::local_player::write_last_position(
-                        folder, &cur_path, pos,
-                    );
-                }
-            }
             // handled by tui flag
             app.set_toast("Bye");
         }
@@ -985,27 +751,23 @@ async fn handle_action(
                 if app.eq_selected < crate::tmplayer::app::state::EQ_BANDS {
                     app.eq.bands_db[app.eq_selected] = db;
                 }
-                sync_eq_config(app, mode_manager, host_bridge).await;
+                sync_eq_config(app, host_bridge).await;
             }
         }
         Action::EqResetDefault => {
             if app.overlay == Overlay::EqModal {
                 app.eq = crate::tmplayer::app::state::EqSettings::default();
                 app.eq_selected = 0;
-                sync_eq_config(app, mode_manager, host_bridge).await;
+                sync_eq_config(app, host_bridge).await;
             }
         }
         Action::FolderChar(c) => {
-            if app.overlay == Overlay::FolderInput {
-                app.folder_input.buf.push(c);
-            } else if app.overlay == Overlay::AcoustIdModal {
+            if app.overlay == Overlay::AcoustIdModal {
                 app.acoustid_input.push(c);
             }
         }
         Action::FolderBackspace => {
-            if app.overlay == Overlay::FolderInput {
-                app.folder_input.buf.pop();
-            } else if app.overlay == Overlay::AcoustIdModal {
+            if app.overlay == Overlay::AcoustIdModal {
                 app.acoustid_input.pop();
             }
         }
@@ -1061,17 +823,6 @@ async fn handle_action(
             }
         }
         Action::Confirm => match app.overlay {
-            Overlay::FolderInput => {
-                let folder = app.folder_input.buf.trim().to_string();
-                app.close_overlay();
-                if folder.is_empty() {
-                    return Ok(());
-                }
-                let p = PathBuf::from(&folder);
-                if let Err(e) = open_local_folder(app, mode_manager, &p) {
-                    app.set_toast(format!("Folder error: {e}"));
-                }
-            }
             Overlay::Playlist => {
                 if let Some(bridge) = host_bridge.as_mut() {
                     let idx = app
@@ -1082,50 +833,6 @@ async fn handle_action(
                     let snapshot = (*bridge).snapshot();
                     sync_from_host_snapshot(app, snapshot);
                     return Ok(());
-                }
-
-                app.playlist_view.set_current_selected();
-                if app.player.mode == PlayMode::Idle {
-                    if let Some(idx) = app.playlist_view.current {
-                        app.playlist.current = Some(idx);
-                        app.playlist.selected = idx;
-                        app.playlist_view.current = Some(idx);
-                        app.playlist_view.selected = idx;
-
-                        if let Some(track) = app.api_tracks.get(idx).cloned() {
-                            let from = CoverSnapshot::from(&app.player.track);
-                            app.player.track = track;
-                            app.player.position = Duration::from_secs(0);
-                            app.player.playback = PlaybackState::Playing;
-                            let to = CoverSnapshot::from(&app.player.track);
-                            app.start_cover_anim(from, to, -1, Instant::now());
-                        }
-                    }
-                } else if let Some(path) = app.playlist_view.current_path().cloned() {
-                    let view_folder = app.local_view_album_folder.clone();
-                    if let Ok(track) = mode_manager.local.play_file(&path) {
-                        app.player.mode = PlayMode::LocalPlayback;
-                        app.player.track = track;
-
-                        app.queue_remote_fetch(Some(&path));
-
-                        if let Some(folder) = view_folder {
-                            app.local_folder = Some(folder.clone());
-                            app.playlist = app.playlist_view.clone();
-                            let _ = crate::tmplayer::playback::local_player::write_last_opened_song(
-                                &folder, &path,
-                            );
-
-                            if app.local_folder_kind == LocalFolderKind::MultiAlbum {
-                                if let Some(root) = app.local_root_folder.as_deref() {
-                                    let _ =
-                                        crate::tmplayer::playback::local_player::write_last_album(
-                                            root, &folder,
-                                        );
-                                }
-                            }
-                        }
-                    }
                 }
             }
             Overlay::SettingsModal => match app.settings_selected {
@@ -1206,13 +913,6 @@ async fn handle_action(
                     let _ = app.config.save();
                     if app.config.lyrics_cover_fetch {
                         app.reset_remote_fetch_state();
-                        if app.player.mode == PlayMode::LocalPlayback {
-                            if let Some(cur_path) = app.playlist.current_path().cloned() {
-                                app.queue_remote_fetch(Some(&cur_path));
-                            }
-                        } else if app.player.mode == PlayMode::SystemMonitor {
-                            app.queue_remote_fetch(None);
-                        }
                     }
                 }
                 1 => {
@@ -1262,101 +962,9 @@ async fn handle_action(
             app.playlist_view.clamp_selected();
             sync_playlists_when_viewing_playback(app);
         }
-        Action::PlaylistMoveItemUp => {
-            if app.overlay == Overlay::Playlist && app.player.mode == PlayMode::LocalPlayback {
-                if app.playlist_view.move_selected_item_up() {
-                    if let Some(folder) = app.local_view_album_folder.as_deref() {
-                        if let Err(e) = crate::tmplayer::playback::local_player::write_order_file(
-                            folder,
-                            &app.playlist_view,
-                        ) {
-                            app.set_toast(format!("Order save error: {e}"));
-                        }
-                    }
-                    sync_playlists_when_viewing_playback(app);
-                }
-            }
-        }
-        Action::PlaylistMoveItemDown => {
-            if app.overlay == Overlay::Playlist && app.player.mode == PlayMode::LocalPlayback {
-                if app.playlist_view.move_selected_item_down() {
-                    if let Some(folder) = app.local_view_album_folder.as_deref() {
-                        if let Err(e) = crate::tmplayer::playback::local_player::write_order_file(
-                            folder,
-                            &app.playlist_view,
-                        ) {
-                            app.set_toast(format!("Order save error: {e}"));
-                        }
-                    }
-                    sync_playlists_when_viewing_playback(app);
-                }
-            }
-        }
-        Action::PrevAlbum | Action::NextAlbum => {
-            if app.overlay == Overlay::Playlist
-                && app.player.mode == PlayMode::LocalPlayback
-                && app.local_folder_kind == LocalFolderKind::MultiAlbum
-                && !app.local_album_folders.is_empty()
-            {
-                let count = app.local_album_folders.len();
-                let mut idx = app.local_view_album_index;
-                match action {
-                    Action::PrevAlbum => {
-                        idx = idx.saturating_sub(1);
-                    }
-                    Action::NextAlbum => {
-                        if idx + 1 < count {
-                            idx += 1;
-                        }
-                    }
-                    _ => {}
-                }
-
-                if idx != app.local_view_album_index {
-                    let from_cover = app.local_view_album_cover.clone();
-                    let from_hash = app.local_view_album_cover_hash;
-                    let from_folder = app.local_view_album_folder.clone();
-
-                    app.local_view_album_index = idx;
-                    let folder = app.local_album_folders[idx].clone();
-                    if let Ok(mut pl) = mode_manager.local.load_playlist_only(&folder, false) {
-                        pl.selected = 0;
-                        pl.current = None;
-                        pl.clamp_selected();
-                        app.playlist_view = pl;
-                        app.local_view_album_folder = Some(folder.clone());
-
-                        let cover =
-                            crate::tmplayer::playback::metadata::read_cover_from_folder(&folder);
-                        app.local_view_album_cover = cover.as_ref().map(|(b, _)| b.clone());
-                        app.local_view_album_cover_hash =
-                            cover.map(|(_, h)| Some(h)).unwrap_or(None);
-
-                        // Start cover slide animation (playlist overlay)
-                        let dir = if action == Action::NextAlbum { -1 } else { 1 };
-                        app.playlist_album_anim =
-                            Some(crate::tmplayer::app::state::PlaylistAlbumAnim {
-                                from_cover,
-                                from_hash,
-                                from_folder,
-                                to_cover: app.local_view_album_cover.clone(),
-                                to_hash: app.local_view_album_cover_hash,
-                                to_folder: app.local_view_album_folder.clone(),
-                                dir,
-                                started_at: Instant::now(),
-                                duration: Duration::from_millis(220),
-                            });
-
-                        // Record last visited album even if not playing.
-                        if let Some(root) = app.local_root_folder.as_deref() {
-                            let _ = crate::tmplayer::playback::local_player::write_last_album(
-                                root, &folder,
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        Action::PlaylistMoveItemUp => (),
+        Action::PlaylistMoveItemDown => (),
+        Action::PrevAlbum | Action::NextAlbum => (),
         Action::ModalUp => {
             if app.overlay == Overlay::SettingsModal {
                 let count = 10;
@@ -1385,7 +993,7 @@ async fn handle_action(
                     let v = app.eq.bands_db[app.eq_selected];
                     app.eq.bands_db[app.eq_selected] = (v + step).clamp(-12.0, 12.0);
                 }
-                sync_eq_config(app, mode_manager, host_bridge).await;
+                sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
                 if app.help_keybind_selected == 0 {
                     app.help_keybind_selected = HELP_MODAL_ITEMS - 1;
@@ -1410,7 +1018,7 @@ async fn handle_action(
                     let v = app.eq.bands_db[app.eq_selected];
                     app.eq.bands_db[app.eq_selected] = (v - step).clamp(-12.0, 12.0);
                 }
-                sync_eq_config(app, mode_manager, host_bridge).await;
+                sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
                 app.help_keybind_selected = (app.help_keybind_selected + 1) % HELP_MODAL_ITEMS;
             }
@@ -1546,8 +1154,6 @@ async fn handle_action(
                         if last_row == (layout.playlist_list_inner.y + idx as u16) {
                             return Box::pin(handle_action(
                                 app,
-                                mode_manager,
-                                system_volume,
                                 host_bridge,
                                 Action::Confirm,
                                 layout,
@@ -1569,24 +1175,6 @@ async fn handle_action(
             }
 
             match app.player.mode {
-                PlayMode::LocalPlayback => {
-                    // If the track finished (sink empty), Space should restart it.
-                    if mode_manager.local.playback_state() == PlaybackState::Stopped {
-                        if let Ok(Some(track)) = mode_manager.local.restart_current() {
-                            app.player.track = track;
-                        }
-                    } else {
-                        let _ = mode_manager.local.toggle_play_pause();
-                    }
-
-                    // Keep UI position in sync immediately (avoids visual jump on key press).
-                    if let Some(pos) = mode_manager.local.position() {
-                        app.player.position = pos;
-                    }
-                }
-                PlayMode::SystemMonitor => {
-                    let _ = mode_manager.mpris.toggle_play_pause();
-                }
                 PlayMode::Idle => {
                     app.player.playback = match app.player.playback {
                         PlaybackState::Playing => PlaybackState::Paused,
@@ -1595,169 +1183,55 @@ async fn handle_action(
                 }
             }
         }
-        Action::Prev => {
-            match app.player.mode {
-                _ if host_bridge.is_some() => {
-                    if let Some(bridge) = host_bridge.as_mut() {
-                        (*bridge).play_previous().await;
-                        let snapshot = (*bridge).snapshot();
-                        sync_from_host_snapshot(app, snapshot);
-                    }
-                }
-                PlayMode::LocalPlayback => {
-                    let from = CoverSnapshot::from(&app.player.track);
-                    let i = match app.player.repeat_mode {
-                        RepeatMode::Sequence => app.playlist.prev_index_no_wrap(),
-                        RepeatMode::LoopAll => app.playlist.prev_index_sequence(),
-                        RepeatMode::LoopOne => app.playlist.current,
-                        RepeatMode::Shuffle => pick_shuffle_index(&app.playlist),
-                    };
-                    if let Some(i) = i {
-                        app.playlist.current = Some(i);
-                        if let Some(path) = app.playlist.current_path().cloned() {
-                            if let Ok(track) = mode_manager.local.play_file(&path) {
-                                app.player.track = track;
-                                let to = CoverSnapshot::from(&app.player.track);
-                                app.start_cover_anim(from, to, 1, Instant::now());
-
-                                app.queue_remote_fetch(Some(&path));
-
-                                if let Some(folder) = app.local_folder.as_deref() {
-                                    let _ = crate::tmplayer::playback::local_player::write_last_opened_song(folder, &path);
-                                }
-                            }
-                        }
-                    }
-                }
-                PlayMode::SystemMonitor => {
-                    app.pending_system_cover_anim =
-                        Some((CoverSnapshot::from(&app.player.track), 1, Instant::now()));
-                    let _ = mode_manager.mpris.prev();
-                }
-                PlayMode::Idle => {
-                    switch_idle_track(app, 1);
-                }
-            }
-        }
-        Action::Next => {
-            match app.player.mode {
-                _ if host_bridge.is_some() => {
-                    if let Some(bridge) = host_bridge.as_mut() {
-                        (*bridge).play_next().await;
-                        let snapshot = (*bridge).snapshot();
-                        sync_from_host_snapshot(app, snapshot);
-                    }
-                }
-                PlayMode::LocalPlayback => {
-                    let from = CoverSnapshot::from(&app.player.track);
-                    let next = match app.player.repeat_mode {
-                        RepeatMode::Sequence => app.playlist.next_index_no_wrap(),
-                        RepeatMode::LoopAll => app.playlist.next_index_sequence(),
-                        RepeatMode::LoopOne => app.playlist.current,
-                        RepeatMode::Shuffle => pick_shuffle_index(&app.playlist),
-                    };
-                    if let Some(i) = next {
-                        app.playlist.current = Some(i);
-                        if let Some(path) = app.playlist.current_path().cloned() {
-                            if let Ok(track) = mode_manager.local.play_file(&path) {
-                                app.player.track = track;
-                                let to = CoverSnapshot::from(&app.player.track);
-                                app.start_cover_anim(from, to, -1, Instant::now());
-
-                                app.queue_remote_fetch(Some(&path));
-
-                                if let Some(folder) = app.local_folder.as_deref() {
-                                    let _ = crate::tmplayer::playback::local_player::write_last_opened_song(folder, &path);
-                                }
-                            }
-                        }
-                    }
-                }
-                PlayMode::SystemMonitor => {
-                    app.pending_system_cover_anim =
-                        Some((CoverSnapshot::from(&app.player.track), -1, Instant::now()));
-                    let _ = mode_manager.mpris.next();
-                }
-                PlayMode::Idle => {
-                    switch_idle_track(app, -1);
-                }
-            }
-        }
-        Action::VolumeUp => match app.player.mode {
-            PlayMode::LocalPlayback => {
-                mode_manager
-                    .local
-                    .set_volume((mode_manager.local.volume() + 0.05).min(1.0));
-            }
-            PlayMode::SystemMonitor => {
-                if let Some(sysvol) = system_volume {
-                    if let Ok(v) = sysvol.set_delta(0.05) {
-                        app.player.volume = v;
-                    } else {
-                        let _ = mode_manager.mpris.set_volume_delta(0.05);
-                    }
-                } else {
-                    let _ = mode_manager.mpris.set_volume_delta(0.05);
+        Action::Prev => match app.player.mode {
+            _ if host_bridge.is_some() => {
+                if let Some(bridge) = host_bridge.as_mut() {
+                    (*bridge).play_previous().await;
+                    let snapshot = (*bridge).snapshot();
+                    sync_from_host_snapshot(app, snapshot);
                 }
             }
             PlayMode::Idle => {
-                if let Some(sysvol) = system_volume {
-                    if let Ok(v) = sysvol.set_delta(0.05) {
-                        app.player.volume = v;
-                    }
+                switch_idle_track(app, 1);
+            }
+        },
+        Action::Next => match app.player.mode {
+            _ if host_bridge.is_some() => {
+                if let Some(bridge) = host_bridge.as_mut() {
+                    (*bridge).play_next().await;
+                    let snapshot = (*bridge).snapshot();
+                    sync_from_host_snapshot(app, snapshot);
                 }
+            }
+            PlayMode::Idle => {
+                switch_idle_track(app, -1);
+            }
+        },
+        Action::VolumeUp => match app.player.mode {
+            PlayMode::Idle => {
+                let next = (app.player.volume + 0.05).min(1.0);
+                if let Some(bridge) = host_bridge.as_mut() {
+                    (*bridge).set_volume(next);
+                }
+                app.player.volume = next;
             }
         },
         Action::VolumeDown => match app.player.mode {
-            PlayMode::LocalPlayback => {
-                mode_manager
-                    .local
-                    .set_volume((mode_manager.local.volume() - 0.05).max(0.0));
-            }
-            PlayMode::SystemMonitor => {
-                if let Some(sysvol) = system_volume {
-                    if let Ok(v) = sysvol.set_delta(-0.05) {
-                        app.player.volume = v;
-                    } else {
-                        let _ = mode_manager.mpris.set_volume_delta(-0.05);
-                    }
-                } else {
-                    let _ = mode_manager.mpris.set_volume_delta(-0.05);
-                }
-            }
             PlayMode::Idle => {
-                if let Some(sysvol) = system_volume {
-                    if let Ok(v) = sysvol.set_delta(-0.05) {
-                        app.player.volume = v;
-                    }
+                let next = (app.player.volume - 0.05).max(0.0);
+                if let Some(bridge) = host_bridge.as_mut() {
+                    (*bridge).set_volume(next);
                 }
+                app.player.volume = next;
             }
         },
         Action::SetVolume(v) => match app.player.mode {
-            PlayMode::LocalPlayback => {
-                mode_manager.local.set_volume(v);
-            }
-            PlayMode::SystemMonitor => {
-                if let Some(sysvol) = system_volume {
-                    if sysvol.set(v).is_ok() {
-                        app.player.volume = v;
-                    } else {
-                        // delta setter exists; approximate absolute set
-                        let cur = app.player.volume;
-                        let _ = mode_manager.mpris.set_volume_delta(v - cur);
-                    }
-                } else {
-                    // delta setter exists; approximate absolute set
-                    let cur = app.player.volume;
-                    let _ = mode_manager.mpris.set_volume_delta(v - cur);
-                }
-            }
             PlayMode::Idle => {
-                if let Some(sysvol) = system_volume {
-                    if sysvol.set(v).is_ok() {
-                        app.player.volume = v;
-                    }
+                let next = v.clamp(0.0, 1.0);
+                if let Some(bridge) = host_bridge.as_mut() {
+                    (*bridge).set_volume(next);
                 }
+                app.player.volume = next;
             }
         },
         Action::ToggleRepeatMode => {
@@ -1767,7 +1241,7 @@ async fn handle_action(
                 sync_from_host_snapshot(app, snapshot);
                 return Ok(());
             }
-            if app.player.mode == PlayMode::LocalPlayback || app.player.mode == PlayMode::Idle {
+            if app.player.mode == PlayMode::Idle {
                 app.player.repeat_mode = app.player.repeat_mode.next();
             }
         }
@@ -1795,15 +1269,6 @@ async fn handle_action(
             }
             let target = Duration::from_secs_f32(dur.as_secs_f32() * r.clamp(0.0, 1.0));
             match app.player.mode {
-                PlayMode::LocalPlayback => {
-                    if mode_manager.local.seek(target).is_ok() {
-                        // Update UI immediately so the next user action (e.g. Space) doesn't look like a jump.
-                        app.player.position = target;
-                    }
-                }
-                PlayMode::SystemMonitor => {
-                    let _ = mode_manager.mpris.seek_to(target);
-                }
                 PlayMode::Idle => {
                     app.player.position = target;
                 }
@@ -1812,15 +1277,7 @@ async fn handle_action(
         Action::MouseClick { col, row } => {
             // map click to controls/progress/volume/playlist
             if let Some(a) = crate::tmplayer::ui::tui::hit_test(layout, app, col, row) {
-                Box::pin(handle_action(
-                    app,
-                    mode_manager,
-                    system_volume,
-                    host_bridge,
-                    a,
-                    layout,
-                ))
-                .await?;
+                Box::pin(handle_action(app, host_bridge, a, layout)).await?;
             }
         }
         Action::None => {}
@@ -1859,31 +1316,6 @@ fn theme_key(name: ThemeName) -> &'static str {
         ThemeName::Frappe => "frappe",
         ThemeName::Macchiato => "macchiato",
         ThemeName::Mocha => "mocha",
-    }
-}
-
-fn apply_remote_fetch_results(
-    app: &mut AppState,
-    mode_manager: &mut ModeManager,
-    results: Vec<crate::tmplayer::playback::remote_fetch::RemoteFetchResult>,
-) {
-    let current_path = if app.player.mode == PlayMode::LocalPlayback {
-        app.playlist.current_path().cloned()
-    } else {
-        None
-    };
-    let current_key = crate::tmplayer::playback::remote_fetch::TrackKey::from_track(
-        &app.player.track,
-        current_path.as_deref(),
-    );
-
-    for res in results {
-        if res.key == current_key {
-            res.apply_to(&mut app.player.track);
-        }
-        if let Some(path) = res.path.as_deref() {
-            mode_manager.local.update_cached_metadata(path, &res);
-        }
     }
 }
 
@@ -1964,13 +1396,6 @@ fn apply_local_audio_settings_delta(app: &mut AppState, delta: i32) {
             let _ = app.config.save();
             if app.config.lyrics_cover_fetch {
                 app.reset_remote_fetch_state();
-                if app.player.mode == PlayMode::LocalPlayback {
-                    if let Some(cur_path) = app.playlist.current_path().cloned() {
-                        app.queue_remote_fetch(Some(&cur_path));
-                    }
-                } else if app.player.mode == PlayMode::SystemMonitor {
-                    app.queue_remote_fetch(None);
-                }
             }
         }
         1 => {

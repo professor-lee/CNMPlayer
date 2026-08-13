@@ -222,29 +222,6 @@ impl Tui {
                 }
             }
 
-            // folder input overlay (simple one-line prompt)
-            if app.overlay == Overlay::FolderInput {
-                let prompt = format!(
-                    "{}: {}",
-                    lang_text(app, "文件夹", "Folder"),
-                    app.folder_input.buf
-                );
-                let area = Rect {
-                    x: size.x,
-                    y: size.y + size.height.saturating_sub(2),
-                    width: size.width,
-                    height: 1,
-                };
-                f.render_widget(
-                    ratatui::widgets::Paragraph::new(prompt).style(
-                        Style::default()
-                            .fg(app.theme.color_text())
-                            .bg(app.theme.color_surface()),
-                    ),
-                    area,
-                );
-            }
-
             // toast
             if let Some((msg, _)) = &app.toast {
                 let area = Rect {
@@ -1055,6 +1032,14 @@ fn render_help_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState) {
         (
             lang_text(app, "退出应用", "Quit"),
             app.config.keybind_quit.as_str(),
+        ),
+        (
+            lang_text(app, "快速上翻页（主程序）", "Quick Page Up (Host)"),
+            app.config.keybind_page_up.as_str(),
+        ),
+        (
+            lang_text(app, "快速下翻页（主程序）", "Quick Page Down (Host)"),
+            app.config.keybind_page_down.as_str(),
         ),
         (
             lang_text(app, "上一首", "Previous"),

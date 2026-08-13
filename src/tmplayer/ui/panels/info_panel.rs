@@ -708,10 +708,6 @@ fn compose_left_right_line(left: &str, right: &str, width: usize) -> String {
 fn mode_label(m: PlayMode, lang: crate::data::config::Language) -> &'static str {
     match (m, lang) {
         (PlayMode::Idle, crate::data::config::Language::Zh) => "网络",
-        (PlayMode::LocalPlayback, crate::data::config::Language::Zh) => "本地",
-        (PlayMode::SystemMonitor, crate::data::config::Language::Zh) => "系统",
         (PlayMode::Idle, crate::data::config::Language::En) => "Network",
-        (PlayMode::LocalPlayback, crate::data::config::Language::En) => "Local",
-        (PlayMode::SystemMonitor, crate::data::config::Language::En) => "System",
     }
 }
