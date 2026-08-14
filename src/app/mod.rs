@@ -8,6 +8,7 @@ use crate::app::player::is_nonempty_file;
 use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
 use crate::data::config::{Config, GraphicsProtocol};
 use crate::data::playback_session;
+use crate::data::private_roam;
 use crate::data::session;
 use crate::data::theme_loader::ThemeLoader;
 use crate::launch;
@@ -554,7 +555,8 @@ impl HomeState {
 }
 
 const HOME_DAILY_RECOMMEND_TILE_ID: &str = "__cnm_daily_recommend_songs__";
-const HOME_PINNED_TITLES: [&str; 3] = ["每日推荐", "私人雷达", "欧美私人雷达"];
+const HOME_PRIVATE_ROAM_TILE_ID: &str = "__cnm_private_roam__";
+const HOME_PINNED_TITLES: [&str; 3] = ["每日推荐", "私人雷达", "私人漫游"];
 
 fn home_tile_real_to_virtual_index(index: usize, columns: usize) -> usize {
     let cols = columns.max(1);
@@ -831,6 +833,21 @@ pub enum PlaylistTrackKind {
     Album,
     Ep,
     Single,
+}
+
+/// 私人漫游状态：歌曲列表、最后播放位置与展示封面
+#[derive(Debug, Clone, Default)]
+pub struct PrivateRoamState {
+    /// 漫游歌曲列表（权威副本，进入漫游时填充到 playlist）
+    pub tracks: Vec<PlaylistTrack>,
+    /// 最后播放歌曲在列表中的索引（每日刷新后若保留在首位则为 0）
+    pub last_played_index: Option<usize>,
+    /// 最后播放的漫游歌曲封面（切到别的列表播放后仍保留）
+    pub last_played_cover_url: Option<String>,
+    /// 当前应展示的封面：未播放过时为首歌封面，播放后为播放中的歌曲封面
+    pub cover_url: Option<String>,
+    /// 每日刷新标记：上次刷新的 UTC 天数
+    pub last_refresh_day: Option<i64>,
 }
 
 pub struct SearchItem {
@@ -1599,6 +1616,7 @@ pub struct App {
     pub home_sidebar: HomeSidebarState,
     home_sidebar_anim_span_cells: u16,
     pub playlist: PlaylistState,
+    pub private_roam: PrivateRoamState,
     pub author: AuthorState,
     pub search: SearchState,
     pub now_playing: Option<PlaybackTrack>,
@@ -1704,6 +1722,7 @@ impl App {
             home_sidebar: HomeSidebarState::default(),
             home_sidebar_anim_span_cells: 24,
             playlist: PlaylistState::default(),
+            private_roam: PrivateRoamState::default(),
             author: AuthorState::default(),
             search: SearchState::default(),
             now_playing: None,
@@ -1760,6 +1779,8 @@ impl App {
             graphics_picker: Picker::halfblocks(),
         };
 
+        app.load_private_roam_memory();
+
         if let Ok(_) = Picker::from_query_stdio() {
             // Don't use queried picker, this cause image layouted improperly on konsole.
             // It's ok to not set this if we just use Halfblocks.
@@ -1780,6 +1801,7 @@ impl App {
                     let _ = app.refresh_liked_song_cache().await;
                     app.home.status_line = "已恢复上次登录，正在加载推荐歌单".to_string();
                     app.begin_startup_loading();
+                    app.refresh_private_roam_daily().await;
                     if let Err(err) = app.load_home_recommendations().await {
                         app.home.status_line = format!("已恢复登录，但推荐加载失败: {}", err);
                     }
@@ -2953,6 +2975,23 @@ impl App {
             .unwrap_or(0)
             .min(self.playback_queue.len() - 1);
 
+        // 私人漫游：队列（快照）播完后，若列表已追加新歌则从列表继续顺序播放
+        if self.playback_repeat_mode == PlaybackRepeatMode::Sequence
+            && self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)
+            && current + 1 >= self.playback_queue.len()
+            && self.private_roam.tracks.len() > self.playback_queue.len()
+        {
+            let start = self.private_roam.last_played_index.unwrap_or(0) + 1;
+            if start < self.private_roam.tracks.len() {
+                let queue: Vec<PlaybackTrack> = self.private_roam.tracks[start..]
+                    .iter()
+                    .filter_map(PlaybackTrack::from_playlist_track)
+                    .collect();
+                self.replace_queue_and_play(queue, 0).await;
+                return;
+            }
+        }
+
         let target = match self.playback_repeat_mode {
             PlaybackRepeatMode::Sequence => {
                 if current + 1 < self.playback_queue.len() {
@@ -2980,6 +3019,9 @@ impl App {
         let Some(track) = self.playback_queue.get(index).cloned() else {
             return;
         };
+
+        // 记录私人漫游播放位置/封面；播放到列表末尾时追加新歌
+        self.track_private_roam_playback(&track).await;
 
         let mut enriched = track.clone();
         // Switch UI state immediately and avoid blocking network fetches here.
@@ -5079,6 +5121,8 @@ impl App {
         self.api.clear_cookie();
         let _ = session::clear_cookie();
         self.clear_playback_memory();
+        let _ = private_roam::clear();
+        self.private_roam = PrivateRoamState::default();
         self.vip_audio_unlocked = false;
         self.config.audio_quality = self.config.audio_quality.clamp_for_vip(false);
 
@@ -5123,6 +5167,8 @@ impl App {
         self.home.status_line = format!("正在加载 {}", title);
         let result = if playlist_id == HOME_DAILY_RECOMMEND_TILE_ID {
             self.load_daily_recommend_playlist().await
+        } else if playlist_id == HOME_PRIVATE_ROAM_TILE_ID {
+            self.load_private_roam_playlist().await
         } else {
             self.load_playlist_detail(&playlist_id).await
         };
@@ -5383,6 +5429,10 @@ impl App {
                 }
             }
 
+            if pinned_title == Some("私人漫游") {
+                tile.id = Some(HOME_PRIVATE_ROAM_TILE_ID.to_string());
+            }
+
             tiles.push(tile);
         }
 
@@ -5391,6 +5441,8 @@ impl App {
             tiles,
             self.config.home_more_recommend,
         ));
+        // 私人漫游 tile 封面：未播放过时为首歌封面，播放后为最后播放歌曲的封面
+        self.sync_home_roam_tile_cover();
         self.home.status_line = self
             .lang_text(
                 "方向键/Tab 切换，Enter 打开歌单",
@@ -5644,6 +5696,226 @@ impl App {
         self.playlist.set_tracks(tracks);
         cover_url.map(|x| self.playlist.cover.load(self.api.clone(), x));
         Ok(())
+    }
+
+    async fn load_private_roam_playlist(&mut self) -> Result<()> {
+        // 兜底：内存列表为空（首次使用且启动刷新失败过）时现场拉取
+        if self.private_roam.tracks.is_empty() {
+            let fetched = fetch_private_roam_songs(&mut self.api).await;
+            if fetched.is_empty() {
+                return Err(anyhow!(
+                    self.lang_text("私人漫游为空", "Private roam is empty")
+                ));
+            }
+            self.private_roam.tracks = fetched;
+            if self.private_roam.cover_url.is_none() {
+                self.private_roam.cover_url = self
+                    .private_roam
+                    .tracks
+                    .first()
+                    .and_then(|track| track.cover_url.clone());
+            }
+            self.persist_private_roam();
+        }
+
+        let tracks = self.private_roam.tracks.clone();
+        let cover_url = self.private_roam.cover_url.clone();
+        let focus_index = self.private_roam.last_played_index;
+
+        self.playlist.id = Some(HOME_PRIVATE_ROAM_TILE_ID.to_string());
+        self.playlist.title = self
+            .lang_text("私人漫游", "Private Roam")
+            .to_string();
+        self.playlist.artist = self
+            .lang_text("网易云音乐", "Netease Cloud Music")
+            .to_string();
+        self.playlist.description = self
+            .lang_text(
+                "来自网易云私人漫游，按 Enter 播放",
+                "Private roam songs from Netease. Press Enter to play",
+            )
+            .to_string();
+        self.playlist.set_tracks(tracks);
+        // 进入漫游后默认聚焦到最后播放的歌曲
+        if let Some(index) = focus_index {
+            if index < self.playlist.tracks.len() {
+                self.playlist.focused_idx = index;
+                self.playlist.scroll_offset = index;
+            }
+        }
+        cover_url.map(|x| self.playlist.cover.load(self.api.clone(), x));
+        Ok(())
+    }
+
+    /// 每日首次启动时刷新一次：上次最后播放的歌曲保留在首位，其后追加新歌
+    async fn refresh_private_roam_daily(&mut self) {
+        let today = today_day_number();
+        if self.private_roam.last_refresh_day == Some(today) {
+            return;
+        }
+
+        let fetched = fetch_private_roam_songs(&mut self.api).await;
+        if fetched.is_empty() {
+            // 拉取失败保留旧列表，下次启动再试
+            return;
+        }
+
+        let (new_tracks, new_index) = merge_private_roam_refresh(
+            &self.private_roam.tracks,
+            self.private_roam.last_played_index,
+            fetched,
+        );
+
+        self.private_roam.tracks = new_tracks;
+        self.private_roam.last_played_index = new_index;
+        if self.private_roam.cover_url.is_none() {
+            self.private_roam.cover_url = self
+                .private_roam
+                .tracks
+                .first()
+                .and_then(|track| track.cover_url.clone());
+        }
+        self.private_roam.last_refresh_day = Some(today);
+        self.persist_private_roam();
+    }
+
+    /// 播放到列表末尾时追加一批新歌
+    async fn append_private_roam_songs(&mut self) {
+        let fetched = fetch_private_roam_songs(&mut self.api).await;
+        if fetched.is_empty() {
+            return;
+        }
+
+        let mut added = false;
+        let mut new_queue_items = Vec::new();
+        for track in fetched {
+            if !self
+                .private_roam
+                .tracks
+                .iter()
+                .any(|t| t.id == track.id)
+            {
+                if let Some(item) = PlaybackTrack::from_playlist_track(&track) {
+                    new_queue_items.push(item);
+                }
+                self.private_roam.tracks.push(track);
+                added = true;
+            }
+        }
+        if !added {
+            return;
+        }
+
+        self.persist_private_roam();
+        // 漫游列表页打开时同步 UI
+        if self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID) {
+            self.playlist.tracks = self.private_roam.tracks.clone();
+            // 同步扩展播放队列：全屏列表（基于队列快照）据此刷新，自动切歌也能继续播新歌
+            self.playback_queue.extend(new_queue_items);
+        }
+    }
+
+    /// 播放队列切到某首歌时，记录漫游播放位置与封面；播放到最后一首时追加新歌
+    async fn track_private_roam_playback(&mut self, track: &PlaybackTrack) {
+        let Some(pos) = self
+            .private_roam
+            .tracks
+            .iter()
+            .position(|t| t.id.as_deref() == Some(track.song_id.as_str()))
+        else {
+            return;
+        };
+
+        let is_last = pos + 1 == self.private_roam.tracks.len();
+        self.private_roam.last_played_index = Some(pos);
+        if let Some(cover) = self.private_roam.tracks[pos].cover_url.clone() {
+            self.private_roam.cover_url = Some(cover.clone());
+            self.private_roam.last_played_cover_url = Some(cover.clone());
+            // 列表页封面同步为播放到的歌曲封面
+            if self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID) {
+                self.playlist.cover.load(self.api.clone(), cover);
+            }
+        }
+        self.sync_home_roam_tile_cover();
+        self.persist_private_roam();
+
+        if is_last && self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID) {
+            self.append_private_roam_songs().await;
+        }
+    }
+
+    fn persist_private_roam(&self) {
+        let record = private_roam::PrivateRoamRecord {
+            tracks: self
+                .private_roam
+                .tracks
+                .iter()
+                .map(|track| private_roam::PrivateRoamTrack {
+                    song_id: track.id.clone().unwrap_or_default(),
+                    title: track.title.clone(),
+                    artist: track.artist.clone(),
+                    album: track.album.clone(),
+                    duration_ms: track.duration_ms,
+                    cover_url: track.cover_url.clone(),
+                })
+                .collect(),
+            last_played_index: self.private_roam.last_played_index,
+            last_played_cover_url: self.private_roam.last_played_cover_url.clone(),
+            last_refresh_day: self.private_roam.last_refresh_day,
+            updated_at: 0,
+        };
+        let _ = private_roam::save(&record);
+    }
+
+    fn load_private_roam_memory(&mut self) {
+        let Ok(Some(record)) = private_roam::load() else {
+            return;
+        };
+
+        self.private_roam.tracks = record
+            .tracks
+            .into_iter()
+            .filter_map(|track| {
+                if track.song_id.is_empty() {
+                    return None;
+                }
+                Some(PlaylistTrack {
+                    kind: PlaylistTrackKind::Song,
+                    id: Some(track.song_id),
+                    title: track.title,
+                    artist: track.artist,
+                    album: track.album,
+                    cover_url: track.cover_url,
+                    duration_ms: track.duration_ms,
+                    duration: format_duration(track.duration_ms),
+                })
+            })
+            .collect();
+        self.private_roam.last_played_index = record.last_played_index;
+        self.private_roam.last_played_cover_url = record.last_played_cover_url.clone();
+        self.private_roam.last_refresh_day = record.last_refresh_day;
+        self.private_roam.cover_url = record
+            .last_played_cover_url
+            .or_else(|| {
+                self.private_roam
+                    .tracks
+                    .first()
+                    .and_then(|track| track.cover_url.clone())
+            });
+    }
+
+    fn sync_home_roam_tile_cover(&mut self) {
+        let Some(url) = self.private_roam.cover_url.clone() else {
+            return;
+        };
+        if let Some(tile) = self
+            .home
+            .tiles
+            .iter_mut()
+            .find(|tile| tile.title == "私人漫游")
+        {
+            tile.cover.load(self.api.clone(), url);
+        }
     }
 
     async fn load_album_detail(&mut self, album_id: &str) -> Result<()> {
@@ -6363,8 +6635,8 @@ fn home_daily_song_items(body: &Value) -> Option<&[Value]> {
 fn normalize_home_pinned_title(title: &str) -> Option<&'static str> {
     let compact: String = title.chars().filter(|ch| !ch.is_whitespace()).collect();
 
-    if compact.contains("欧美私人雷达") {
-        return Some("欧美私人雷达");
+    if compact.contains("私人漫游") {
+        return Some("私人漫游");
     }
     if compact.contains("私人雷达") {
         return Some("私人雷达");
@@ -6398,9 +6670,14 @@ fn prioritize_home_tiles(
         if target == "每日推荐" {
             pinned.push(HomeTile::placeholder_daily());
         } else {
+            let tile_id = if target == "私人漫游" {
+                Some(HOME_PRIVATE_ROAM_TILE_ID.to_string())
+            } else {
+                None
+            };
             pinned.push(HomeTile::from_recommendation(
                 api,
-                None,
+                tile_id,
                 target.to_string(),
                 String::new(),
                 None,
@@ -6588,6 +6865,88 @@ fn extract_current_user_name(response: &ApiResponse) -> Option<String> {
     }
 
     None
+}
+
+/// 拉取一批私人漫游歌曲（接口每次固定返回 3 首，连拉几次去重）
+async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<PlaylistTrack> {
+    let mut tracks = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for _ in 0..3 {
+        let Ok(response) = api.personal_fm_mode("DEFAULT", 20).await else {
+            continue;
+        };
+        if response_code(&response) != 200 {
+            continue;
+        }
+        let Some(songs) = response.body.get("data").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        let normalized = normalize_fm_song_items(songs);
+        for track in parse_tracks(&normalized) {
+            if let Some(id) = &track.id {
+                if seen.insert(id.clone()) {
+                    tracks.push(track);
+                }
+            }
+        }
+    }
+
+    tracks
+}
+
+/// 当前 UTC 日期对应的天数（每日刷新标记用）
+fn today_day_number() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs() as i64 / 86400)
+        .unwrap_or_default()
+}
+
+/// 每日刷新合并规则：上次最后播放的歌曲保留在首位，其后追加新歌（按 id 去重）
+fn merge_private_roam_refresh(
+    old_tracks: &[PlaylistTrack],
+    last_played_index: Option<usize>,
+    fetched: Vec<PlaylistTrack>,
+) -> (Vec<PlaylistTrack>, Option<usize>) {
+    let mut new_tracks = Vec::new();
+    let mut kept_last_played = false;
+
+    if let Some(index) = last_played_index {
+        if let Some(last) = old_tracks.get(index) {
+            new_tracks.push(last.clone());
+            kept_last_played = true;
+        }
+    }
+    for track in fetched {
+        if !new_tracks.iter().any(|t| t.id == track.id) {
+            new_tracks.push(track);
+        }
+    }
+
+    let new_index = if kept_last_played { Some(0) } else { None };
+    (new_tracks, new_index)
+}
+
+/// 私人 FM/漫游接口的歌曲对象用 `album`/`artists` 字段，规整为歌单通用的 `al`/`ar`
+fn normalize_fm_song_items(items: &[Value]) -> Vec<Value> {
+    items
+        .iter()
+        .map(|item| {
+            let mut song = item.clone();
+            if song.get("al").is_none() {
+                if let Some(album) = song.get("album").cloned() {
+                    song["al"] = album;
+                }
+            }
+            if song.get("ar").is_none() {
+                if let Some(artists) = song.get("artists").cloned() {
+                    song["ar"] = artists;
+                }
+            }
+            song
+        })
+        .collect()
 }
 
 fn parse_tracks(items: &[Value]) -> Vec<PlaylistTrack> {
@@ -7374,4 +7733,85 @@ fn placeholder_cover_ascii(width: u16, height: u16, ch: char) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(id: &str) -> PlaylistTrack {
+        PlaylistTrack {
+            kind: PlaylistTrackKind::Song,
+            id: Some(id.to_string()),
+            title: format!("title-{}", id),
+            artist: "artist".to_string(),
+            album: "album".to_string(),
+            cover_url: Some(format!("https://example.com/{}.jpg", id)),
+            duration_ms: 1000,
+            duration: "00:01".to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_refresh_keeps_last_played_at_head() {
+        let old = vec![track("a"), track("b"), track("c")];
+        let fetched = vec![track("x"), track("y"), track("b")];
+
+        let (merged, index) = merge_private_roam_refresh(&old, Some(1), fetched);
+
+        // 最后播放的 b 保留在首位，x/y 追加，重复的 b 跳过
+        let ids: Vec<Option<String>> = merged.iter().map(|t| t.id.clone()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("b".to_string()),
+                Some("x".to_string()),
+                Some("y".to_string())
+            ]
+        );
+        assert_eq!(index, Some(0));
+    }
+
+    #[test]
+    fn merge_refresh_without_playback_replaces_all() {
+        let old = vec![track("a"), track("b")];
+        let fetched = vec![track("x"), track("y")];
+
+        let (merged, index) = merge_private_roam_refresh(&old, None, fetched);
+
+        let ids: Vec<Option<String>> = merged.iter().map(|t| t.id.clone()).collect();
+        assert_eq!(ids, vec![Some("x".to_string()), Some("y".to_string())]);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn merge_refresh_stale_last_played_falls_back_to_fetched() {
+        // 最后播放歌曲已不在旧列表（数据异常），退化为全量替换
+        let old = vec![track("a")];
+        let fetched = vec![track("x")];
+
+        let (merged, index) = merge_private_roam_refresh(&old, Some(5), fetched);
+
+        let ids: Vec<Option<String>> = merged.iter().map(|t| t.id.clone()).collect();
+        assert_eq!(ids, vec![Some("x".to_string())]);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn normalize_fm_items_maps_album_and_artists() {
+        let items = serde_json::json!([{
+            "name": "song",
+            "id": 1,
+            "album": {"name": "al-name", "picUrl": "http://cover"},
+            "artists": [{"name": "artist-a"}],
+            "dt": 2000
+        }]);
+
+        let normalized = normalize_fm_song_items(items.as_array().unwrap());
+        assert_eq!(normalized[0]["al"]["name"], "al-name");
+        assert_eq!(normalized[0]["al"]["picUrl"], "http://cover");
+        assert_eq!(normalized[0]["ar"][0]["name"], "artist-a");
+        // 原有字段不受影响
+        assert_eq!(normalized[0]["name"], "song");
+    }
 }

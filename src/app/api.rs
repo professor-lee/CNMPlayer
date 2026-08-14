@@ -164,6 +164,16 @@ impl ApiState {
         Ok(response)
     }
 
+    /// 私人漫游（私人 FM 模式选择）
+    pub async fn personal_fm_mode(&mut self, mode: &str, limit: usize) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("mode", mode)
+            .param("limit", &limit.max(1).to_string());
+        let response = self.client.personal_fm_mode(&query).await?;
+        Ok(response)
+    }
+
     pub async fn playlist_detail(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.playlist_detail(&query).await?;
