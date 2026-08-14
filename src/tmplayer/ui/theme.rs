@@ -85,14 +85,12 @@ impl Theme {
         map_color(self.capability, self.palette.accent3)
     }
 
-    /// 按 t∈[0,1] 在两种主题色之间插值（脉冲动画等动态高亮，颜色全部来自主题）。
-    pub fn blend(&self, a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> Color {
-        let t = t.clamp(0.0, 1.0);
-        let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-        map_color(
-            self.capability,
-            (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2)),
-        )
+    /// 将主题色向白色方向提亮 amount∈[0,1]：脉冲动画“稍浅一点”的效果，
+    /// 基础颜色来自主题，明暗主题均自适应（不硬编码颜色）。
+    pub fn lighten(&self, color: (u8, u8, u8), amount: f32) -> Color {
+        let amount = amount.clamp(0.0, 1.0);
+        let mix = |x: u8| (x as f32 + (255.0 - x as f32) * amount).round() as u8;
+        map_color(self.capability, (mix(color.0), mix(color.1), mix(color.2)))
     }
 }
 

@@ -4,7 +4,13 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
+
+/// 脉冲动画的时间基准：进程启动时初始化。
+/// 注意不能用 Instant::now().elapsed()——那是“当前时刻到当前时刻”，恒为 0，
+/// 会导致波形静止不动。
+static ANIM_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 pub fn render(f: &mut Frame, area: Rect, app: &AppState, pos: Duration, dur: Duration) {
     let w = area.width as usize;
@@ -34,15 +40,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppState, pos: Duration, dur: Dur
 
     let line = if app.player.seeking {
         // 宿主正在后台加载跳转目标：已播放区域（横线部分）显示从左向右的
-        // 脉冲波，颜色在主题色 accent2 与 text 之间随波动态插值（不硬编码颜色）。
-        let now = Instant::now();
-        let phase = now.elapsed().as_secs_f32() * 7.0;
+        // 脉冲波，颜色 = 当前进度条颜色（主题色 accent2）稍作提亮，随波动态
+        // 变化，基础颜色来自主题，不硬编码颜色。
+        let phase = ANIM_EPOCH.elapsed().as_secs_f32() * 7.0;
         let mut spans = Vec::with_capacity(knob + 2);
         for x in 0..knob {
             let wave = ((phase - x as f32 * 0.3).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-            let color = app
-                .theme
-                .blend(app.theme.palette.accent2, app.theme.palette.text, wave);
+            let color = app.theme.lighten(app.theme.palette.accent2, 0.25 * wave);
             spans.push(Span::styled("─", Style::default().fg(color)));
         }
         spans.push(Span::styled(
