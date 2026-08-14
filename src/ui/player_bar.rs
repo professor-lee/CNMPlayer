@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 /// 注意不能用 Instant::now().elapsed()——那是“当前时刻到当前时刻”，恒为 0，
 /// 会导致波形静止不动。
 static ANIM_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// 单个浅色脉冲带从左端扫到右端的周期（秒）
+const PULSE_PERIOD_SECS: f32 = 1.4;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub const PLAYER_BAR_HEIGHT: u16 = 5;
@@ -200,13 +203,22 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         let mut spans = Vec::new();
 
         if app.is_seeking() {
-            // 正在后台加载跳转目标：已播放区域（横线部分）显示从左向右的脉冲波，
-            // 颜色 = 当前进度条颜色（主题色 accent3）稍作提亮，随波动态变化，
-            // 基础颜色来自主题，不硬编码颜色。
-            let phase = ANIM_EPOCH.elapsed().as_secs_f32() * 7.0;
+            // 正在后台加载跳转目标：单个浅色脉冲带从已播放区域最左侧向右移动，
+            // 先慢后快（二次缓动）；颜色 = 当前进度条颜色（主题色 accent3）
+            // 稍作提亮，基础颜色来自主题，不硬编码颜色。
+            let cycle = (ANIM_EPOCH.elapsed().as_secs_f32() / PULSE_PERIOD_SECS).fract();
+            let eased = cycle * cycle; // 先慢后快
+            let width = filled.max(1) as f32;
+            let center = eased * (width - 1.0);
+            let band_half = (width * 0.08).max(1.0);
             for x in 0..filled {
-                let wave = ((phase - x as f32 * 0.3).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-                let color = app.theme.lighten(app.theme.palette.accent3, 0.25 * wave);
+                let d = (x as f32 - center).abs();
+                let amount = if d <= band_half {
+                    0.25 * (d / band_half * std::f32::consts::FRAC_PI_2).cos()
+                } else {
+                    0.0
+                };
+                let color = app.theme.lighten(app.theme.palette.accent3, amount);
                 spans.push(Span::styled(
                     "▁",
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
