@@ -650,9 +650,13 @@ pub async fn run(
         }
 
         // frame pacing
+        // 使用异步 sleep 而非 std::thread::sleep：本应用跑在单线程 compio 运行时上，
+        // 阻塞式 sleep 会让 executor/proactor（含流媒体下载任务）在整个睡眠期间停摆，
+        // 导致全屏页切到未缓存的下一首时下载冻结、播放卡在歌曲开头。
+        // 异步 sleep 会把执行权交还给运行时，后台下载得以持续推进。
         let elapsed = frame_start.elapsed();
         if elapsed < frame_dt {
-            std::thread::sleep(frame_dt - elapsed);
+            compio::time::sleep(frame_dt - elapsed).await;
         }
 
         if tui.should_quit {
