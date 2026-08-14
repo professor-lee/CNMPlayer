@@ -90,6 +90,7 @@ pub struct HostPlaybackRuntimeSnapshot {
     pub repeat_mode: HostRepeatMode,
     pub position: Duration,
     pub volume: f32,
+    pub seeking: bool,
 }
 
 #[derive(Debug, Clone)]

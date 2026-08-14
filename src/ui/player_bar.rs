@@ -4,7 +4,7 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub const PLAYER_BAR_HEIGHT: u16 = 5;
@@ -193,7 +193,29 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
         let mut spans = Vec::new();
 
-        if buffer_filled == 0 {
+        if app.is_seeking() {
+            // 正在后台加载跳转目标：已播放区域（横线部分）显示从左向右的脉冲波，
+            // 颜色在主题色 accent3 与 text 之间随波动态插值（不硬编码颜色）。
+            let now = Instant::now();
+            let phase = now.elapsed().as_secs_f32() * 7.0;
+            for x in 0..filled {
+                let wave = ((phase - x as f32 * 0.3).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+                let color =
+                    app.theme
+                        .blend(app.theme.palette.accent3, app.theme.palette.text, wave);
+                spans.push(Span::styled(
+                    "▁",
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
+            let remaining = progress_w.saturating_sub(filled);
+            if remaining > 0 {
+                spans.push(Span::styled(
+                    "▁".repeat(remaining as usize),
+                    Style::default().fg(app.theme.color_surface()),
+                ));
+            }
+        } else if buffer_filled == 0 {
             // No buffer data (cached/unknown progress): accent3 for played, buff for remaining
             if filled > 0 {
                 spans.push(Span::styled(

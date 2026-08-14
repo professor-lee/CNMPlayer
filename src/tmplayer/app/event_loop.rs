@@ -413,6 +413,11 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         changed = true;
     }
 
+    if app.player.seeking != runtime.seeking {
+        app.player.seeking = runtime.seeking;
+        changed = true;
+    }
+
     if app.player.position != runtime.position {
         app.player.position = runtime.position;
         changed = true;
@@ -609,7 +614,10 @@ pub async fn run(
             }
         }
 
-        if app.player.mode == PlayMode::Idle && app.player.playback == PlaybackState::Playing {
+        if app.player.mode == PlayMode::Idle
+            && app.player.playback == PlaybackState::Playing
+            && !app.player.seeking
+        {
             let dt = frame_start.saturating_duration_since(app.last_frame);
             if dt > Duration::from_millis(0) {
                 let next = app.player.position.saturating_add(dt);

@@ -199,6 +199,8 @@ pub struct PlayerState {
     pub volume: f32,
     pub repeat_mode: RepeatMode,
     pub liked: bool,
+    /// 宿主正在后台加载跳转目标（进度条显示脉冲加载动画）
+    pub seeking: bool,
     pub track: TrackMetadata,
 }
 
@@ -211,6 +213,7 @@ impl Default for PlayerState {
             volume: 0.0,
             repeat_mode: RepeatMode::Sequence,
             liked: false,
+            seeking: false,
             track: TrackMetadata::default(),
         }
     }
@@ -492,6 +495,11 @@ impl AppState {
 
     pub fn should_continuous_redraw(&self) -> bool {
         if self.player.playback == PlaybackState::Playing {
+            return true;
+        }
+
+        // 后台加载跳转目标时保持重绘，驱动进度条脉冲动画
+        if self.player.seeking {
             return true;
         }
 

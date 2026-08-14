@@ -80,6 +80,16 @@ impl Theme {
     pub fn color_accent3(&self) -> Color {
         map_color(self.capability, self.palette.accent3)
     }
+
+    /// 按 t∈[0,1] 在两种主题色之间插值（脉冲动画等动态高亮，颜色全部来自主题）。
+    pub fn blend(&self, a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> Color {
+        let t = t.clamp(0.0, 1.0);
+        let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+        map_color(
+            self.capability,
+            (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2)),
+        )
+    }
 }
 
 impl Default for Theme {

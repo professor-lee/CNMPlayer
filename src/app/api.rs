@@ -27,11 +27,6 @@ impl ApiState {
         self.cookie.as_deref()
     }
 
-    /// Get the HTTP client for streaming playback.
-    pub fn http_client(&self) -> &Client {
-        &self.http
-    }
-
     pub fn set_cookie(&mut self, cookie: String) {
         self.cookie = Some(cookie.clone());
         self.client.set_cookie(cookie);

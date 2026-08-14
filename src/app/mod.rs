@@ -1532,6 +1532,7 @@ pub struct FullscreenRuntimeSnapshot {
     pub repeat_mode: PlaybackRepeatMode,
     pub position: Duration,
     pub volume: f32,
+    pub seeking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2074,7 +2075,12 @@ impl App {
     }
 
     pub fn playback_position(&self) -> Duration {
-        self.audio_player.position()
+        self.audio_player.display_position()
+    }
+
+    /// 是否正在后台加载跳转目标（进度条据此显示脉冲加载动画）。
+    pub fn is_seeking(&self) -> bool {
+        self.audio_player.is_seeking()
     }
 
     pub fn playback_duration(&self) -> Duration {
@@ -2257,7 +2263,7 @@ impl App {
 
         let payload = MprisSyncPayload {
             playback: self.playback_state,
-            position: self.audio_player.position(),
+            position: self.audio_player.display_position(),
             track: if metadata_changed {
                 self.now_playing.clone()
             } else {
@@ -2281,7 +2287,7 @@ impl App {
             now_playing_liked: self.now_playing_liked,
             state: self.playback_state,
             repeat_mode: self.playback_repeat_mode,
-            position: self.audio_player.position(),
+            position: self.audio_player.display_position(),
         }
     }
 
@@ -2291,8 +2297,9 @@ impl App {
             now_playing_liked: self.now_playing_liked,
             state: self.playback_state,
             repeat_mode: self.playback_repeat_mode,
-            position: self.audio_player.position(),
+            position: self.audio_player.display_position(),
             volume: self.audio_player.volume(),
+            seeking: self.audio_player.is_seeking(),
         }
     }
 
@@ -3085,7 +3092,6 @@ impl App {
             Ok(url) => {
                 let (progress_tx, progress_rx) = see::sync::channel((0, 0));
                 match StreamingReader::new(
-                    &self.api.http_client(),
                     &url,
                     path.clone(),
                     self.api.session_cookie(),

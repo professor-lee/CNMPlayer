@@ -66,6 +66,7 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
             },
             position: runtime.position,
             volume: runtime.volume,
+            seeking: runtime.seeking,
         }
     }
 
@@ -305,10 +306,17 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             ui::draw_settings(frame, app);
         })?;
 
+        // 后台加载跳转目标期间加快重绘，让进度条脉冲动画保持流畅
+        let redraw_sleep = if app.is_seeking() {
+            Duration::from_millis(33)
+        } else {
+            Duration::from_secs(1)
+        };
+
         select_biased! {
             f = input.next().fuse() => if let Some(f) = f { f(app).await },
             _ = wait_cava_event(&mut app.cava).fuse() => (),
-            _ = sleep(Duration::from_secs(1)).fuse() => (),
+            _ = sleep(redraw_sleep).fuse() => (),
         }
     }
 }
