@@ -58,6 +58,8 @@ const SEARCH_RESULT_PAGE_SIZE: usize = 50;
 const SEARCH_BOX_TARGET_HEIGHT: u16 = 3;
 /// 搜索框滑出动画时长（time-based，与帧率解耦）
 const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
+/// 主页侧边栏滑出动画时长（time-based，与帧率解耦）
+const HOME_SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
 const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 const SETTINGS_ROOT_ITEMS: usize = 10;
 const SETTINGS_PLAYBACK_ITEMS: usize = 9;
@@ -627,6 +629,10 @@ pub struct HomeSidebarState {
     pub created_scroll_offset: usize,
     pub collected_scroll_offset: usize,
     pub anim_progress: f32,
+    /// 滑出/收起动画起始时刻（None = 无进行中动画）
+    pub anim_started_at: Option<Instant>,
+    /// 动画起始时的 progress 值（支持动画中途反向切换）
+    pub anim_from: f32,
     pub status_line: String,
 }
 
@@ -647,6 +653,8 @@ impl Default for HomeSidebarState {
             created_scroll_offset: 0,
             collected_scroll_offset: 0,
             anim_progress: 0.0,
+            anim_started_at: None,
+            anim_from: 0.0,
             status_line: String::new(),
         }
     }
@@ -1833,6 +1841,7 @@ impl App {
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
         self.tick_search_box_animation();
+        self.tick_home_sidebar_animation();
         self.tick_startup_loading();
 
         if self.page == Page::Login && self.login.method == LoginMethod::Qr {
@@ -2088,8 +2097,9 @@ impl App {
         self.audio_player.is_seeking()
     }
 
-    /// 是否有进行中的动画需要高频重绘（进度条脉冲、搜索框滑出、启动加载）。
-    /// 主事件循环据此在动画期间从 1s 空闲节流切换到 ~30fps 重绘。
+    /// 是否有进行中的动画需要高频重绘（进度条脉冲、搜索框滑出、侧边栏
+    /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
+    /// 到 ~30fps 重绘。
     pub fn should_continuous_redraw(&self) -> bool {
         if self.is_seeking() {
             return true;
@@ -2098,6 +2108,9 @@ impl App {
             if started_at.elapsed() < SEARCH_BOX_ANIM_DURATION {
                 return true;
             }
+        }
+        if self.home_sidebar.anim_started_at.is_some() {
+            return true;
         }
         if self.page == Page::Loading && self.startup_loading_progress < 1.0 {
             return true;
@@ -2477,14 +2490,12 @@ impl App {
 
         if self.home_sidebar.expanded {
             self.home_sidebar.expanded = false;
-            let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
-            self.home_sidebar.anim_progress = target;
+            self.animate_home_sidebar();
             return;
         }
 
         self.home_sidebar.expanded = true;
-        let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
-        self.home_sidebar.anim_progress = target;
+        self.animate_home_sidebar();
 
         if !self.home_sidebar.created_playlists.is_empty()
             || !self.home_sidebar.collected_playlists.is_empty()
@@ -4319,8 +4330,7 @@ impl App {
             match key.code {
                 KeyCode::Esc => {
                     self.home_sidebar.expanded = false;
-                    let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
-                    self.home_sidebar.anim_progress = target;
+                    self.animate_home_sidebar();
                 }
                 KeyCode::Up | KeyCode::BackTab => self.home_sidebar.focus_prev(),
                 KeyCode::Down | KeyCode::Tab => self.home_sidebar.focus_next(),
@@ -4408,6 +4418,43 @@ impl App {
             self.search_box_anim_height = 0;
             self.search_box_anim_started_at = None;
         }
+    }
+
+    fn tick_home_sidebar_animation(&mut self) {
+        let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
+        let state = &mut self.home_sidebar;
+        if (state.anim_progress - target).abs() < 0.001 {
+            state.anim_progress = target;
+            state.anim_started_at = None;
+            return;
+        }
+        // time-based：从 anim_from 向 target 插值（ease-out），支持中途反向
+        let started_at = state.anim_started_at.get_or_insert_with(Instant::now);
+        let elapsed = started_at.elapsed();
+        let t = if elapsed >= HOME_SIDEBAR_ANIM_DURATION {
+            1.0
+        } else {
+            elapsed.as_secs_f32() / HOME_SIDEBAR_ANIM_DURATION.as_secs_f32()
+        };
+        let eased = cubic_bezier_y(t, 0.0, 0.7);
+        state.anim_progress = state.anim_from + (target - state.anim_from) * eased;
+        if t >= 1.0 {
+            state.anim_progress = target;
+            state.anim_started_at = None;
+        }
+    }
+
+    /// 启动一次侧边栏滑出/收起动画（记录当前进度作为动画起点，支持中途反向）。
+    fn animate_home_sidebar(&mut self) {
+        let target = if self.home_sidebar.expanded { 1.0 } else { 0.0 };
+        if (self.home_sidebar.anim_progress - target).abs() < 0.001 {
+            // 已在目标态：无需动画，清掉可能的残留状态
+            self.home_sidebar.anim_progress = target;
+            self.home_sidebar.anim_started_at = None;
+            return;
+        }
+        self.home_sidebar.anim_from = self.home_sidebar.anim_progress;
+        self.home_sidebar.anim_started_at = Some(Instant::now());
     }
 
     fn begin_startup_loading(&mut self) {
