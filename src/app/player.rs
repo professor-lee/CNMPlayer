@@ -249,17 +249,20 @@ impl AudioPlayer {
         };
 
         // 后台执行一次阻塞 seek（不重试）：目标位置尚未下载时，音频线程会在
-        // StreamingReader::seek 中等待（仅播放冻结，无死锁——下载跑在独立线程上），
-        // 下载追到目标后 seek 完成、自动继续播放。主任务（UI）不受影响。
+        // StreamingReader::seek 中等待（仅播放冻结，无死锁——下载任务在主
+        // runtime 上持续推进），下载追到目标后 seek 完成、自动继续播放。
+        // 用 spawn_blocking 跑在共享阻塞线程池上（不新建 OS 线程），
+        // detach 不等待结果：seek 完成的收尾由 seek_state 的代数机制处理。
         let player = self.player.clone();
         let seek_state = self.seek_state.clone();
-        std::thread::spawn(move || {
+        compio::runtime::spawn_blocking(move || {
             let _ = player.try_seek(target);
             let mut state = seek_state.lock().unwrap();
             if state.generation == generation {
                 state.pending_target = None;
             }
-        });
+        })
+        .detach();
 
         Ok(())
     }

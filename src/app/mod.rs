@@ -3092,6 +3092,7 @@ impl App {
             Ok(url) => {
                 let (progress_tx, progress_rx) = see::sync::channel((0, 0));
                 match StreamingReader::new(
+                    self.api.http_client(),
                     &url,
                     path.clone(),
                     self.api.session_cookie(),

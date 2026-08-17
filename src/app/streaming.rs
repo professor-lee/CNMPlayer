@@ -25,15 +25,15 @@ pub struct StreamingReader {
     file: File,
     /// Temp path for cleanup on drop
     tmp_path: PathBuf,
-    /// 下载线程句柄（下载跑在专用 OS 线程 + 独立 compio 运行时上）
-    _writer: std::thread::JoinHandle<()>,
+    /// 下载任务句柄（下载作为主 runtime 上的异步任务运行；Drop 时取消）
+    _writer: compio::runtime::JoinHandle<()>,
 }
 
 #[derive(Default)]
 struct StreamingState {
     /// How many bytes have been written to the file
     downloaded: AtomicU64,
-    /// Total content length（0 表示响应头尚未到达）
+    /// Total content length（new() 中取得响应头后设置，之后不变）
     total: AtomicU64,
     /// Mutex + Condvar for efficient blocking waits
     condvar: Condvar,
@@ -43,7 +43,7 @@ struct StreamingState {
     done: AtomicU64, // 0 = in_progress, 1 = done, 2 = error
     /// Error message if done == 2
     error: Mutex<Option<String>>,
-    /// 切歌/丢弃时置位：唤醒阻塞中的 read/seek 等待，并让下载线程提前退出
+    /// 切歌/丢弃时置位：唤醒阻塞中的 read/seek 等待，并让下载任务提前退出
     cancelled: AtomicBool,
 }
 
@@ -72,8 +72,9 @@ impl From<&StreamingReader> for StreamingReaderHandle {
 
 impl Drop for StreamingReader {
     fn drop(&mut self) {
-        // 通知下载线程尽早退出（不把半截文件写入正式缓存），
+        // 通知下载任务尽早退出（不把半截文件写入正式缓存），
         // 并唤醒可能阻塞在 read/seek 等待上的线程。
+        // _writer 句柄随之 drop，任务被取消。
         self.state.cancelled.store(true, Ordering::SeqCst);
         self.state.condvar.notify_all();
         // Clean up temp file if download not complete
@@ -84,29 +85,11 @@ impl Drop for StreamingReader {
     }
 }
 
-/// 在下载线程内新建 HTTP 客户端：cyper::Client 不是 Send（内部含 Rc），
-/// 无法跨线程共享；默认头与 App::new 中保持一致。
-fn build_download_client() -> Result<cyper::Client> {
-    use http::header;
-    let mut headers = header::HeaderMap::new();
-    headers.insert(
-        header::USER_AGENT,
-        header::HeaderValue::from_static("Mozilla/5.0 CNMPlayer/0.1"),
-    );
-    headers.insert(
-        header::REFERER,
-        header::HeaderValue::from_static("https://music.163.com/"),
-    );
-    cyper::Client::builder()
-        .default_headers(headers)
-        .build()
-        .context("build download http client")
-}
-
 impl StreamingReader {
     /// Create a new streaming reader, starting the background download.
     /// Progress updates are sent to `progress_tx` via a watch channel.
     pub async fn new(
+        http: &cyper::Client,
         url: &str,
         cache_path: PathBuf,
         cookie: Option<&str>,
@@ -128,78 +111,45 @@ impl StreamingReader {
 
         let state = Arc::new(StreamingState::default());
 
-        // 下载放在专用 OS 线程 + 独立 compio 运行时上执行：主线程是单线程
-        // 运行时，一旦被同步阻塞（例如 seek 等待加载）就会让挂在它上面的
-        // 任务全部停摆。独立线程保证“播放冻结等待加载”必然被推进。
-        // cyper 的响应流绑定创建它的运行时，因此整个请求也要在下载线程内发起。
-        let state_for_thread = state.clone();
-        let url = url.to_string();
-        let cookie = cookie.map(str::to_owned);
-        let tmp_path_for_thread = tmp_path.clone();
-        let cache_path_for_thread = cache_path.clone();
-        let writer = std::thread::spawn(move || {
-            let result = (|| -> Result<()> {
-                let runtime = compio::runtime::Runtime::builder()
-                    .build()
-                    .context("build download runtime")?;
-                runtime.block_on(async {
-                    // cyper::Client 不是 Send（内部含 Rc），因此在下载线程内新建
-                    let http_client = build_download_client()?;
-                    let mut request = http_client.get(&url)?;
-                    if let Some(cookie) = cookie.as_deref() {
-                        request = request.header("Cookie", cookie)?;
-                    }
-                    let response = request.send().await?;
-                    let total = response
-                        .content_length()
-                        .context("Music no content_length!")?;
-                    state_for_thread.total.store(total, Ordering::SeqCst);
-                    state_for_thread.condvar.notify_all();
+        // 请求与下载都跑在主 runtime 上：seek 的阻塞等待已在后台阻塞线程池
+        // （spawn_blocking），主线程不会被同步阻塞，下载任务可正常推进。
+        // cyper 的响应流绑定发起请求的运行时，因此请求与响应消费必须在同一
+        // runtime 内完成；client 是主线程共享的（!Send，仅主线程使用）。
+        let mut request = http.get(url)?;
+        if let Some(cookie) = cookie {
+            request = request.header("Cookie", cookie)?;
+        }
+        let response = request.send().await?;
+        let total = response
+            .content_length()
+            .context("Music no content_length!")?;
+        state.total.store(total, Ordering::SeqCst);
 
-                    download_streaming(
-                        response,
-                        tmp_path_for_thread,
-                        cache_path_for_thread,
-                        state_for_thread.clone(),
-                        progress_tx,
-                    )
-                    .await
-                })
-            })();
+        // 后台下载：写缓存文件并在完成后重命名到正式路径。
+        // 任务句柄保存在 reader 上；reader 被丢弃时句柄随之 drop，任务被取消。
+        let state_for_task = state.clone();
+        let tmp_for_task = tmp_path.clone();
+        let writer = compio::runtime::spawn(async move {
+            let result = download_streaming(
+                response,
+                tmp_for_task,
+                cache_path,
+                state_for_task.clone(),
+                progress_tx,
+            )
+            .await;
             if let Err(e) = result {
-                let mut err = state_for_thread.error.lock().unwrap();
+                let mut err = state_for_task.error.lock().unwrap();
                 *err = Some(e.to_string());
-                state_for_thread.done.store(2, Ordering::SeqCst);
-                state_for_thread.condvar.notify_all();
+                state_for_task.done.store(2, Ordering::SeqCst);
+                state_for_task.condvar.notify_all();
             }
         });
-
-        // 等待响应头（content-length）就绪或失败后返回
-        loop {
-            if state.done.load(Ordering::SeqCst) == 2 {
-                let msg = state
-                    .error
-                    .lock()
-                    .unwrap()
-                    .clone()
-                    .unwrap_or_else(|| "download failed".to_string());
-                return Err(anyhow::anyhow!("{msg}"));
-            }
-            if state.total.load(Ordering::SeqCst) > 0 {
-                break;
-            }
-            let mut guard = state.file_lock.lock().unwrap();
-            let (next, _) = state
-                .condvar
-                .wait_timeout(guard, Duration::from_secs(1))
-                .unwrap();
-            guard = next;
-        }
 
         let reader = Self {
             state,
             file,
-            tmp_path: tmp_path,
+            tmp_path,
             _writer: writer,
         };
 
