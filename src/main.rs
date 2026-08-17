@@ -306,8 +306,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             ui::draw_settings(frame, app);
         })?;
 
-        // 后台加载跳转目标期间加快重绘，让进度条脉冲动画保持流畅
-        let redraw_sleep = if app.is_seeking() {
+        // 动画进行中（进度条脉冲、搜索框滑出、启动加载）加快重绘，
+        // 其余时间保持 1s 空闲节流（省电、减少终端输出）。
+        let redraw_sleep = if app.should_continuous_redraw() {
             Duration::from_millis(33)
         } else {
             Duration::from_secs(1)

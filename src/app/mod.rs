@@ -56,6 +56,8 @@ use streaming::StreamingReader;
 const MAX_INPUT_LEN: usize = 64;
 const SEARCH_RESULT_PAGE_SIZE: usize = 50;
 const SEARCH_BOX_TARGET_HEIGHT: u16 = 3;
+/// 搜索框滑出动画时长（time-based，与帧率解耦）
+const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
 const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 const SETTINGS_ROOT_ITEMS: usize = 10;
 const SETTINGS_PLAYBACK_ITEMS: usize = 9;
@@ -1638,6 +1640,8 @@ pub struct App {
     pub search_box_input: String,
     pub search_box_cursor: usize,
     pub search_box_anim_height: u16,
+    /// 搜索框滑出动画的起始时刻（time-based 动画基准）
+    pub search_box_anim_started_at: Option<Instant>,
     pub settings_selected: usize,
     pub settings_playback_selected: usize,
     pub settings_keybind_selected: usize,
@@ -1744,6 +1748,7 @@ impl App {
             search_box_input: String::new(),
             search_box_cursor: 0,
             search_box_anim_height: 0,
+            search_box_anim_started_at: None,
             settings_selected: 0,
             settings_playback_selected: 0,
             settings_keybind_selected: 0,
@@ -2081,6 +2086,23 @@ impl App {
     /// 是否正在后台加载跳转目标（进度条据此显示脉冲加载动画）。
     pub fn is_seeking(&self) -> bool {
         self.audio_player.is_seeking()
+    }
+
+    /// 是否有进行中的动画需要高频重绘（进度条脉冲、搜索框滑出、启动加载）。
+    /// 主事件循环据此在动画期间从 1s 空闲节流切换到 ~30fps 重绘。
+    pub fn should_continuous_redraw(&self) -> bool {
+        if self.is_seeking() {
+            return true;
+        }
+        if let Some(started_at) = self.search_box_anim_started_at {
+            if started_at.elapsed() < SEARCH_BOX_ANIM_DURATION {
+                return true;
+            }
+        }
+        if self.page == Page::Loading && self.startup_loading_progress < 1.0 {
+            return true;
+        }
+        false
     }
 
     pub fn playback_duration(&self) -> Duration {
@@ -4370,10 +4392,21 @@ impl App {
 
     fn tick_search_box_animation(&mut self) {
         if matches!(self.overlay, Some(Overlay::SearchBox)) {
+            // time-based：动画时长与驱动帧率解耦，与 startup_loading 同风格
+            let started_at = self.search_box_anim_started_at.get_or_insert_with(Instant::now);
+            let elapsed = started_at.elapsed();
+            if elapsed >= SEARCH_BOX_ANIM_DURATION {
+                self.search_box_anim_height = SEARCH_BOX_TARGET_HEIGHT;
+                return;
+            }
+            let t = elapsed.as_secs_f32() / SEARCH_BOX_ANIM_DURATION.as_secs_f32();
+            // ease-out：先快后慢（cubic-bezier y 曲线，p2y=0.7）
+            let eased = cubic_bezier_y(t, 0.0, 0.7);
             self.search_box_anim_height =
-                (self.search_box_anim_height + 1).min(SEARCH_BOX_TARGET_HEIGHT);
+                ((SEARCH_BOX_TARGET_HEIGHT as f32) * eased).round() as u16;
         } else {
             self.search_box_anim_height = 0;
+            self.search_box_anim_started_at = None;
         }
     }
 
@@ -4569,12 +4602,14 @@ impl App {
         self.search_box_input = self.search.query.clone();
         self.search_box_cursor = char_count(&self.search_box_input);
         self.search_box_anim_height = 0;
+        self.search_box_anim_started_at = Some(Instant::now());
         self.overlay = Some(Overlay::SearchBox);
     }
 
     fn close_overlay(&mut self) {
         self.overlay = None;
         self.search_box_anim_height = 0;
+        self.search_box_anim_started_at = None;
     }
 
     async fn execute_search_from_box(&mut self) {
