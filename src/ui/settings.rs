@@ -465,14 +465,17 @@ fn draw_about_version(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// 内容区的噪点：蓄力期逐格随机填满，迸发期自下向上扫过消失。
+/// 内容区的噪点：蓄力期逐格随机填满，填满后静止，迸发期自下向上消失。
 ///
-/// 两阶段共用一套逐格绘制：蓄力决定“哪些格已填充”，迸发决定“扫过线以下才保留”。
+/// 两阶段共用一套逐格绘制：蓄力决定“哪些格已填充”，迸发决定“哪些行还没被扫掉”。
 #[cfg(feature = "easter-egg")]
 fn draw_about_noise(frame: &mut Frame, app: &App, inner: Rect) {
     use crate::app::EasterEggPhase;
     use crate::render::mascot;
     use ratatui::style::Style;
+
+    /// 噪点每隔这么久换一次配色：蓄力期借此闪动，迸发期冻结不再变化。
+    const NOISE_STEP_MS: u64 = 60;
 
     if inner.width == 0 || inner.height == 0 {
         return;
@@ -482,28 +485,30 @@ fn draw_about_noise(frame: &mut Frame, app: &App, inner: Rect) {
     };
     let elapsed = started_at.elapsed();
 
-    // sweep_top：扫过线，此行及以上的噪点已经散去（迸发期才生效）。
-    let (progress, sweep_top) = match app.about_egg.phase {
+    // sweep_line：扫过线。此行及其下方的噪点已被扫掉，露出下面的彩蛋内容；
+    // 线以上仍是噪点。线从内容区下沿起步、向上推进，因此消失是自下向上的。
+    let (progress, sweep_line, seed) = match app.about_egg.phase {
         EasterEggPhase::Charging => {
             let p = (elapsed.as_secs_f32() / mascot::CHARGE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
-            (p, inner.y)
+            let seed = elapsed.as_millis() as u64 / NOISE_STEP_MS;
+            (p, inner.y + inner.height, seed)
         }
         EasterEggPhase::Bursting => {
             let t = (elapsed.as_secs_f32() / mascot::BURST_DURATION.as_secs_f32()).clamp(0.0, 1.0);
-            // 扫过线从内容区下沿一路推到上沿，走完即全部散去。
             let swept = (t * inner.height as f32).round() as u16;
-            (1.0, inner.y + inner.height.saturating_sub(swept))
+            // 冻结在蓄力最后一帧的配色上，填满之后噪点便不再闪动。
+            let seed = mascot::CHARGE_DURATION.as_millis() as u64 / NOISE_STEP_MS;
+            (1.0, inner.y + inner.height.saturating_sub(swept), seed)
         }
         EasterEggPhase::Idle | EasterEggPhase::Active => return,
     };
 
-    // 噪点在原地闪动，制造“正在积蓄”的观感。
-    let seed = elapsed.as_millis() as u64 / 60;
     let buf = frame.buffer_mut();
 
     for row in 0..inner.height {
         let y = inner.y + row;
-        if y < sweep_top {
+        // 已被扫过的行留给下层的彩蛋内容。
+        if y >= sweep_line {
             continue;
         }
         for col in 0..inner.width {
