@@ -111,10 +111,23 @@ impl Tui {
                 return;
             }
 
+            // The hint line gets a row of its own: the panels below are full-height
+            // `Borders::ALL`, so sharing the last row would paint text over their
+            // bottom border.
+            let (content_area, hint_area) = if app.config.show_hints {
+                let split = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Min(1), Constraint::Length(1)])
+                    .split(size);
+                (split[0], split[1])
+            } else {
+                (size, Rect::default())
+            };
+
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(33), Constraint::Percentage(67)])
-                .split(size);
+                .split(content_area);
             layout_out.left = cols[0];
             layout_out.right = cols[1];
             layout_out.left_width = cols[0].width;
@@ -237,20 +250,14 @@ impl Tui {
                 );
             }
 
-            if app.config.show_hints {
+            if app.config.show_hints && hint_area.height > 0 {
                 let hint_text = lang_text(app, "Ctrl+K 打开按键绑定", "Ctrl+K open keybinds");
-                let hint_area = Rect {
-                    x: size.x,
-                    y: size.y + size.height.saturating_sub(1),
-                    width: size.width,
-                    height: 1,
-                };
                 let mut hint_style = Style::default().fg(app.theme.color_subtext());
                 if !app.config.transparent_background {
                     hint_style = hint_style.bg(app.theme.color_base());
                 }
                 f.render_widget(
-                    Paragraph::new(format!(" {}", hint_text)).style(hint_style),
+                    Paragraph::new(format!("  {}", hint_text)).style(hint_style),
                     hint_area,
                 );
             }
@@ -399,16 +406,21 @@ fn render_settings_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState)
         "about".to_string(),
     ];
 
-    for (idx, text) in items.iter().enumerate() {
-        let style = if idx == app.settings_selected {
+    let item_style = |idx: usize| {
+        if idx == app.settings_selected {
             Style::default()
                 .fg(app.theme.color_accent2())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.theme.color_text())
-        };
+        }
+    };
+
+    // "about" is pinned to the bottom row of the modal; the rest stack from the top.
+    let about_idx = items.len().saturating_sub(1);
+    for (idx, text) in items.iter().take(about_idx).enumerate() {
         f.render_widget(
-            Paragraph::new(Line::styled(format!("  {}", text), style)),
+            Paragraph::new(Line::styled(format!("  {}", text), item_style(idx))),
             Rect {
                 x: rows[1].x,
                 y: rows[1].y + idx as u16,
@@ -418,7 +430,13 @@ fn render_settings_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState)
         );
     }
 
-    f.render_widget(Paragraph::new(""), rows[2]);
+    f.render_widget(
+        Paragraph::new(Line::styled(
+            format!("  {}", items[about_idx]),
+            item_style(about_idx),
+        )),
+        rows[2],
+    );
 }
 
 fn render_acoustid_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState) {
@@ -825,14 +843,14 @@ fn render_about_text(f: &mut ratatui::Frame, area: Rect, app: &mut AppState) {
         rendered.extend(desc_lines);
     }
 
-    let max_line_len = rendered
+    let max_line_width = rendered
         .iter()
-        .map(|l| l.chars().count())
+        .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
         .max()
         .unwrap_or(0)
         .min(max_width);
     let block_h = rendered.len() as u16;
-    let block_w = max_line_len.max(1) as u16;
+    let block_w = max_line_width.max(1) as u16;
     let offset_x = (area.width.saturating_sub(block_w)) / 2;
     let offset_y = if block_h <= area.height {
         (area.height.saturating_sub(block_h)) / 2
@@ -872,14 +890,19 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
         return vec![String::new()];
     }
 
+    // Wrap on display columns, not char count: CJK text is twice as wide as it
+    // is long, and counting chars would clip it.
     let mut out: Vec<String> = Vec::new();
     let mut buf = String::new();
+    let mut buf_width = 0usize;
     for ch in s.chars() {
-        if buf.chars().count() >= width {
-            out.push(buf);
-            buf = String::new();
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if buf_width + ch_width > width && !buf.is_empty() {
+            out.push(std::mem::take(&mut buf));
+            buf_width = 0;
         }
         buf.push(ch);
+        buf_width += ch_width;
     }
     if !buf.is_empty() {
         out.push(buf);

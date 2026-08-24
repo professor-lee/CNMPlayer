@@ -100,19 +100,23 @@ fn draw_root_settings(frame: &mut Frame, app: &App, inner: Rect) {
         "about".to_string(),
     ];
 
+    let item_style = |idx: usize| {
+        if idx == app.settings_selected {
+            Style::default()
+                .fg(app.theme.color_accent2())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.color_text())
+        }
+    };
+
+    // "about" is pinned to the bottom row of the modal; the rest stack from the top.
+    let about_idx = items.len().saturating_sub(1);
     let lines: Vec<Line> = items
         .iter()
+        .take(about_idx)
         .enumerate()
-        .map(|(idx, text)| {
-            let style = if idx == app.settings_selected {
-                Style::default()
-                    .fg(app.theme.color_accent2())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.color_text())
-            };
-            Line::from(Span::styled(format!("  {}", text), style))
-        })
+        .map(|(idx, text)| Line::from(Span::styled(format!("  {}", text), item_style(idx))))
         .collect();
 
     frame.render_widget(
@@ -121,7 +125,11 @@ fn draw_root_settings(frame: &mut Frame, app: &App, inner: Rect) {
     );
 
     frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(app.theme.color_surface())),
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {}", items[about_idx]),
+            item_style(about_idx),
+        )))
+        .style(Style::default().bg(app.theme.color_surface())),
         rows[2],
     );
 }
@@ -428,14 +436,14 @@ fn draw_about_text(frame: &mut Frame, app: &App, area: Rect) {
         rendered.extend(desc_lines);
     }
 
-    let max_line_len = rendered
+    let max_line_width = rendered
         .iter()
-        .map(|l| l.chars().count())
+        .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
         .max()
         .unwrap_or(0)
         .min(max_width);
     let block_h = rendered.len() as u16;
-    let block_w = max_line_len.max(1) as u16;
+    let block_w = max_line_width.max(1) as u16;
     let offset_x = (area.width.saturating_sub(block_w)) / 2;
     let offset_y = if block_h <= area.height {
         (area.height.saturating_sub(block_h)) / 2
@@ -475,14 +483,19 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
         return vec![String::new()];
     }
 
+    // Wrap on display columns, not char count: CJK text is twice as wide as it
+    // is long, and counting chars would clip it.
     let mut out: Vec<String> = Vec::new();
     let mut buf = String::new();
+    let mut buf_width = 0usize;
     for ch in s.chars() {
-        if buf.chars().count() >= width {
-            out.push(buf);
-            buf = String::new();
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if buf_width + ch_width > width && !buf.is_empty() {
+            out.push(std::mem::take(&mut buf));
+            buf_width = 0;
         }
         buf.push(ch);
+        buf_width += ch_width;
     }
     if !buf.is_empty() {
         out.push(buf);

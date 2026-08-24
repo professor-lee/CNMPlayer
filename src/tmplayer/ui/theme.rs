@@ -27,6 +27,7 @@ impl ThemeName {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_label(&self) -> &'static str {
         match self {
             ThemeName::System => "System",
