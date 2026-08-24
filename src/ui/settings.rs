@@ -8,7 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-pub fn draw_settings_modal(frame: &mut Frame, app: &App) {
+pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
     if matches!(app.overlay, Some(Overlay::SettingsAbout)) {
@@ -353,7 +353,7 @@ fn draw_keybind_settings(frame: &mut Frame, app: &App, inner: Rect) {
     );
 }
 
-fn draw_about_modal(frame: &mut Frame, app: &App, size: Rect) {
+fn draw_about_modal(frame: &mut Frame, app: &mut App, size: Rect) {
     let area = centered_rect(70, 22, size);
     frame.render_widget(Clear, area);
 
@@ -368,16 +368,29 @@ fn draw_about_modal(frame: &mut Frame, app: &App, size: Rect) {
         horizontal: 1,
         vertical: 1,
     });
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(inner);
 
-    draw_about_braille(frame, app, chunks[0]);
-    draw_about_text(frame, app, chunks[1]);
+    #[cfg(feature = "easter-egg")]
+    let mascot_active = app.about_egg.phase == crate::app::EasterEggPhase::Active;
+    #[cfg(not(feature = "easter-egg"))]
+    let mascot_active = false;
 
-    let info = about_info();
-    let version = format!("v{}", info.version);
+    if mascot_active {
+        #[cfg(feature = "easter-egg")]
+        draw_about_mascot(frame, app, inner);
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(inner);
+
+        draw_about_braille(frame, app, chunks[0]);
+        draw_about_text(frame, app, chunks[1]);
+
+        // 迸发的噪点带压在原有内容之上，划过后离开内容区。
+        #[cfg(feature = "easter-egg")]
+        draw_about_burst(frame, app, inner);
+    }
+
     let y = area.y + area.height.saturating_sub(1);
     let version_area = Rect {
         x: area.x.saturating_add(1),
@@ -385,14 +398,170 @@ fn draw_about_modal(frame: &mut Frame, app: &App, size: Rect) {
         width: area.width.saturating_sub(2),
         height: 1,
     };
+
+    #[cfg(feature = "easter-egg")]
+    {
+        app.about_egg.version_hit = Some(crate::app::HitRect {
+            x: version_area.x,
+            y: version_area.y,
+            width: version_area.width,
+            height: version_area.height,
+        });
+    }
+
+    draw_about_version(frame, app, version_area);
+}
+
+/// 底部的版本信息行。蓄力期间这里会浮现流动的彩色噪点，激活后换成形象的表情。
+fn draw_about_version(frame: &mut Frame, app: &App, area: Rect) {
+    #[cfg(feature = "easter-egg")]
+    {
+        use crate::app::EasterEggPhase;
+        use crate::render::mascot;
+
+        if app.about_egg.phase == EasterEggPhase::Charging
+            && let Some(started_at) = app.about_egg.phase_started_at
+        {
+            let elapsed = started_at.elapsed();
+            // 噪点由稀到密，体现正在蓄力；seed 随时间推进让噪点流动起来。
+            let density =
+                (elapsed.as_secs_f32() / mascot::CHARGE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+            let seed = elapsed.as_millis() as u64 / 40;
+            frame.render_widget(
+                Paragraph::new(mascot::noise_line(
+                    area.width,
+                    seed,
+                    density,
+                    app.theme.color_surface(),
+                )),
+                area,
+            );
+            return;
+        }
+
+        if app.about_egg.phase == EasterEggPhase::Active {
+            frame.render_widget(
+                Paragraph::new(mascot::MASCOT_CAPTION)
+                    .alignment(Alignment::Center)
+                    .style(
+                        Style::default()
+                            .fg(app.theme.color_accent2())
+                            .bg(app.theme.color_surface()),
+                    ),
+                area,
+            );
+            return;
+        }
+    }
+
+    let info = about_info();
     frame.render_widget(
-        Paragraph::new(version).alignment(Alignment::Center).style(
-            Style::default()
-                .fg(app.theme.color_subtext())
-                .bg(app.theme.color_surface()),
-        ),
-        version_area,
+        Paragraph::new(format!("v{}", info.version))
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(app.theme.color_subtext())
+                    .bg(app.theme.color_surface()),
+            ),
+        area,
     );
+}
+
+/// 迸发：一条噪点带自内容区底部升起，划过整个内容区后从上沿离开。
+#[cfg(feature = "easter-egg")]
+fn draw_about_burst(frame: &mut Frame, app: &App, inner: Rect) {
+    use crate::app::EasterEggPhase;
+    use crate::render::mascot;
+
+    if app.about_egg.phase != EasterEggPhase::Bursting || inner.height == 0 {
+        return;
+    }
+    let Some(started_at) = app.about_egg.phase_started_at else {
+        return;
+    };
+
+    /// 噪点带的厚度（字符行）。
+    const BAND_H: u16 = 4;
+
+    let elapsed = started_at.elapsed();
+    let t = (elapsed.as_secs_f32() / mascot::BURST_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+
+    // 带底从内容区下沿之外起步，一路走到上沿之外，因此行程是高度加一个带厚。
+    let travel = inner.height.saturating_add(BAND_H) as f32;
+    let band_bottom = inner.y as f32 + inner.height as f32 - t * travel;
+    let band_top = band_bottom - BAND_H as f32;
+
+    let seed = elapsed.as_millis() as u64 / 24;
+    for row in 0..inner.height {
+        let y = inner.y + row;
+        let yf = y as f32;
+        if yf < band_top || yf >= band_bottom {
+            continue;
+        }
+
+        // 带子中间最亮、边缘渐隐，迸发因此有明确的头尾。
+        let pos = (band_bottom - yf) / BAND_H as f32;
+        let density = 1.0 - (pos - 0.5).abs() * 2.0;
+
+        frame.render_widget(
+            Paragraph::new(mascot::noise_line(
+                inner.width,
+                seed.wrapping_add(row as u64),
+                density,
+                app.theme.color_surface(),
+            )),
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+    }
+}
+
+/// 彩蛋激活后的形象：在内容区居中，点击可播放果冻动画。
+#[cfg(feature = "easter-egg")]
+fn draw_about_mascot(frame: &mut Frame, app: &mut App, inner: Rect) {
+    use crate::render::{mascot, mascot_frames};
+
+    let frame_data = match app.about_egg.jelly_started_at {
+        Some(started_at) => mascot::jelly_frame(started_at.elapsed()),
+        None => mascot::idle_frame(),
+    };
+
+    // 命中区域固定用基准尺寸：果冻形变时形象忽胖忽瘦，跟着变会让点击手感发飘。
+    let hit_rect = centered_in(inner, mascot_frames::BASE_WIDTH, mascot_frames::BASE_HEIGHT);
+    app.about_egg.mascot_hit = Some(crate::app::HitRect {
+        x: hit_rect.x,
+        y: hit_rect.y,
+        width: hit_rect.width,
+        height: hit_rect.height,
+    });
+
+    let draw_rect = centered_in(inner, frame_data.width, frame_data.height);
+    if draw_rect.width == 0 || draw_rect.height == 0 {
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(mascot::frame_lines(frame_data, app.theme.color_surface()))
+            .style(Style::default().bg(app.theme.color_surface())),
+        draw_rect,
+    );
+}
+
+/// 在 `outer` 内居中放置一个 `width` x `height` 的区域，并裁到 `outer` 之内。
+#[cfg(feature = "easter-egg")]
+fn centered_in(outer: Rect, width: u16, height: u16) -> Rect {
+    let w = width.min(outer.width);
+    let h = height.min(outer.height);
+    Rect {
+        x: outer.x + outer.width.saturating_sub(w) / 2,
+        y: outer.y + outer.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 fn draw_about_braille(frame: &mut Frame, app: &App, area: Rect) {

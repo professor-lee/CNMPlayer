@@ -3,6 +3,11 @@ name = "cnmplayer"
 version = "0.5.0"
 edition = "2024"
 
+[features]
+default = ["easter-egg"]
+# about 弹窗里的形象彩蛋。默认编入；用 --no-default-features 可剔除。
+easter-egg = []
+
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
