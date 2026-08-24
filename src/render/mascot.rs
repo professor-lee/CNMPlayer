@@ -3,9 +3,9 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::time::Duration;
 
-/// 蓄力：版本行背景的彩色噪点由稀疏到密集，体现正在积蓄。
+/// 蓄力：内容区被半格噪点逐个填满。
 pub const CHARGE_DURATION: Duration = Duration::from_millis(1200);
-/// 迸发：噪点带自下向上划过弹窗内容区并离开。
+/// 迸发：填满的噪点自下向上扫过并消失，扫过处即已是彩蛋内容。
 pub const BURST_DURATION: Duration = Duration::from_millis(600);
 /// 果冻：点击形象后的一轮 squash & stretch。
 pub const JELLY_DURATION: Duration = Duration::from_millis(500);
@@ -17,7 +17,7 @@ pub const TRIGGER_CLICKS: u8 = 10;
 pub const MASCOT_CAPTION: &str = "₍^ >ヮ<^₎ .ᐟ.ᐟ";
 
 /// 噪点以半个字符高度为一个像素：上下半格各自取色，由 `▀` 的前景/背景呈现。
-const HALF_BLOCK: &str = "▀";
+pub const HALF_BLOCK: &str = "▀";
 
 /// 形象静止时的帧。
 pub fn idle_frame() -> &'static MascotFrame {
@@ -79,26 +79,34 @@ pub fn frame_lines(frame: &MascotFrame, fallback_bg: Color) -> Vec<Line<'static>
     lines
 }
 
-/// 一行彩色噪点。
+/// 判断某格在蓄力进度 `progress`（0..=1）时是否已被填充。
 ///
-/// `density` 为 0..=1：越大越密，用来体现蓄力过程；`seed` 随时间推进使噪点流动。
-/// 每个字符单元含上下两个半格像素，因此纵向分辨率是半个字符高度。
-pub fn noise_line(width: u16, seed: u64, density: f32, fallback_bg: Color) -> Line<'static> {
-    let density = density.clamp(0.0, 1.0);
-    let mut spans = Vec::with_capacity(width as usize);
+/// 每格由散列得到一个固定的“入场时刻”，因此填充顺序看似随机但每次一致，
+/// 且无需维护乱序表 —— 只要比较该格的入场时刻是否已被进度越过。
+pub fn cell_filled(x: u16, y: u16, progress: f32) -> bool {
+    let h = hash3(x as u64, y as u64, 0xF11);
+    let threshold = (h & 0xFFFF) as f32 / 65535.0;
+    threshold < progress.clamp(0.0, 1.0)
+}
 
-    for x in 0..width {
-        let upper = noise_color(x as u64, 0, seed, density);
-        let lower = noise_color(x as u64, 1, seed, density);
-        spans.push(Span::styled(
-            HALF_BLOCK.to_string(),
-            Style::default()
-                .fg(upper.unwrap_or(fallback_bg))
-                .bg(lower.unwrap_or(fallback_bg)),
-        ));
-    }
+/// 单个噪点字符的上下半格取色，两半都必然点亮。
+///
+/// 用于蓄力填充与迸发扫过：那里需要的是实心噪点，稀疏与否由填充进度体现，
+/// 而不是由密度体现。
+pub fn noise_cell_colors(x: u16, y: u16, seed: u64) -> (Color, Color) {
+    let upper = vivid_color(hash3(x as u64, y as u64 * 2, seed));
+    let lower = vivid_color(hash3(x as u64, y as u64 * 2 + 1, seed));
+    (upper, lower)
+}
 
-    Line::from(spans)
+/// 逆时针沿边框环绕的噪点取色。
+///
+/// `perimeter_pos` 是该格在边框环上的位置（0 起，沿逆时针递增），`phase` 随时间
+/// 推进使颜色沿环流动。
+pub fn border_flow_color(perimeter_pos: u16, phase: u64) -> Color {
+    // 取色索引沿环递进：相邻格颜色相近，整体呈现流动而非闪烁。
+    let step = (perimeter_pos as u64).wrapping_add(phase);
+    vivid_color(hash3(step, 0, 0x5EED))
 }
 
 fn indexed_or(code: u16, fallback: Color) -> Color {
@@ -109,19 +117,9 @@ fn indexed_or(code: u16, fallback: Color) -> Color {
     }
 }
 
-/// 取某个半格像素的噪点颜色；返回 `None` 表示该像素本轮不点亮。
-fn noise_color(x: u64, half: u64, seed: u64, density: f32) -> Option<Color> {
-    let h = hash3(x, half, seed);
-
-    // 低位决定是否点亮，与取色位错开，避免密度和颜色相关。
-    let lit = (h & 0xFFFF) as f32 / 65535.0;
-    if lit > density {
-        return None;
-    }
-
-    // 取 256 色立方体（16..=231）中的鲜艳色，避开首尾的暗色与灰阶。
-    let idx = 16 + ((h >> 16) % 216) as u8;
-    Some(Color::Indexed(idx))
+/// 取 256 色立方体（16..=231）中的鲜艳色，避开首尾的暗色与灰阶。
+fn vivid_color(h: u64) -> Color {
+    Color::Indexed(16 + ((h >> 16) % 216) as u8)
 }
 
 /// 整数散列：噪点每帧要算数千次，避免浮点噪声函数的开销。

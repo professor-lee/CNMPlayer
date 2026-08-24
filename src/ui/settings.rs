@@ -370,25 +370,29 @@ fn draw_about_modal(frame: &mut Frame, app: &mut App, size: Rect) {
     });
 
     #[cfg(feature = "easter-egg")]
-    let mascot_active = app.about_egg.phase == crate::app::EasterEggPhase::Active;
+    let phase = app.about_egg.phase;
+    #[cfg(feature = "easter-egg")]
+    let mascot_active = phase == crate::app::EasterEggPhase::Active;
     #[cfg(not(feature = "easter-egg"))]
     let mascot_active = false;
 
+    // 迸发期间扫过线之上已经是彩蛋内容，因此那一段也走形象分支。
     if mascot_active {
         #[cfg(feature = "easter-egg")]
         draw_about_mascot(frame, app, inner);
     } else {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(inner);
-
-        draw_about_braille(frame, app, chunks[0]);
-        draw_about_text(frame, app, chunks[1]);
-
-        // 迸发的噪点带压在原有内容之上，划过后离开内容区。
         #[cfg(feature = "easter-egg")]
-        draw_about_burst(frame, app, inner);
+        if phase == crate::app::EasterEggPhase::Bursting {
+            draw_about_mascot(frame, app, inner);
+        } else {
+            draw_about_static(frame, app, inner);
+        }
+        #[cfg(not(feature = "easter-egg"))]
+        draw_about_static(frame, app, inner);
+
+        // 蓄力的逐格填充与迸发的扫过都压在内容之上。
+        #[cfg(feature = "easter-egg")]
+        draw_about_noise(frame, app, inner);
     }
 
     let y = area.y + area.height.saturating_sub(1);
@@ -410,48 +414,42 @@ fn draw_about_modal(frame: &mut Frame, app: &mut App, size: Rect) {
     }
 
     draw_about_version(frame, app, version_area);
+
+    // 彩蛋激活后边框（含底部文字所在的那一行）逆时针循环流动噪点色。
+    #[cfg(feature = "easter-egg")]
+    if mascot_active {
+        draw_about_border_flow(frame, app, area);
+    }
 }
 
-/// 底部的版本信息行。蓄力期间这里会浮现流动的彩色噪点，激活后换成形象的表情。
+/// 未触发彩蛋时的 about 内容：左侧点阵形象 + 右侧文本。
+fn draw_about_static(frame: &mut Frame, app: &App, inner: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(inner);
+
+    draw_about_braille(frame, app, chunks[0]);
+    draw_about_text(frame, app, chunks[1]);
+}
+
+/// 底部的版本信息行。激活后换成形象的表情。
 fn draw_about_version(frame: &mut Frame, app: &App, area: Rect) {
     #[cfg(feature = "easter-egg")]
-    {
-        use crate::app::EasterEggPhase;
+    if app.about_egg.phase == crate::app::EasterEggPhase::Active {
         use crate::render::mascot;
 
-        if app.about_egg.phase == EasterEggPhase::Charging
-            && let Some(started_at) = app.about_egg.phase_started_at
-        {
-            let elapsed = started_at.elapsed();
-            // 噪点由稀到密，体现正在蓄力；seed 随时间推进让噪点流动起来。
-            let density =
-                (elapsed.as_secs_f32() / mascot::CHARGE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
-            let seed = elapsed.as_millis() as u64 / 40;
-            frame.render_widget(
-                Paragraph::new(mascot::noise_line(
-                    area.width,
-                    seed,
-                    density,
-                    app.theme.color_surface(),
-                )),
-                area,
-            );
-            return;
-        }
-
-        if app.about_egg.phase == EasterEggPhase::Active {
-            frame.render_widget(
-                Paragraph::new(mascot::MASCOT_CAPTION)
-                    .alignment(Alignment::Center)
-                    .style(
-                        Style::default()
-                            .fg(app.theme.color_accent2())
-                            .bg(app.theme.color_surface()),
-                    ),
-                area,
-            );
-            return;
-        }
+        frame.render_widget(
+            Paragraph::new(mascot::MASCOT_CAPTION)
+                .alignment(Alignment::Center)
+                .style(
+                    Style::default()
+                        .fg(app.theme.color_accent2())
+                        .bg(app.theme.color_surface()),
+                ),
+            area,
+        );
+        return;
     }
 
     let info = about_info();
@@ -467,56 +465,105 @@ fn draw_about_version(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// 迸发：一条噪点带自内容区底部升起，划过整个内容区后从上沿离开。
+/// 内容区的噪点：蓄力期逐格随机填满，迸发期自下向上扫过消失。
+///
+/// 两阶段共用一套逐格绘制：蓄力决定“哪些格已填充”，迸发决定“扫过线以下才保留”。
 #[cfg(feature = "easter-egg")]
-fn draw_about_burst(frame: &mut Frame, app: &App, inner: Rect) {
+fn draw_about_noise(frame: &mut Frame, app: &App, inner: Rect) {
     use crate::app::EasterEggPhase;
     use crate::render::mascot;
+    use ratatui::style::Style;
 
-    if app.about_egg.phase != EasterEggPhase::Bursting || inner.height == 0 {
+    if inner.width == 0 || inner.height == 0 {
         return;
     }
     let Some(started_at) = app.about_egg.phase_started_at else {
         return;
     };
-
-    /// 噪点带的厚度（字符行）。
-    const BAND_H: u16 = 4;
-
     let elapsed = started_at.elapsed();
-    let t = (elapsed.as_secs_f32() / mascot::BURST_DURATION.as_secs_f32()).clamp(0.0, 1.0);
 
-    // 带底从内容区下沿之外起步，一路走到上沿之外，因此行程是高度加一个带厚。
-    let travel = inner.height.saturating_add(BAND_H) as f32;
-    let band_bottom = inner.y as f32 + inner.height as f32 - t * travel;
-    let band_top = band_bottom - BAND_H as f32;
+    // sweep_top：扫过线，此行及以上的噪点已经散去（迸发期才生效）。
+    let (progress, sweep_top) = match app.about_egg.phase {
+        EasterEggPhase::Charging => {
+            let p = (elapsed.as_secs_f32() / mascot::CHARGE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+            (p, inner.y)
+        }
+        EasterEggPhase::Bursting => {
+            let t = (elapsed.as_secs_f32() / mascot::BURST_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+            // 扫过线从内容区下沿一路推到上沿，走完即全部散去。
+            let swept = (t * inner.height as f32).round() as u16;
+            (1.0, inner.y + inner.height.saturating_sub(swept))
+        }
+        EasterEggPhase::Idle | EasterEggPhase::Active => return,
+    };
 
-    let seed = elapsed.as_millis() as u64 / 24;
+    // 噪点在原地闪动，制造“正在积蓄”的观感。
+    let seed = elapsed.as_millis() as u64 / 60;
+    let buf = frame.buffer_mut();
+
     for row in 0..inner.height {
         let y = inner.y + row;
-        let yf = y as f32;
-        if yf < band_top || yf >= band_bottom {
+        if y < sweep_top {
             continue;
         }
+        for col in 0..inner.width {
+            let x = inner.x + col;
+            if !mascot::cell_filled(col, row, progress) {
+                continue;
+            }
+            let (upper, lower) = mascot::noise_cell_colors(col, row, seed);
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(mascot::HALF_BLOCK)
+                    .set_style(Style::default().fg(upper).bg(lower));
+            }
+        }
+    }
+}
 
-        // 带子中间最亮、边缘渐隐，迸发因此有明确的头尾。
-        let pos = (band_bottom - yf) / BAND_H as f32;
-        let density = 1.0 - (pos - 0.5).abs() * 2.0;
+/// 彩蛋激活后的边框：噪点色沿边框逆时针循环流动。
+///
+/// 覆盖整圈边框，底部那一行正是版本文字所在处，因此文字也随之流动。
+#[cfg(feature = "easter-egg")]
+fn draw_about_border_flow(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::render::mascot;
 
-        frame.render_widget(
-            Paragraph::new(mascot::noise_line(
-                inner.width,
-                seed.wrapping_add(row as u64),
-                density,
-                app.theme.color_surface(),
-            )),
-            Rect {
-                x: inner.x,
-                y,
-                width: inner.width,
-                height: 1,
-            },
-        );
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    let Some(started_at) = app.about_egg.mascot_activated_at else {
+        return;
+    };
+
+    // 相位随时间推进，颜色便沿环行进；除数越小流动越快。
+    let phase = started_at.elapsed().as_millis() as u64 / 45;
+
+    let left = area.x;
+    let right = area.x + area.width - 1;
+    let top = area.y;
+    let bottom = area.y + area.height - 1;
+
+    // 逆时针：左上 → 下（左边）→ 右（底边）→ 上（右边）→ 左（顶边）。
+    let mut ring: Vec<(u16, u16)> =
+        Vec::with_capacity((area.width as usize + area.height as usize) * 2 - 4);
+    for y in top..=bottom {
+        ring.push((left, y));
+    }
+    for x in (left + 1)..=right {
+        ring.push((x, bottom));
+    }
+    for y in (top..bottom).rev() {
+        ring.push((right, y));
+    }
+    for x in ((left + 1)..right).rev() {
+        ring.push((x, top));
+    }
+
+    let buf = frame.buffer_mut();
+    for (pos, (x, y)) in ring.into_iter().enumerate() {
+        let color = mascot::border_flow_color(pos as u16, phase);
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_fg(color);
+        }
     }
 }
 

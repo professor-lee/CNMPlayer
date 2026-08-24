@@ -1542,6 +1542,8 @@ pub struct AboutEasterEgg {
     pub phase: EasterEggPhase,
     /// 当前阶段的起始时刻（蓄力、迸发各自计时）。
     pub phase_started_at: Option<Instant>,
+    /// 进入激活态的时刻，用于驱动边框噪点的环形流动。
+    pub mascot_activated_at: Option<Instant>,
     /// 最近一次点击形象的时刻；`None` 表示形象静止。
     pub jelly_started_at: Option<Instant>,
     /// 版本行与形象的命中区域，绘制时写回、鼠标事件时查询。
@@ -2162,13 +2164,9 @@ impl App {
         if self.page == Page::Loading && self.startup_loading_progress < 1.0 {
             return true;
         }
-        // about 彩蛋：蓄力/迸发/果冻期间需要高频重绘；形象静止时不需要。
+        // about 彩蛋：蓄力/迸发在动，激活后边框噪点也持续流动。
         #[cfg(feature = "easter-egg")]
-        if matches!(
-            self.about_egg.phase,
-            EasterEggPhase::Charging | EasterEggPhase::Bursting
-        ) || self.about_egg.jelly_started_at.is_some()
-        {
+        if self.about_egg.phase != EasterEggPhase::Idle {
             return true;
         }
         false
@@ -4548,6 +4546,7 @@ impl App {
                 if elapsed >= mascot::BURST_DURATION {
                     self.about_egg.phase = EasterEggPhase::Active;
                     self.about_egg.phase_started_at = None;
+                    self.about_egg.mascot_activated_at = Some(Instant::now());
                 }
             }
             EasterEggPhase::Idle | EasterEggPhase::Active => {}
