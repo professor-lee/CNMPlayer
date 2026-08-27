@@ -13,3 +13,5 @@ dhat-heap.json
 dhat.svg
 
 /.remember
+
+.DS_Store
