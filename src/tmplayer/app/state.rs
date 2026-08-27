@@ -1,3 +1,4 @@
+use crate::app::{SIDEBAR_ANIM_DURATION, cubic_bezier_y};
 use crate::data::config::Language;
 use crate::tmplayer::audio::smoother::Ema;
 use crate::tmplayer::data::config::Config;
@@ -305,9 +306,11 @@ pub struct AppState {
 
     pub last_mouse_click: Option<(Instant, u16, u16)>,
 
-    // playlist slide animation
+    // playlist slide animation（time-based，与帧率解耦；与主页侧边栏共用时长/缓动）
     pub playlist_slide_x: i16,
     pub playlist_slide_target_x: i16,
+    playlist_slide_from_x: i16,
+    playlist_slide_started_at: Option<Instant>,
 
     pub last_frame: Instant,
 }
@@ -409,6 +412,8 @@ impl AppState {
             last_mouse_click: None,
             playlist_slide_x: 0,
             playlist_slide_target_x: 0,
+            playlist_slide_from_x: 0,
+            playlist_slide_started_at: None,
             last_frame: Instant::now(),
         }
     }
@@ -490,6 +495,44 @@ impl AppState {
             if now.duration_since(*at) > Duration::from_millis(1500) {
                 self.toast = None;
             }
+        }
+
+        self.tick_playlist_slide(now);
+    }
+
+    /// 启动一次侧边栏滑入/滑出。记录当前位置作为起点，因此支持动画中途反向。
+    pub fn start_playlist_slide(&mut self, target_x: i16) {
+        if self.playlist_slide_x == target_x && self.playlist_slide_target_x == target_x {
+            return;
+        }
+        self.playlist_slide_from_x = self.playlist_slide_x;
+        self.playlist_slide_target_x = target_x;
+        // 起始时刻留给下一次 tick 填，避免这里再取一次 Instant::now()。
+        self.playlist_slide_started_at = None;
+    }
+
+    fn tick_playlist_slide(&mut self, now: Instant) {
+        if self.playlist_slide_x == self.playlist_slide_target_x {
+            self.playlist_slide_started_at = None;
+            return;
+        }
+
+        let started_at = *self.playlist_slide_started_at.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(started_at);
+        let t = if elapsed >= SIDEBAR_ANIM_DURATION {
+            1.0
+        } else {
+            elapsed.as_secs_f32() / SIDEBAR_ANIM_DURATION.as_secs_f32()
+        };
+
+        let eased = cubic_bezier_y(t, 0.0, 0.7);
+        let from = f32::from(self.playlist_slide_from_x);
+        let target = f32::from(self.playlist_slide_target_x);
+        self.playlist_slide_x = (from + (target - from) * eased).round() as i16;
+
+        if t >= 1.0 {
+            self.playlist_slide_x = self.playlist_slide_target_x;
+            self.playlist_slide_started_at = None;
         }
     }
 

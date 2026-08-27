@@ -313,15 +313,19 @@ fn render_separator(f: &mut Frame, area: Rect, app: &AppState) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let line = "─".repeat(area.width as usize);
-    f.render_widget(
-        Paragraph::new(line).style(
-            Style::default()
-                .fg(app.theme.color_subtext())
-                .bg(app.theme.color_surface()),
-        ),
-        area,
-    );
+    // 左右各外扩一格，盖住面板自身的竖边框，让分隔线以 ├───┤ 与其接上。
+    let line_area = Rect {
+        x: area.x.saturating_sub(1),
+        y: area.y,
+        width: area.width.saturating_add(2),
+        height: area.height,
+    };
+    let style = Style::default()
+        .fg(app.theme.color_subtext())
+        .bg(app.theme.color_surface());
+    let dashes = usize::from(line_area.width).saturating_sub(2);
+    let line = format!("├{}┤", "─".repeat(dashes));
+    f.render_widget(Paragraph::new(line).style(style), line_area);
 }
 
 fn render_playlist_list(f: &mut Frame, area: Rect, app: &AppState) {

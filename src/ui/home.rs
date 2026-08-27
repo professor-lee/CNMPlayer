@@ -151,7 +151,8 @@ fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
             continue;
         }
 
-        let text_rows = if inner_rect.height >= 4 { 2 } else { 1 };
+        // 文字只占底部一行，空出来的那行让封面吃掉。
+        let text_rows = 1;
         let cover_height = inner_rect.height.saturating_sub(text_rows);
         let cover_rect = Rect {
             x: inner_rect.x,
@@ -183,10 +184,7 @@ fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
             );
         }
 
-        let (title, subtitle) = {
-            let tile = &app.home.tiles[index];
-            (tile.title.clone(), tile.subtitle.clone())
-        };
+        let title = app.home.tiles[index].title.clone();
 
         let title_style = if focused {
             Style::default()
@@ -195,12 +193,8 @@ fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             Style::default().fg(app.theme.color_text())
         };
-        let subtitle_style = Style::default().fg(app.theme.color_subtext());
 
-        let mut lines = vec![Line::from(Span::styled(title, title_style))];
-        if text_rows > 1 {
-            lines.push(Line::from(Span::styled(subtitle, subtitle_style)));
-        }
+        let lines = vec![Line::from(Span::styled(title, title_style))];
 
         let content = Paragraph::new(lines)
             .wrap(Wrap { trim: true })

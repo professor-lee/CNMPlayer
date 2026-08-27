@@ -58,8 +58,8 @@ const SEARCH_RESULT_PAGE_SIZE: usize = 50;
 const SEARCH_BOX_TARGET_HEIGHT: u16 = 3;
 /// 搜索框滑出动画时长（time-based，与帧率解耦）
 const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
-/// 主页侧边栏滑出动画时长（time-based，与帧率解耦）
-const HOME_SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
+/// 侧边栏滑出动画时长（time-based，与帧率解耦）。主页与全屏播放页共用。
+pub(crate) const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
 const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 const SETTINGS_ROOT_ITEMS: usize = 10;
 const SETTINGS_PLAYBACK_ITEMS: usize = 9;
@@ -4571,10 +4571,10 @@ impl App {
         // time-based：从 anim_from 向 target 插值（ease-out），支持中途反向
         let started_at = state.anim_started_at.get_or_insert_with(Instant::now);
         let elapsed = started_at.elapsed();
-        let t = if elapsed >= HOME_SIDEBAR_ANIM_DURATION {
+        let t = if elapsed >= SIDEBAR_ANIM_DURATION {
             1.0
         } else {
-            elapsed.as_secs_f32() / HOME_SIDEBAR_ANIM_DURATION.as_secs_f32()
+            elapsed.as_secs_f32() / SIDEBAR_ANIM_DURATION.as_secs_f32()
         };
         let eased = cubic_bezier_y(t, 0.0, 0.7);
         state.anim_progress = state.anim_from + (target - state.anim_from) * eased;
@@ -6633,7 +6633,7 @@ fn startup_loading_progress_at(
     (base + (1.0 - base) * complete_eased).clamp(0.0, 1.0)
 }
 
-fn cubic_bezier_y(t: f32, p1y: f32, p2y: f32) -> f32 {
+pub(crate) fn cubic_bezier_y(t: f32, p1y: f32, p2y: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     let inv = 1.0 - t;
     let a = 3.0 * inv * inv * t * p1y;

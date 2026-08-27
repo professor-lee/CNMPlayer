@@ -785,10 +785,8 @@ async fn handle_action(
         }
         Action::CloseOverlay => {
             if app.overlay == Overlay::Playlist {
-                // close animation will be driven by ui
-                // actual state closed after fully slid out
-                // here just set target
-                app.playlist_slide_target_x = -(layout.left_width as i16);
+                // 面板状态立即关闭，滑出动画由 tick 推进到位。
+                app.start_playlist_slide(-(layout.left_width as i16));
                 app.overlay = Overlay::None;
             } else if app.overlay == Overlay::AcoustIdModal
                 || app.overlay == Overlay::BarSettingsModal
@@ -802,7 +800,7 @@ async fn handle_action(
         }
         Action::TogglePlaylist => {
             if app.overlay == Overlay::Playlist {
-                app.playlist_slide_target_x = -(layout.left_width as i16);
+                app.start_playlist_slide(-(layout.left_width as i16));
                 app.overlay = Overlay::None;
             } else {
                 // 需求：打开 playlist 时聚焦当前播放的歌曲。
@@ -831,7 +829,7 @@ async fn handle_action(
                 }
                 app.overlay = Overlay::Playlist;
                 app.playlist_slide_x = -(layout.left_width as i16);
-                app.playlist_slide_target_x = 0;
+                app.start_playlist_slide(0);
             }
         }
         Action::Confirm => match app.overlay {

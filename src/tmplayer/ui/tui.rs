@@ -189,16 +189,7 @@ impl Tui {
                 let collapsing = app.overlay != Overlay::Playlist
                     && app.playlist_slide_x > app.playlist_slide_target_x;
 
-                // advance animation
-                let step: i16 = 4;
-                if app.playlist_slide_x < app.playlist_slide_target_x {
-                    app.playlist_slide_x =
-                        (app.playlist_slide_x + step).min(app.playlist_slide_target_x);
-                } else if app.playlist_slide_x > app.playlist_slide_target_x {
-                    app.playlist_slide_x =
-                        (app.playlist_slide_x - step).max(app.playlist_slide_target_x);
-                }
-
+                // 动画推进在 AppState::tick 里完成，渲染只读取当前进度。
                 // Slide effect via visible width growth/shrink (x stays at left edge)
                 let full_w = cols[0].width as i16;
                 let visible_w = (full_w + app.playlist_slide_x).clamp(0, full_w) as u16;
