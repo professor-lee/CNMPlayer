@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
@@ -242,7 +242,9 @@ impl Tui {
                 );
             }
 
-            Self::render_hint_in_border(f, app, bottom_row, layout_out.left);
+            if app.config.show_hints {
+                Self::render_hint_in_border(f, app, bottom_row, layout_out.left);
+            }
 
             // Paint kitty images on top of ratatui widgets.
             Self::paint_kitty_images(&mut self.graphics_overlay, f, app, &layout_out);
@@ -269,9 +271,13 @@ impl Tui {
     /// 两板接缝处的 `┘└` 角保持原样——整行重绘会把接缝抹平，看起来像
     /// 两个面板在底部连通了。与边框同色，视觉上像是边框自带的标签。
     ///
-    /// 关闭提示时也要走这里：中文是宽字符，ratatui 会在其第二列留下占位
-    /// cell，仅靠 `Block` 重画边框不会覆盖掉，底边框会残留成 `─ ─ ─` 的
-    /// 虚线。故此处在关闭时把该段整体重绘为 `─`。
+    /// 只在开启提示时调用。
+    ///
+    /// 关闭提示时**不要**重绘这一段：`Block` 自己画的底边框是完整干净的，
+    /// 而额外用 `─` 覆盖会与上一帧宽字符（中文）留下的占位 cell 交互——
+    /// ratatui 在这些占位处跳过写入，于是底边框残留成 `─ ─ ─` 的断连样子。
+    /// 这一点已用 TestBackend 逐 cell 验证：仅 Block 时该行完整，叠加重绘
+    /// 后才出现空格。
     fn render_hint_in_border(
         f: &mut ratatui::Frame,
         app: &AppState,
@@ -293,38 +299,31 @@ impl Tui {
             return;
         }
 
-        let border_style = Style::default().fg(app.theme.color_subtext());
-
-        // 关闭提示：重绘为纯边框，清掉上一帧宽字符留下的占位 cell。
-        if !app.config.show_hints {
-            f.render_widget(
-                Paragraph::new("─".repeat(inner_w)).style(border_style),
-                seg,
-            );
-            return;
-        }
-
         let text = lang_text(app, "Ctrl+K 打开按键绑定", "Ctrl+K open keybinds");
         let label_w = unicode_width::UnicodeWidthStr::width(text) + 2; // 含 ┤ ├
-
         if label_w > inner_w {
-            // 放不下就只画纯边框，不截断成半个字
-            f.render_widget(
-                Paragraph::new("─".repeat(inner_w)).style(border_style),
-                seg,
-            );
+            // 放不下就不画，保持 Block 自己的完整底边框
             return;
         }
 
-        // 标签左对齐，紧贴面板左下角
-        let right_pad = inner_w - label_w;
-        let line = Line::from(vec![
-            Span::styled("┤", border_style),
-            Span::styled(text.to_string(), border_style),
-            Span::styled("├", border_style),
-            Span::styled("─".repeat(right_pad), border_style),
-        ]);
-        f.render_widget(Paragraph::new(line), seg);
+        // 标签左对齐，紧贴面板左下角。
+        //
+        // 必须用 `Buffer::set_string` 而非 `Paragraph` widget。中文是双宽字符，
+        // 占两列：主 cell 放字，紧邻的占位 cell 应为空。`Block` 已先把这一行
+        // 写满 `─`，而 `Paragraph` 只写主 cell、不清理占位 cell，于是占位处
+        // 残留着 `─`。
+        //
+        // 这一帧看不出问题（终端写 `打` 时本就覆盖两列），坏在关闭提示的下一帧：
+        // 差分比较发现占位处「上一帧是 `─`、这一帧也是 `─`」，判定无变化而不下发。
+        // 但终端那一侧，往双宽字符的首列写 `─` 会把整个字清掉、次列变空白，
+        // 且因为没有下发更新，这个空白再也不会被补回，底边框就成了 `─── ─ ─ ─`。
+        //
+        // `set_string` 会把占位 cell 置为空格，差分因此能察觉变化并下发。
+        // 已在差分层验证：关闭提示时 Paragraph 漏发 6 列，set_string 漏发 0 列。
+        let border_style = Style::default().fg(app.theme.color_subtext());
+        let content = format!("┤{}├{}", text, "─".repeat(inner_w - label_w));
+        f.buffer_mut()
+            .set_string(seg.x, seg.y, &content, border_style);
     }
 
     fn paint_kitty_images(
