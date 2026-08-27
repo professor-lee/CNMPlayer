@@ -24,6 +24,18 @@ const BASE62: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123
 // RSA 公钥 Base64 编码的 DER 数据（PKCS#8 / SubjectPublicKeyInfo 格式）
 const PUBLIC_KEY_DER_B64: &str = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDgtQn2JZ34ZC28NWYpAUd98iZ37BUrX/aKzmFbt7clFSs6sXqHauqKWqdtLkF2KexO40H1YTX8z2lSgBBOAxLsvaklV8k4cBFK9snQXE9/DDaFt6Rr7iVZMldczhC0JNgTz+SHXT6CBHuX3e9SdB1Ua44oncaTWz7OBGLbCiK45wIDAQAB";
 
+/// Lazily parsed RSA public key (weapi path only; parsed once instead of on
+/// every request).
+static RSA_PUBLIC_KEY: std::sync::LazyLock<RsaPublicKey> = std::sync::LazyLock::new(|| {
+    use base64::Engine;
+    use rsa::pkcs8::DecodePublicKey;
+
+    let der_bytes = base64::engine::general_purpose::STANDARD
+        .decode(PUBLIC_KEY_DER_B64)
+        .expect("Failed to decode RSA public key base64");
+    RsaPublicKey::from_public_key_der(&der_bytes).expect("Failed to parse RSA public key")
+});
+
 /// AES-128-CBC 加密，输出 Base64
 fn aes_cbc_encrypt_base64(plaintext: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> String {
     let cipher = Aes128CbcEnc::new(key.into(), iv.into());
@@ -50,14 +62,7 @@ fn aes_ecb_decrypt_hex(ciphertext_hex: &str, key: &[u8; 16]) -> Result<Vec<u8>, 
 /// RSA 加密（NONE / raw / textbook RSA，无 padding）
 /// 对应 Node.js: forge.publicKey.encrypt(str, 'NONE')
 fn rsa_encrypt_no_padding(plaintext: &[u8; 16]) -> String {
-    use base64::Engine;
-    use rsa::pkcs8::DecodePublicKey;
-
-    let der_bytes = base64::engine::general_purpose::STANDARD
-        .decode(PUBLIC_KEY_DER_B64)
-        .expect("Failed to decode RSA public key base64");
-
-    let public_key = RsaPublicKey::from_public_key_der(&der_bytes).unwrap();
+    let public_key = &*RSA_PUBLIC_KEY;
 
     let n = public_key.n().to_odd().unwrap();
 

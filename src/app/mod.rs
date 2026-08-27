@@ -1589,6 +1589,87 @@ async fn loop_lyric_fetch(
     }
 }
 
+#[derive(Debug, Clone)]
+struct LikeCheckRequest {
+    song_id: String,
+    cookie: Option<String>,
+}
+
+#[derive(Debug)]
+struct LikeCheckResult {
+    song_id: String,
+    liked: bool,
+}
+
+#[derive(Debug, Clone)]
+struct StreamUrlRequest {
+    song_id: String,
+    quality: String,
+    cookie: Option<String>,
+}
+
+#[derive(Debug)]
+struct StreamUrlResult {
+    song_id: String,
+    url: Result<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingStream {
+    song_id: String,
+    announce: bool,
+}
+
+async fn like_check_liked(api: &mut ApiState, song_id: &str) -> bool {
+    let Ok(song_id_num) = song_id.parse::<u64>() else {
+        return false;
+    };
+    let ids_json = format!("[{song_id_num}]");
+    let Ok(response) = api.song_like_check(&ids_json).await else {
+        return false;
+    };
+    if response_code(&response) != 200 {
+        return false;
+    }
+    parse_song_like_check_result(&response.body, song_id).unwrap_or(false)
+}
+
+async fn loop_like_check(
+    mut rx: UnboundedReceiver<LikeCheckRequest>,
+    tx: Sender<LikeCheckResult>,
+    mut api: ApiState,
+) {
+    while let Ok(req) = rx.recv().await {
+        if let Some(cookie) = &req.cookie {
+            api.set_cookie(cookie.to_string());
+        }
+        let liked = like_check_liked(&mut api, &req.song_id).await;
+        let _ = tx.send(LikeCheckResult {
+            song_id: req.song_id,
+            liked,
+        });
+    }
+}
+
+async fn loop_stream_url_fetch(
+    mut rx: UnboundedReceiver<StreamUrlRequest>,
+    tx: Sender<StreamUrlResult>,
+    mut api: ApiState,
+) {
+    while let Ok(req) = rx.recv().await {
+        if let Some(cookie) = &req.cookie {
+            api.set_cookie(cookie.to_string());
+        }
+        let url = api
+            .song_stream_url_with_quality(&req.song_id, &req.quality)
+            .await;
+        let _ = tx.send(StreamUrlResult {
+            song_id: req.song_id,
+            url,
+        });
+    }
+}
+
 pub struct App {
     pub config: Config,
     pub theme: Theme,
@@ -1646,6 +1727,12 @@ pub struct App {
     lyric_fetch_rx: Receiver<LyricFetchResult>,
     lyric_fetch_inflight_song_id: Option<String>,
     lyric_fetch_last_attempt_at: Option<Instant>,
+    like_fetch_tx: UnboundedSender<LikeCheckRequest>,
+    like_fetch_rx: Receiver<LikeCheckResult>,
+    like_fetch_inflight_song_id: Option<String>,
+    stream_url_tx: UnboundedSender<StreamUrlRequest>,
+    stream_url_rx: Receiver<StreamUrlResult>,
+    pending_stream: Option<PendingStream>,
     mpris_bridge: MprisBridge,
     mpris_last_sync_at: Instant,
     mpris_last_signature: Option<u64>,
@@ -1692,6 +1779,16 @@ impl App {
         let (lyric_fetch_tx, lyric_fetch_req_rx) = unbounded();
         let (lyric_fetch_res_tx, lyric_fetch_rx) = mpsc::channel::<LyricFetchResult>();
         let worker = loop_lyric_fetch(lyric_fetch_req_rx, lyric_fetch_res_tx, api.clone());
+        launch(worker);
+
+        let (like_fetch_tx, like_fetch_req_rx) = unbounded();
+        let (like_fetch_res_tx, like_fetch_rx) = mpsc::channel::<LikeCheckResult>();
+        let worker = loop_like_check(like_fetch_req_rx, like_fetch_res_tx, api.clone());
+        launch(worker);
+
+        let (stream_url_tx, stream_url_req_rx) = unbounded();
+        let (stream_url_res_tx, stream_url_rx) = mpsc::channel::<StreamUrlResult>();
+        let worker = loop_stream_url_fetch(stream_url_req_rx, stream_url_res_tx, api.clone());
         launch(worker);
 
         let mut app = Self {
@@ -1751,6 +1848,12 @@ impl App {
             lyric_fetch_rx,
             lyric_fetch_inflight_song_id: None,
             lyric_fetch_last_attempt_at: None,
+            like_fetch_tx,
+            like_fetch_rx,
+            like_fetch_inflight_song_id: None,
+            stream_url_tx,
+            stream_url_rx,
+            pending_stream: None,
             mpris_bridge,
             mpris_last_sync_at: Instant::now(),
             mpris_last_signature: None,
@@ -1760,12 +1863,6 @@ impl App {
             graphics_picker: Picker::halfblocks(),
         };
 
-        if let Ok(_) = Picker::from_query_stdio() {
-            // Don't use queried picker, this cause image layouted improperly on konsole.
-            // It's ok to not set this if we just use Halfblocks.
-
-            // app.graphics_picker = picker;
-        }
         if let Some(protocol) = app.config.graphics_protocol.to_ratatui_protocol() {
             app.graphics_picker.set_protocol_type(protocol);
         }
@@ -1802,6 +1899,8 @@ impl App {
         self.tick_audio().await;
         self.tick_cover_fetch();
         self.tick_lyric_fetch();
+        self.tick_like_fetch();
+        self.tick_stream_fetch().await;
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
         self.tick_search_box_animation();
@@ -2086,10 +2185,10 @@ impl App {
 
     pub fn main_spectrum_braille(&mut self) -> String {
         let mut out = String::with_capacity(10);
+        let bars = self.cava_bars();
         for i in 0..10 {
-            let bar = self.cava_bars();
-            let left = bar[i * 2].clamp(0.0, 1.0);
-            let right = bar[i * 2 + 1].clamp(0.0, 1.0);
+            let left = bars[i * 2].clamp(0.0, 1.0);
+            let right = bars[i * 2 + 1].clamp(0.0, 1.0);
             let left_h = (left * 4.0).round() as u8;
             let right_h = (right * 4.0).round() as u8;
             out.push(braille_from_two_bars(left_h.min(4), right_h.min(4)));
@@ -2483,7 +2582,7 @@ impl App {
 
         if self.is_liked_playlist(&playlist_id, Some(&title)) {
             let _ = self.refresh_liked_song_cache().await;
-            self.refresh_now_playing_like_state().await;
+            self.refresh_now_playing_like_state();
         }
 
         self.home.status_line = format!("{} {}", self.lang_text("正在加载", "Loading"), title);
@@ -2531,9 +2630,18 @@ impl App {
             KeybindAction::ToggleLikeCollapsed,
         ];
 
-        actions
-            .into_iter()
-            .find(|&action| keybind_matches(self.keybind_value_for_action(action), key))
+        // Normalize the pressed key once; each binding is then matched
+        // against the same text instead of re-normalizing the event 19 times.
+        let Some(actual) = key_event_to_keybind_text(key) else {
+            return None;
+        };
+
+        actions.into_iter().find(|&action| {
+            let Some(expected) = normalize_keybind_text(self.keybind_value_for_action(action)) else {
+                return false;
+            };
+            expected.eq_ignore_ascii_case(actual.as_str())
+        })
     }
 
     fn keybind_value_for_action(&self, action: KeybindAction) -> &str {
@@ -2847,36 +2955,63 @@ impl App {
         }
     }
 
-    async fn refresh_now_playing_like_state(&mut self) {
+    fn refresh_now_playing_like_state(&mut self) {
         let Some(song_id) = self.now_playing.as_ref().map(|track| track.song_id.clone()) else {
             self.now_playing_liked = false;
             return;
         };
 
+        // Apply the local cache immediately; verify against the remote in the
+        // background so track switching never blocks on this network round-trip.
         self.now_playing_liked = self.liked_song_ids.contains(&song_id);
+        self.schedule_like_check(&song_id);
+    }
 
-        let Ok(song_id_num) = song_id.parse::<u64>() else {
-            return;
-        };
-
-        let ids_json = format!("[{song_id_num}]");
-        let Ok(response) = self.api.song_like_check(&ids_json).await else {
-            return;
-        };
-
-        if response_code(&response) != 200 {
+    fn schedule_like_check(&mut self, song_id: &str) {
+        if self.like_fetch_inflight_song_id.as_deref() == Some(song_id) {
             return;
         }
 
-        let Some(liked) = parse_song_like_check_result(&response.body, &song_id) else {
+        let req = LikeCheckRequest {
+            song_id: song_id.to_string(),
+            cookie: self
+                .api
+                .session_cookie()
+                .map(|value| value.to_string())
+                .or_else(|| self.session_cookie.clone()),
+        };
+        if self.like_fetch_tx.start_send(req).is_ok() {
+            self.like_fetch_inflight_song_id = Some(song_id.to_string());
+        }
+    }
+
+    fn tick_like_fetch(&mut self) {
+        loop {
+            match self.like_fetch_rx.try_recv() {
+                Ok(result) => self.apply_like_check_result(result),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
+    fn apply_like_check_result(&mut self, result: LikeCheckResult) {
+        if self.like_fetch_inflight_song_id.as_deref() == Some(result.song_id.as_str()) {
+            self.like_fetch_inflight_song_id = None;
+        }
+
+        let Some(now) = self.now_playing.as_ref() else {
             return;
         };
+        if now.song_id != result.song_id {
+            return;
+        }
 
-        self.now_playing_liked = liked;
-        if liked {
-            self.liked_song_ids.insert(song_id);
+        self.now_playing_liked = result.liked;
+        if result.liked {
+            self.liked_song_ids.insert(result.song_id);
         } else {
-            self.liked_song_ids.remove(&song_id);
+            self.liked_song_ids.remove(&result.song_id);
         }
     }
 
@@ -2989,7 +3124,7 @@ impl App {
         }
         self.trim_non_current_cover_memory(index);
         self.now_playing = Some(enriched.clone());
-        self.refresh_now_playing_like_state().await;
+        self.refresh_now_playing_like_state();
         self.playback_index = Some(index);
         self.cover_fetch_inflight_url = None;
         self.cover_fetch_last_attempt_at = None;
@@ -3020,18 +3155,21 @@ impl App {
             };
         };
 
-        let id = &track.song_id;
-        let path = self.audio_player.cached_song_path(id, quality);
+        let id = track.song_id.clone();
+        let path = self.audio_player.cached_song_path(&id, quality);
 
         if is_nonempty_file(&path) {
+            self.pending_stream = None;
             return match self.audio_player.play_from_file(&path) {
                 Ok(_) => ok(self),
                 Err(err) => fail(err, self),
             };
         }
 
-        // Song not cached - start streaming playback while prefetching in background.
+        // Song not cached - fetch the stream URL in the background so the event
+        // loop stays responsive while the network round-trip is in flight.
         self.audio_player.stop();
+        self.playback_state = PlaybackRuntimeState::Stopped;
         self.set_runtime_status(format!(
             "{}: {} - {}",
             self.lang_text("正在缓冲", "Buffering"),
@@ -3039,13 +3177,79 @@ impl App {
             enriched.artist
         ));
 
-        match self.api.song_stream_url_with_quality(id, quality).await {
+        self.pending_stream = Some(PendingStream {
+            song_id: id.clone(),
+            announce,
+        });
+        let req = StreamUrlRequest {
+            song_id: id,
+            quality: quality.to_string(),
+            cookie: self
+                .api
+                .session_cookie()
+                .map(|value| value.to_string())
+                .or_else(|| self.session_cookie.clone()),
+        };
+        let _ = self.stream_url_tx.start_send(req);
+    }
+
+    /// Drain background stream-URL results and start playback once the URL for
+    /// the current pending song arrives. Stale results for superseded tracks are
+    /// discarded.
+    async fn tick_stream_fetch(&mut self) {
+        let Some(pending_song_id) = self.pending_stream.as_ref().map(|p| p.song_id.clone()) else {
+            return;
+        };
+
+        loop {
+            let result = match self.stream_url_rx.try_recv() {
+                Ok(result) => result,
+                Err(_) => break,
+            };
+            if result.song_id != pending_song_id {
+                continue;
+            }
+            let Some(pending) = self.pending_stream.take() else {
+                return;
+            };
+            self.start_streaming_playback(result.url, pending.announce).await;
+            return;
+        }
+    }
+
+    async fn start_streaming_playback(&mut self, url_result: Result<String>, announce: bool) {
+        let Some(track) = self.now_playing.clone() else {
+            return;
+        };
+        let quality = self.config.audio_quality.as_api_level();
+        let path = self.audio_player.cached_song_path(&track.song_id, quality);
+        let fail = |err, app: &mut Self| {
+            app.now_playing_liked = false;
+            app.playback_state = PlaybackRuntimeState::Stopped;
+            app.set_runtime_status(format!(
+                "{}: {err}",
+                app.lang_text("播放失败", "Playback failed"),
+            ));
+        };
+        let ok = |app: &mut Self| {
+            app.playback_state = PlaybackRuntimeState::Playing;
+            if announce {
+                app.set_runtime_status(format!(
+                    "{}: {} - {}",
+                    app.lang_text("正在播放", "Now Playing"),
+                    track.title,
+                    track.artist
+                ));
+            };
+        };
+
+        match url_result {
             Ok(url) => {
                 let (progress_tx, progress_rx) = see::sync::channel((0, 0));
                 match StreamingReader::new(
                     &self.api.http_client(),
                     &url,
-                    path.clone(),
+                    path,
                     self.api.session_cookie(),
                     progress_tx,
                 )
@@ -4804,7 +5008,13 @@ impl App {
                 .or_else(|| bootstrap.playlist[active_idx].id.clone());
 
             if let Some(song_id) = song_id {
-                if let Ok(detail) = self.api.song_detail(&song_id).await {
+                // Fetch the track detail and lyrics concurrently; both only
+                // depend on the song id.
+                let (detail, lyric) = futures::join!(
+                    self.api.song_detail(&song_id),
+                    self.api.lyric(&song_id),
+                );
+                if let Ok(detail) = detail {
                     if let Some(song) = detail
                         .body
                         .get("songs")
@@ -4853,7 +5063,7 @@ impl App {
                 }
 
                 if seed.lyrics.is_none() {
-                    if let Ok(lyric) = self.api.lyric(&song_id).await {
+                    if let Ok(lyric) = lyric {
                         if let Some(raw_lrc) = lyric
                             .body
                             .pointer("/lrc/lyric")
@@ -5528,7 +5738,7 @@ impl App {
         }
 
         self.liked_song_ids = parse_likelist_song_ids(&response.body);
-        self.refresh_now_playing_like_state().await;
+        self.refresh_now_playing_like_state();
         Ok(())
     }
 
@@ -5709,10 +5919,17 @@ impl App {
     }
 
     async fn load_author_detail(&mut self, artist_id: &str) -> Result<()> {
-        let detail = self.api.artist_detail(artist_id).await.ok();
-        let desc = self.api.artist_desc(artist_id).await.ok();
-        let top_song = self.api.artist_top_song(artist_id).await.ok();
-        let album = self.api.artist_album(artist_id, 60, 0).await.ok();
+        // Fire all four artist requests concurrently instead of serially.
+        let (detail, desc, top_song, album) = futures::join!(
+            self.api.artist_detail(artist_id),
+            self.api.artist_desc(artist_id),
+            self.api.artist_top_song(artist_id),
+            self.api.artist_album(artist_id, 60, 0),
+        );
+        let detail = detail.ok();
+        let desc = desc.ok();
+        let top_song = top_song.ok();
+        let album = album.ok();
 
         if detail.is_none() && desc.is_none() && top_song.is_none() && album.is_none() {
             return Err(anyhow!("作者数据获取失败"));
@@ -7175,16 +7392,6 @@ fn cycle_bar_number(current: BarNumber, delta: i32) -> BarNumber {
         .unwrap_or(0) as i32;
     let next = (current_idx + delta).rem_euclid(options.len() as i32) as usize;
     options[next]
-}
-
-fn keybind_matches(binding: &str, key: KeyEvent) -> bool {
-    let Some(expected) = normalize_keybind_text(binding) else {
-        return false;
-    };
-    let Some(actual) = key_event_to_keybind_text(key) else {
-        return false;
-    };
-    expected.eq_ignore_ascii_case(actual.as_str())
 }
 
 fn is_reserved_reset_combo(key: KeyEvent) -> bool {

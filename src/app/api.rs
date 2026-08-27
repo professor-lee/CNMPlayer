@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use cyper::{Client, Response};
 use futures::StreamExt;
 use ncm_api::{ApiClient, ApiResponse, Query};
@@ -176,26 +176,26 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn artist_detail(&mut self, id: &str) -> Result<ApiResponse> {
+    pub async fn artist_detail(&self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_detail(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_desc(&mut self, id: &str) -> Result<ApiResponse> {
+    pub async fn artist_desc(&self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_desc(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_top_song(&mut self, id: &str) -> Result<ApiResponse> {
+    pub async fn artist_top_song(&self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_top_song(&query).await?;
         Ok(response)
     }
 
     pub async fn artist_album(
-        &mut self,
+        &self,
         id: &str,
         limit: usize,
         offset: usize,
@@ -218,13 +218,13 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn song_detail(&mut self, song_id: &str) -> Result<ApiResponse> {
+    pub async fn song_detail(&self, song_id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("ids", song_id);
         let response = self.client.song_detail(&query).await?;
         Ok(response)
     }
 
-    pub async fn lyric(&mut self, song_id: &str) -> Result<ApiResponse> {
+    pub async fn lyric(&self, song_id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", song_id);
         let response = self.client.lyric(&query).await?;
         Ok(response)
@@ -353,7 +353,17 @@ impl ApiState {
 
         let mut bytes = Vec::with_capacity(64 * 1024);
         let mut stream = response.bytes_stream();
-        while let Some(Ok(chunk)) = stream.next().await {
+        while let Some(chunk) = stream.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    // Fail loudly instead of caching a truncated image.
+                    return Err(anyhow!(
+                        "download cover image failed: {}: {err}",
+                        url
+                    ));
+                }
+            };
             if chunk.is_empty() {
                 continue;
             }
@@ -367,9 +377,6 @@ impl ApiState {
 
             bytes.extend_from_slice(&chunk);
         }
-
-        let bytes = Ok::<Vec<u8>, anyhow::Error>(bytes)
-            .with_context(|| format!("download cover image failed: {}", url))?;
 
         Ok(bytes)
     }

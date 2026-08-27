@@ -548,7 +548,7 @@ fn cover_ascii_for_snapshot(
         let ascii = match cached {
             Some(s) => s,
             None => {
-                let s = generate_random_cover_ascii(width, height, seed);
+                let s = fill_ascii(width, height, '░');
                 {
                     let mut cache = app.cover_cache.borrow_mut();
                     cache.put(key, s);
@@ -655,22 +655,6 @@ fn blit_xy(dst: &mut [Vec<char>], src: &[Vec<char>], dx: i16, dy: i16) {
             }
         }
     }
-}
-
-fn generate_random_cover_ascii(width: u16, height: u16, seed: u64) -> String {
-    // Requirement: when the app has no response / no album cover available,
-    // use a consistent solid fill instead of random characters.
-    let _ = seed;
-    let w = width as usize;
-    let h = height as usize;
-    let mut out = String::with_capacity((w + 1) * h);
-    for _y in 0..h {
-        for _x in 0..w {
-            out.push('░');
-        }
-        out.push('\n');
-    }
-    out
 }
 
 fn clip_to_display_width(text: &str, max_width: usize) -> String {

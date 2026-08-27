@@ -13,7 +13,7 @@ use see::sync::Sender;
 use std::fs::File;
 use std::io::{Cursor, Error, ErrorKind, Read, Seek, SeekFrom};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -22,7 +22,9 @@ use std::time::Duration;
 pub struct StreamingReader {
     /// Shared state between the reader and downloader
     state: Arc<StreamingState>,
-    /// The file being written to and read from (shared with downloader)
+    /// The reader's own file handle. The writer uses a separate handle, so
+    /// this cursor is only ever advanced by the reader itself and file
+    /// operations never contend with the writer.
     file: File,
     /// Temp path for cleanup on drop
     tmp_path: PathBuf,
@@ -36,20 +38,29 @@ struct StreamingState {
     downloaded: AtomicU64,
     /// Total content length (0 if unknown until headers parsed)
     total: u64,
-    /// Mutex + Condvar for efficient blocking waits
+    /// Mutex + Condvar for efficient blocking waits. The mutex is only used
+    /// for the condvar predicate protocol (check-then-wait must be atomic);
+    /// file I/O itself is lock-free thanks to the separate reader/writer
+    /// handles.
     condvar: Condvar,
-    /// Mutex to serialize file operations
     file_lock: Mutex<()>,
     /// Whether download has completed or failed
     done: AtomicU64, // 0 = in_progress, 1 = done, 2 = error
+    /// Set when the reader is dropped; the writer stops fetching and never
+    /// renames the temp file into the cache.
+    cancelled: AtomicBool,
     /// Error message if done == 2
     error: Mutex<Option<String>>,
 }
 
 impl Drop for StreamingReader {
     fn drop(&mut self) {
+        // Cancel the background download: stop fetching and never rename the
+        // temp file into the cache after the reader is gone.
+        self.state.cancelled.store(true, Ordering::Release);
+
         // Clean up temp file if download not complete
-        let done = self.state.done.load(Ordering::SeqCst);
+        let done = self.state.done.load(Ordering::Acquire);
         if done != 1 {
             let _ = std::fs::remove_file(&self.tmp_path);
         }
@@ -113,7 +124,7 @@ impl StreamingReader {
             if let Err(e) = download.await {
                 let mut err = state.error.lock().unwrap();
                 *err = Some(e.to_string());
-                state.done.store(2, Ordering::SeqCst);
+                state.done.store(2, Ordering::Release);
                 state.condvar.notify_all();
             }
         });
@@ -133,8 +144,8 @@ impl StreamingReader {
         let mut file_lock = self.state.file_lock.lock().unwrap();
 
         loop {
-            let downloaded = self.state.downloaded.load(Ordering::SeqCst);
-            let done = self.state.done.load(Ordering::SeqCst);
+            let downloaded = self.state.downloaded.load(Ordering::Acquire);
+            let done = self.state.done.load(Ordering::Acquire);
 
             if done == 1 && pos >= downloaded {
                 // Download complete and we've read all data
@@ -170,16 +181,12 @@ impl StreamingReader {
 impl Read for StreamingReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // Wait for data to be available at current position
-        let pos = {
-            let _guard = self.state.file_lock.lock().unwrap();
-            self.file.stream_position()?
-        };
+        let pos = self.file.stream_position()?;
 
         // Efficiently wait for data at this position
         self.wait_for_position(pos)?;
 
-        // Now read under lock
-        let _guard = self.state.file_lock.lock().unwrap();
+        // The reader owns this handle's cursor, so no lock is needed here.
         self.file.read(buf)
     }
 }
@@ -191,7 +198,7 @@ impl Seek for StreamingReader {
             SeekFrom::End(p) => {
                 // Wait for download to complete to know total size
                 loop {
-                    let done = self.state.done.load(Ordering::SeqCst);
+                    let done = self.state.done.load(Ordering::Acquire);
                     if done == 1 {
                         let total = self.state.total;
                         break total.wrapping_add_signed(p);
@@ -214,7 +221,6 @@ impl Seek for StreamingReader {
                 }
             }
             SeekFrom::Current(p) => {
-                let _guard = self.state.file_lock.lock().unwrap();
                 let current = self.file.stream_position()?;
                 current.wrapping_add_signed(p)
             }
@@ -222,8 +228,8 @@ impl Seek for StreamingReader {
 
         // Wait for the target position if it's beyond downloaded data
         loop {
-            let downloaded = self.state.downloaded.load(Ordering::SeqCst);
-            let done = self.state.done.load(Ordering::SeqCst);
+            let downloaded = self.state.downloaded.load(Ordering::Acquire);
+            let done = self.state.done.load(Ordering::Acquire);
 
             if done == 1 {
                 // Download done, any position is valid
@@ -246,7 +252,6 @@ impl Seek for StreamingReader {
                 .0;
         }
 
-        let _guard = self.state.file_lock.lock().unwrap();
         self.file.seek(SeekFrom::Start(new_pos))
     }
 }
@@ -260,9 +265,10 @@ async fn download_streaming(
 ) -> Result<()> {
     let response = error_for_status(response)?;
 
-    // Open file with append mode
+    // The writer opens its own handle; the reader keeps a separate one. File
+    // data is visible across handles (page cache), so I/O never needs the
+    // state mutex - that mutex is only used for the condvar wait protocol.
     let file = {
-        let _guard = state.file_lock.lock().unwrap();
         use compio::fs::OpenOptions;
         OpenOptions::new().write(true).open(&tmp_path).await?
     };
@@ -272,6 +278,12 @@ async fn download_streaming(
     let mut stream = response.bytes_stream();
 
     loop {
+        // Stop early when the reader has been dropped (e.g. track switched).
+        if state.cancelled.load(Ordering::Acquire) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Ok(());
+        }
+
         let chunk = match stream.next().await {
             Some(Err(e)) => bail!(e),
             Some(Ok(chunk)) if !chunk.is_empty() => chunk,
@@ -279,28 +291,33 @@ async fn download_streaming(
         };
 
         let len = chunk.len();
-
-        // Must hold lock when writing to ensure atomic append and proper read visibility
-        {
-            let _guard = state.file_lock.lock().unwrap();
-            cursor.write_all(chunk).await.0?;
-            cursor.flush().await?
-        }
+        cursor.write_all(chunk).await.0?;
 
         downloaded += len as u64;
-        state.downloaded.store(downloaded, Ordering::SeqCst);
+        {
+            let _guard = state.file_lock.lock().unwrap();
+            state.downloaded.store(downloaded, Ordering::Release);
+        }
         let _ = progress_tx.send((downloaded, state.total));
         state.condvar.notify_all();
     }
 
-    // Rename to final cache path (do this with lock held to ensure no readers in middle of read)
-    {
-        let _guard = state.file_lock.lock().unwrap();
-        file.close().await?;
-        rename(&tmp_path, cache_path).await?;
+    // Don't move the partial file into the cache if the reader is gone.
+    if state.cancelled.load(Ordering::Acquire) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Ok(());
     }
 
-    state.done.store(1, Ordering::SeqCst);
+    // Flush once at the end (write_all already lands data in the page cache,
+    // which readers observe immediately) before renaming into the cache.
+    cursor.flush().await?;
+    file.close().await?;
+    rename(&tmp_path, cache_path).await?;
+
+    {
+        let _guard = state.file_lock.lock().unwrap();
+        state.done.store(1, Ordering::Release);
+    }
     state.condvar.notify_all();
 
     Ok(())

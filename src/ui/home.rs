@@ -185,7 +185,7 @@ fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
 
         let (title, subtitle) = {
             let tile = &app.home.tiles[index];
-            (tile.title.clone(), tile.subtitle.clone())
+            (tile.title.as_str(), tile.subtitle.as_str())
         };
 
         let title_style = if focused {
@@ -363,9 +363,6 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
-    let created_items = app.home_sidebar.created_playlists.clone();
-    let collected_items = app.home_sidebar.collected_playlists.clone();
-
     draw_home_sidebar_section(
         frame,
         app,
@@ -374,7 +371,6 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             Language::Zh => "用户创建的歌单",
             Language::En => "Created Playlists",
         },
-        &created_items,
         HomeSidebarSection::Created,
     );
 
@@ -386,7 +382,6 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             Language::Zh => "用户收藏的歌单",
             Language::En => "Collected Playlists",
         },
-        &collected_items,
         HomeSidebarSection::Collected,
     );
 }
@@ -396,7 +391,6 @@ fn draw_home_sidebar_section(
     app: &mut App,
     area: Rect,
     title: &str,
-    items: &[crate::app::HomeSidebarPlaylist],
     section: HomeSidebarSection,
 ) {
     if area.width < 6 || area.height < 3 {
@@ -453,27 +447,23 @@ fn draw_home_sidebar_section(
         return;
     }
 
-    let mut lines = Vec::new();
-    if items.is_empty() {
-        lines.push(Line::from(Span::styled(
-            match app.config.language {
-                Language::Zh => "暂无歌单",
-                Language::En => "No playlists",
-            },
-            Style::default().fg(app.theme.color_subtext()),
-        )));
-    } else {
-        let max_rows = inner.height as usize;
-        if max_rows == 0 {
-            return;
-        }
-        let total = items.len();
+    // Only the list length is needed for the mutations below, so they run
+    // before we borrow the playlist items - keeping the item borrow disjoint
+    // from the `&mut app` used for hit collection and styles.
+    let total = match section {
+        HomeSidebarSection::Created => app.home_sidebar.created_playlists.len(),
+        HomeSidebarSection::Collected => app.home_sidebar.collected_playlists.len(),
+    };
+    let max_rows = inner.height as usize;
+
+    let mut start = 0usize;
+    if total > 0 {
         let focus_idx = if section_focused {
             app.home_sidebar.focused_index.min(total.saturating_sub(1))
         } else {
             0
         };
-        let mut start = if total <= max_rows {
+        start = if total <= max_rows {
             0
         } else {
             app.home_sidebar
@@ -490,6 +480,23 @@ fn draw_home_sidebar_section(
             start = start.min(total.saturating_sub(max_rows));
         }
         app.home_sidebar.set_section_scroll_offset(section, start);
+    }
+
+    let mut lines = Vec::new();
+    let mut hits = Vec::new();
+    if total == 0 {
+        lines.push(Line::from(Span::styled(
+            match app.config.language {
+                Language::Zh => "暂无歌单",
+                Language::En => "No playlists",
+            },
+            Style::default().fg(app.theme.color_subtext()),
+        )));
+    } else {
+        let items = match section {
+            HomeSidebarSection::Created => &app.home_sidebar.created_playlists,
+            HomeSidebarSection::Collected => &app.home_sidebar.collected_playlists,
+        };
 
         for (visual_idx, item) in items.iter().skip(start).take(max_rows).enumerate() {
             let idx = start + visual_idx;
@@ -510,7 +517,7 @@ fn draw_home_sidebar_section(
             let spaces = usize::from(inner.width).saturating_sub(used).max(1);
             let is_focused = section_focused && idx == app.home_sidebar.focused_index;
 
-            app.push_home_sidebar_playlist_hit(
+            hits.push((
                 crate::app::HitRect {
                     x: inner.x,
                     y: inner.y + visual_idx as u16,
@@ -521,7 +528,7 @@ fn draw_home_sidebar_section(
                     section,
                     index: idx,
                 },
-            );
+            ));
 
             let text_style = if is_focused {
                 Style::default()
@@ -546,6 +553,11 @@ fn draw_home_sidebar_section(
                 Span::styled(right, right_style),
             ]));
         }
+    }
+
+    // Apply hit rects after the item borrow ends.
+    for (rect, hit) in hits {
+        app.push_home_sidebar_playlist_hit(rect, hit);
     }
 
     frame.render_widget(

@@ -159,24 +159,22 @@ fn render_search_row(
 
     let right = item
         .type_tag
-        .clone()
+        .as_deref()
         .filter(|tag| !tag.trim().is_empty())
-        .unwrap_or_else(|| item.right_label.clone());
+        .unwrap_or_else(|| item.right_label.as_str());
 
     let left = format!("{:02}. {}", item_idx + 1, item.left_label);
-    let reserved = display_width(&right) + 1;
+    let reserved = display_width(right) + 1;
     let left_max = usize::from(row.width).saturating_sub(reserved);
     let clipped_left = clip_to_display_width(&left, left_max);
-    let used = display_width(&clipped_left) + display_width(&right);
+    let used = display_width(&clipped_left) + display_width(right);
     let space = usize::from(row.width).saturating_sub(used).max(1);
-
-    let right_style = if focused { row_style } else { row_style };
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(clipped_left, row_style),
             Span::styled(" ".repeat(space), row_style),
-            Span::styled(right, right_style),
+            Span::styled(right, row_style),
         ])),
         row,
     );

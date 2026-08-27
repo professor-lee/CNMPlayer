@@ -14,7 +14,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -106,7 +106,7 @@ impl AudioPlayer {
         self.cache_dir.join(name)
     }
 
-    pub fn play_from_file(&mut self, file_path: &PathBuf) -> Result<()> {
+    pub fn play_from_file(&mut self, file_path: &Path) -> Result<()> {
         let file = File::open(file_path)?;
         let builder = DecoderBuilder::new().with_byte_len(file.metadata()?.len());
         let decoder = builder.with_data(BufReader::new(file)).build()?;
@@ -206,12 +206,16 @@ impl AudioPlayer {
 
 struct EqParams {
     bands_db_x10: [AtomicI32; EQ_BANDS],
+    /// Bumped on every EQ change so the audio path only needs a single
+    /// cheap atomic read per sample instead of rebuilding the band array.
+    revision: AtomicU32,
 }
 
 impl EqParams {
     fn new() -> Self {
         Self {
             bands_db_x10: std::array::from_fn(|_| AtomicI32::new(0)),
+            revision: AtomicU32::new(0),
         }
     }
 
@@ -220,14 +224,11 @@ impl EqParams {
         for (idx, value) in eq.bands_db.iter().enumerate() {
             self.bands_db_x10[idx].store((value * 10.0).round() as i32, Ordering::Relaxed);
         }
+        self.revision.fetch_add(1, Ordering::Relaxed);
     }
 
     fn load_db(&self) -> [f32; EQ_BANDS] {
         std::array::from_fn(|idx| self.bands_db_x10[idx].load(Ordering::Relaxed) as f32 / 10.0)
-    }
-
-    fn load_db_x10(&self) -> [i32; EQ_BANDS] {
-        std::array::from_fn(|idx| self.bands_db_x10[idx].load(Ordering::Relaxed))
     }
 }
 
@@ -293,7 +294,7 @@ where
     channels: NonZero<u16>,
     idx: usize,
     params: Arc<EqParams>,
-    last_db_x10: [i32; EQ_BANDS],
+    last_revision: u32,
     coeffs: [BiquadCoeffs; EQ_BANDS],
     states: Vec<BiquadState>,
 }
@@ -306,7 +307,7 @@ where
         let channels = inner.channels();
         let fs = inner.sample_rate().get() as f32;
         let eq_db = params.load_db();
-        let last_db_x10 = params.load_db_x10();
+        let last_revision = params.revision.load(Ordering::Relaxed);
         let coeffs =
             std::array::from_fn(|idx| biquad_peaking(fs, EQ_FREQS_HZ[idx], 1.0, eq_db[idx]));
         let states = vec![BiquadState::default(); (channels.get() as usize) * EQ_BANDS];
@@ -316,7 +317,7 @@ where
             channels,
             idx: 0,
             params,
-            last_db_x10,
+            last_revision,
             coeffs,
             states,
         }
@@ -334,13 +335,16 @@ where
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let current = self.params.load_db_x10();
-        if current != self.last_db_x10 {
+        // Single atomic read per sample; coefficients are only rebuilt when
+        // the EQ revision changes (previously every sample rebuilt the whole
+        // band array and compared it).
+        let revision = self.params.revision.load(Ordering::Relaxed);
+        if revision != self.last_revision {
             let fs = self.inner.sample_rate().get() as f32;
             let eq_db = self.params.load_db();
             self.coeffs =
                 std::array::from_fn(|idx| biquad_peaking(fs, EQ_FREQS_HZ[idx], 1.0, eq_db[idx]));
-            self.last_db_x10 = current;
+            self.last_revision = revision;
         }
 
         let input = self.inner.next()?;

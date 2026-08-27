@@ -649,10 +649,11 @@ pub async fn run(
             needs_redraw = false;
         }
 
-        // frame pacing
+        // frame pacing - async sleep so the worker thread can keep serving
+        // downloads / cover & lyric fetches / bridge ticks while idle.
         let elapsed = frame_start.elapsed();
         if elapsed < frame_dt {
-            std::thread::sleep(frame_dt - elapsed);
+            compio::time::sleep(frame_dt - elapsed).await;
         }
 
         if tui.should_quit {
