@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
@@ -111,17 +111,18 @@ impl Tui {
                 return;
             }
 
-            // The hint line gets a row of its own: the panels below are full-height
-            // `Borders::ALL`, so sharing the last row would paint text over their
-            // bottom border.
-            let (content_area, hint_area) = if app.config.show_hints {
-                let split = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(1), Constraint::Length(1)])
-                    .split(size);
-                (split[0], split[1])
+            // 提示不再独占一行：否则开关"显示提示"会把整页挤上去一行。
+            // 内容区占满，提示以 `┤…├` 嵌进面板底边框（那一行本就是 `─`）。
+            let content_area = size;
+            let hint_area = if app.config.show_hints && content_area.height > 0 {
+                Rect {
+                    x: content_area.x,
+                    y: content_area.y + content_area.height - 1,
+                    width: content_area.width,
+                    height: 1,
+                }
             } else {
-                (size, Rect::default())
+                Rect::default()
             };
 
             let cols = Layout::default()
@@ -242,15 +243,7 @@ impl Tui {
             }
 
             if app.config.show_hints && hint_area.height > 0 {
-                let hint_text = lang_text(app, "Ctrl+K 打开按键绑定", "Ctrl+K open keybinds");
-                let mut hint_style = Style::default().fg(app.theme.color_subtext());
-                if !app.config.transparent_background {
-                    hint_style = hint_style.bg(app.theme.color_base());
-                }
-                f.render_widget(
-                    Paragraph::new(format!("  {}", hint_text)).style(hint_style),
-                    hint_area,
-                );
+                Self::render_hint_in_border(f, app, hint_area, layout_out.right);
             }
 
             // Paint kitty images on top of ratatui widgets.
@@ -270,6 +263,56 @@ impl Tui {
         })?;
 
         Ok(layout_out)
+    }
+
+    /// 把提示以 `┤文字├` 的形式嵌进右侧面板的底边框。
+    ///
+    /// 该行本身就是面板的 `horizontal_bottom`（`─`）。只重绘右面板那一段，
+    /// 左面板与两板接缝处的 `└`/`┘` 角保持原样不动——整行重绘会把接缝
+    /// 抹平，看起来像两个面板在底部连通了。
+    /// 与边框同色（`color_subtext`），视觉上像是边框自带的标签。
+    fn render_hint_in_border(
+        f: &mut ratatui::Frame,
+        app: &AppState,
+        area: Rect,
+        right_panel: Rect,
+    ) {
+        // 只覆盖右面板横向范围，且要留出它自己的左右角
+        if right_panel.width < 4 || area.height == 0 {
+            return;
+        }
+        let seg = Rect {
+            x: right_panel.x + 1,
+            y: area.y,
+            width: right_panel.width - 2,
+            height: 1,
+        };
+        let inner_w = usize::from(seg.width);
+        if inner_w == 0 {
+            return;
+        }
+
+        let border_style = Style::default().fg(app.theme.color_subtext());
+        let text = lang_text(app, "Ctrl+K 打开按键绑定", "Ctrl+K open keybinds");
+        let label_w = unicode_width::UnicodeWidthStr::width(text) + 2; // 含 ┤ ├
+
+        if label_w > inner_w {
+            // 放不下就不画标签，保持原边框（那一行本就是 ─，无需重绘）
+            return;
+        }
+
+        // 标签右对齐，右侧留 1 格 ─ 与面板右下角隔开
+        let right_pad = 1usize.min(inner_w - label_w);
+        let left_pad = inner_w - label_w - right_pad;
+
+        let line = Line::from(vec![
+            Span::styled("─".repeat(left_pad), border_style),
+            Span::styled("┤", border_style),
+            Span::styled(text.to_string(), border_style),
+            Span::styled("├", border_style),
+            Span::styled("─".repeat(right_pad), border_style),
+        ]);
+        f.render_widget(Paragraph::new(line), seg);
     }
 
     fn paint_kitty_images(

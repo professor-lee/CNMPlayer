@@ -36,23 +36,43 @@ pub fn draw_home(frame: &mut Frame, app: &mut App) {
         ])
         .split(size);
 
-    let (content_area, hint_area) = if app.config.show_hints {
-        let split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
-            .split(rows[0]);
-        (split[0], split[1])
+    // 提示行叠在内容之上，不从内容区扣高度：否则开关"显示提示"会把
+    // 整页（含歌词框）挤上去一行。
+    let content_area = rows[0];
+    let lyrics_area = if app.config.page_lyrics {
+        page_lyrics::overlay_panel_area(content_area)
     } else {
-        (rows[0], Rect::default())
+        Rect::default()
+    };
+
+    // 歌词框同样贴在内容区底部。提示让位到它上方一行，否则会盖掉它的底边框。
+    let hint_area = if app.config.show_hints && content_area.height > 0 {
+        let bottom = content_area.y + content_area.height;
+        let y = if lyrics_area.height > 0 {
+            lyrics_area.y.saturating_sub(1)
+        } else {
+            bottom - 1
+        };
+        if y >= content_area.y {
+            Rect {
+                x: content_area.x,
+                y,
+                width: content_area.width,
+                height: 1,
+            }
+        } else {
+            Rect::default()
+        }
+    } else {
+        Rect::default()
     };
 
     draw_tiles(frame, app, content_area);
-    if app.config.page_lyrics {
-        let panel_area = page_lyrics::overlay_panel_area(content_area);
-        page_lyrics::draw_page_lyrics_panel(frame, app, panel_area);
-    }
     if app.config.show_hints {
         draw_home_hint(frame, app, hint_area);
+    }
+    if lyrics_area.height > 0 {
+        page_lyrics::draw_page_lyrics_panel(frame, app, lyrics_area);
     }
     if app.home_sidebar.is_visible() {
         draw_home_sidebar(frame, app, rows[0]);
@@ -217,6 +237,10 @@ fn draw_home_hint(frame: &mut Frame, app: &App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+
+    // 提示行是叠在卡片网格之上的，先清底再写，避免与卡片字符重叠。
+    frame.render_widget(Clear, area);
+    frame.render_widget(Block::default().style(base_bg_style(app)), area);
 
     let text = match app.config.language {
         Language::Zh => format!(
