@@ -35,6 +35,9 @@ rodio = { git = "https://github.com/RustAudio/rodio", default-features = false, 
 # 沉浸环绕声 杜比全景声 超清母带 flac !SVIP
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"
 

@@ -199,10 +199,38 @@ fn stroage_or_abort() -> Storage {
 
 pub static STORAGE: LazyLock<Storage> = LazyLock::new(|| stroage_or_abort());
 
+/// 原生音频库（ALSA/PipeWire 等）绕过 log crate 直接写 stderr，而 TUI 画面走 stdout，
+/// 两者指向同一个 tty 时告警就会糊在画面上。这里把 fd 2 整体引向文件。
+///
+/// 单独用一个文件：ftail 以 `append(false)` 持有 `Player.log` 的写偏移，
+/// 若共用同一文件，它与原生库会互相覆盖。
+#[cfg(unix)]
+fn redirect_stderr_to_file(path: &std::path::Path) -> Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    // 复制成功后原 fd 关闭也不影响 fd 2。
+    if unsafe { libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) } == -1 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 async fn init_logger() -> Result<()> {
     create_dir_all(&STORAGE.cache).await?;
     let log_file = STORAGE.cache.join("Player.log");
     let _ = remove_file(&log_file).await;
+
+    #[cfg(unix)]
+    {
+        let stderr_file = STORAGE.cache.join("Player.stderr.log");
+        let _ = remove_file(&stderr_file).await;
+        redirect_stderr_to_file(&stderr_file)?;
+    }
+
     let ftail = Ftail::new().single_file_env_level(&log_file, false);
     Ok(ftail.init()?)
 }

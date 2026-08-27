@@ -570,6 +570,7 @@ dependencies = [
  "futures",
  "http",
  "image",
+ "libc",
  "log",
  "mpris-server",
  "ncm-api",
