@@ -112,9 +112,9 @@ impl Tui {
             }
 
             // 提示不再独占一行：否则开关"显示提示"会把整页挤上去一行。
-            // 内容区占满，提示以 `┤…├` 嵌进面板底边框（那一行本就是 `─`）。
+            // 内容区占满，提示以 `┤…├` 嵌进左面板底边框（那一行本就是 `─`）。
             let content_area = size;
-            let hint_area = if app.config.show_hints && content_area.height > 0 {
+            let bottom_row = if content_area.height > 0 {
                 Rect {
                     x: content_area.x,
                     y: content_area.y + content_area.height - 1,
@@ -242,9 +242,7 @@ impl Tui {
                 );
             }
 
-            if app.config.show_hints && hint_area.height > 0 {
-                Self::render_hint_in_border(f, app, hint_area, layout_out.right);
-            }
+            Self::render_hint_in_border(f, app, bottom_row, layout_out.left);
 
             // Paint kitty images on top of ratatui widgets.
             Self::paint_kitty_images(&mut self.graphics_overlay, f, app, &layout_out);
@@ -265,26 +263,29 @@ impl Tui {
         Ok(layout_out)
     }
 
-    /// 把提示以 `┤文字├` 的形式嵌进右侧面板的底边框。
+    /// 把提示以 `┤文字├` 的形式嵌进左侧面板的底边框。
     ///
-    /// 该行本身就是面板的 `horizontal_bottom`（`─`）。只重绘右面板那一段，
-    /// 左面板与两板接缝处的 `└`/`┘` 角保持原样不动——整行重绘会把接缝
-    /// 抹平，看起来像两个面板在底部连通了。
-    /// 与边框同色（`color_subtext`），视觉上像是边框自带的标签。
+    /// 该行本身就是面板的 `horizontal_bottom`（`─`）。只重绘左面板那一段，
+    /// 两板接缝处的 `┘└` 角保持原样——整行重绘会把接缝抹平，看起来像
+    /// 两个面板在底部连通了。与边框同色，视觉上像是边框自带的标签。
+    ///
+    /// 关闭提示时也要走这里：中文是宽字符，ratatui 会在其第二列留下占位
+    /// cell，仅靠 `Block` 重画边框不会覆盖掉，底边框会残留成 `─ ─ ─` 的
+    /// 虚线。故此处在关闭时把该段整体重绘为 `─`。
     fn render_hint_in_border(
         f: &mut ratatui::Frame,
         app: &AppState,
         area: Rect,
-        right_panel: Rect,
+        left_panel: Rect,
     ) {
-        // 只覆盖右面板横向范围，且要留出它自己的左右角
-        if right_panel.width < 4 || area.height == 0 {
+        // 只覆盖左面板横向范围，且要留出它自己的左右下角
+        if left_panel.width < 4 || area.height == 0 {
             return;
         }
         let seg = Rect {
-            x: right_panel.x + 1,
+            x: left_panel.x + 1,
             y: area.y,
-            width: right_panel.width - 2,
+            width: left_panel.width - 2,
             height: 1,
         };
         let inner_w = usize::from(seg.width);
@@ -293,20 +294,31 @@ impl Tui {
         }
 
         let border_style = Style::default().fg(app.theme.color_subtext());
+
+        // 关闭提示：重绘为纯边框，清掉上一帧宽字符留下的占位 cell。
+        if !app.config.show_hints {
+            f.render_widget(
+                Paragraph::new("─".repeat(inner_w)).style(border_style),
+                seg,
+            );
+            return;
+        }
+
         let text = lang_text(app, "Ctrl+K 打开按键绑定", "Ctrl+K open keybinds");
         let label_w = unicode_width::UnicodeWidthStr::width(text) + 2; // 含 ┤ ├
 
         if label_w > inner_w {
-            // 放不下就不画标签，保持原边框（那一行本就是 ─，无需重绘）
+            // 放不下就只画纯边框，不截断成半个字
+            f.render_widget(
+                Paragraph::new("─".repeat(inner_w)).style(border_style),
+                seg,
+            );
             return;
         }
 
-        // 标签右对齐，右侧留 1 格 ─ 与面板右下角隔开
-        let right_pad = 1usize.min(inner_w - label_w);
-        let left_pad = inner_w - label_w - right_pad;
-
+        // 标签左对齐，紧贴面板左下角
+        let right_pad = inner_w - label_w;
         let line = Line::from(vec![
-            Span::styled("─".repeat(left_pad), border_style),
             Span::styled("┤", border_style),
             Span::styled(text.to_string(), border_style),
             Span::styled("├", border_style),

@@ -45,19 +45,19 @@ pub fn draw_home(frame: &mut Frame, app: &mut App) {
         Rect::default()
     };
 
-    // 歌词框同样贴在内容区底部。提示让位到它上方一行，否则会盖掉它的底边框。
+    // 提示留在内容区最后一行。歌词框贴在该区右下角，故提示宽度收窄到
+    // 歌词框左边缘为止——否则会横穿它、盖掉其边框。
     let hint_area = if app.config.show_hints && content_area.height > 0 {
-        let bottom = content_area.y + content_area.height;
-        let y = if lyrics_area.height > 0 {
-            lyrics_area.y.saturating_sub(1)
+        let width = if lyrics_area.height > 0 {
+            lyrics_area.x.saturating_sub(content_area.x)
         } else {
-            bottom - 1
+            content_area.width
         };
-        if y >= content_area.y {
+        if width > 0 {
             Rect {
                 x: content_area.x,
-                y,
-                width: content_area.width,
+                y: content_area.y + content_area.height - 1,
+                width,
                 height: 1,
             }
         } else {
