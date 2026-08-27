@@ -1766,9 +1766,12 @@ pub struct App {
     /// 当前播放队列来源列表（专辑/歌单）的封面 URL。
     /// 与 `self.playlist` 解耦：后者是"最后访问的页面"，会随浏览漂移。
     playback_queue_cover_url: Option<String>,
-    /// 当前队列是否来自私人漫游。漫游的封面语义是「跟随当前播放歌曲」，
-    /// 而非固定的列表封面，故需单独标记以便逐首更新。
-    playback_queue_source_is_roam: bool,
+    /// 当前播放队列来源列表的 id（如私人漫游的 tile id）。
+    ///
+    /// 与 `self.playlist.id` 的区别：后者是「当前浏览的页面」，会随浏览漂移，
+    /// 且重启后为 None。来源相关行为（漫游的尾部追加、续播、封面跟随）
+    /// 一律以此字段为判据，并随播放记忆一起持久化。
+    playback_queue_source_id: Option<String>,
     pub playback_index: Option<usize>,
     pub playback_repeat_mode: PlaybackRepeatMode,
     pub playback_state: PlaybackRuntimeState,
@@ -1883,7 +1886,7 @@ impl App {
             liked_song_ids: HashSet::new(),
             playback_queue: Vec::new(),
             playback_queue_cover_url: None,
-            playback_queue_source_is_roam: false,
+            playback_queue_source_id: None,
             playback_index: None,
             playback_repeat_mode: PlaybackRepeatMode::Sequence,
             playback_state: PlaybackRuntimeState::Stopped,
@@ -3227,7 +3230,7 @@ impl App {
 
         // 私人漫游：队列（快照）播完后，若列表已追加新歌则从列表继续顺序播放
         if self.playback_repeat_mode == PlaybackRepeatMode::Sequence
-            && self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)
+            && self.playback_queue_is_roam()
             && current + 1 >= self.playback_queue.len()
             && self.private_roam.tracks.len() > self.playback_queue.len()
         {
@@ -3237,7 +3240,8 @@ impl App {
                     .iter()
                     .filter_map(PlaybackTrack::from_playlist_track)
                     .collect();
-                let source_cover = self.playlist.cover.url.clone();
+                // 来源仍是漫游本身，封面沿用漫游当前封面（跟随播放歌曲）。
+                let source_cover = self.private_roam.cover_url.clone();
                 self.replace_queue_and_play(queue, 0, source_cover).await;
                 return;
             }
@@ -3678,8 +3682,7 @@ impl App {
         self.playback_queue = queue;
         // 在换队列的此刻记下来源封面，之后浏览别的页面不会影响它。
         self.playback_queue_cover_url = source_cover_url;
-        self.playback_queue_source_is_roam =
-            self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID);
+        self.playback_queue_source_id = self.playlist.id.clone();
         let target = index.min(self.playback_queue.len() - 1);
         self.play_queue_index(target, true).await;
     }
@@ -5387,6 +5390,7 @@ impl App {
             queue,
             current_index: self.playback_index,
             repeat_mode: Some(playback_repeat_mode_key(self.playback_repeat_mode).to_string()),
+            source_playlist_id: self.playback_queue_source_id.clone(),
             updated_at: 0,
         };
 
@@ -5437,7 +5441,8 @@ impl App {
 
         self.playback_queue = queue;
         self.playback_queue_cover_url = None;
-        self.playback_queue_source_is_roam = false;
+        // 还原队列来源，使漫游的尾部追加/续播/封面跟随在重启后依然生效。
+        self.playback_queue_source_id = record.source_playlist_id.clone();
         let target = record
             .current_index
             .unwrap_or(0)
@@ -6125,11 +6130,16 @@ impl App {
         }
 
         self.persist_private_roam();
-        // 漫游列表页打开时同步 UI
+
+        // 扩展播放队列是播放行为，只看队列来源，不看当前在哪个页面：
+        // 否则重启后（页面停在主页）新歌只进列表不进队列，追加等于白做。
+        if self.playback_queue_is_roam() {
+            self.playback_queue.extend(new_queue_items);
+        }
+
+        // 列表页 UI 同步则确实只在该页打开时才需要。
         if self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID) {
             self.playlist.tracks = self.private_roam.tracks.clone();
-            // 同步扩展播放队列：全屏列表（基于队列快照）据此刷新，自动切歌也能继续播新歌
-            self.playback_queue.extend(new_queue_items);
         }
     }
 
@@ -6155,42 +6165,24 @@ impl App {
             }
             // 漫游没有固定的列表封面，其语义是「跟随当前播放歌曲」。
             // 队列来源封面（全屏侧边栏用）同步更新，否则会停在换队列那一刻的旧封面。
-            //
-            // 判据用「当前队列与漫游列表同源」而非 self.playlist.id：
-            // 后者是当前浏览页面，恢复播放记忆时仍停在主页，判不出来。
-            if self.playback_queue_source_is_roam || self.playback_queue_matches_roam() {
-                self.playback_queue_source_is_roam = true;
+            if self.playback_queue_is_roam() {
                 self.playback_queue_cover_url = Some(cover);
             }
         }
         self.sync_home_roam_tile_cover();
         self.persist_private_roam();
 
-        if is_last && self.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID) {
+        if is_last && self.playback_queue_is_roam() {
             self.append_private_roam_songs().await;
         }
     }
 
-    /// 当前播放队列是否与私人漫游同源。
+    /// 当前播放队列是否来自私人漫游。
     ///
-    /// 播放记忆恢复时没有来源标记，且此刻页面还停在主页，`self.playlist.id`
-    /// 判不出来。改用集合关系：队列中每首歌都在漫游列表里即认定同源。
-    fn playback_queue_matches_roam(&self) -> bool {
-        if self.playback_queue.is_empty() || self.private_roam.tracks.is_empty() {
-            return false;
-        }
-        let roam_ids: HashSet<&str> = self
-            .private_roam
-            .tracks
-            .iter()
-            .filter_map(|track| track.id.as_deref())
-            .collect();
-        if roam_ids.is_empty() {
-            return false;
-        }
-        self.playback_queue
-            .iter()
-            .all(|track| roam_ids.contains(track.song_id.as_str()))
+    /// 判据是随播放记忆持久化的来源 id，而非 `self.playlist.id`——后者是
+    /// 当前浏览页面，重启后为 None，会让漫游退化成普通歌单。
+    fn playback_queue_is_roam(&self) -> bool {
+        self.playback_queue_source_id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)
     }
 
     fn persist_private_roam(&self) {

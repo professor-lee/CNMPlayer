@@ -21,6 +21,13 @@ pub struct PlaybackSessionRecord {
     pub queue: Vec<PlaybackSessionTrack>,
     pub current_index: Option<usize>,
     pub repeat_mode: Option<String>,
+    /// 队列来源列表的 id（如私人漫游的 tile id）。
+    ///
+    /// 私人漫游有「播完自动在尾部追加新歌」「封面跟随当前播放歌曲」等
+    /// 依赖来源的行为，重启后必须能还原出队列来自哪个列表。
+    /// `serde(default)` 保证旧存档（无此字段）仍可读入。
+    #[serde(default)]
+    pub source_playlist_id: Option<String>,
     pub updated_at: i64,
 }
 
