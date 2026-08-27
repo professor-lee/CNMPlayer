@@ -46,9 +46,14 @@ pub fn draw_playlist(frame: &mut Frame, app: &mut App) {
         (rows[0], Rect::default())
     };
 
+    // 封面宽度上限 26 格（见 draw_*_header 的 cols[0] 约束），折算方形边长上限 13 行；
+    // header 再上下内缩 1 行，故顶部区域超过 15 行只会产生空白。此处封顶，
+    // 多出的高度全部让给下方列表。
+    const HEADER_MAX_HEIGHT: u16 = 15;
+    let header_height = (content_area.height * 34 / 100).min(HEADER_MAX_HEIGHT);
     let main = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
+        .constraints([Constraint::Length(header_height), Constraint::Min(1)])
         .split(content_area);
 
     draw_playlist_header(frame, app, main[0]);
