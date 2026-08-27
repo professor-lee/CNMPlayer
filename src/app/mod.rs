@@ -253,6 +253,95 @@ impl LoginState {
 }
 
 type SharedFuture<T> = Shared<Pin<Box<dyn Future<Output = Option<T>>>>>;
+
+/// 侧边栏歌单的一次拉取结果。异步任务不持有 `&mut App`，
+/// 取完由 `tick_home_sidebar_fetch` 搬进状态。
+#[derive(Clone)]
+struct HomeSidebarFetch {
+    user_id: String,
+    liked_playlist_id: Option<String>,
+    user_name: String,
+    created: Vec<HomeSidebarPlaylist>,
+    collected: Vec<HomeSidebarPlaylist>,
+}
+
+type HomeSidebarFetchFuture = SharedFuture<Result<HomeSidebarFetch, String>>;
+
+async fn fetch_home_sidebar_playlists(
+    mut api: ApiState,
+    language: Language,
+) -> Result<HomeSidebarFetch, String> {
+    let zh = matches!(language, Language::Zh);
+    let pick = |z: &'static str, e: &'static str| if zh { z } else { e };
+
+    let account = match api.user_account().await {
+        Ok(v) => v,
+        Err(_) => api
+            .login_status()
+            .await
+            .map_err(|err| format!("{}: {err}", pick("账号信息请求失败", "Account request failed")))?,
+    };
+    let account_code = response_code(&account);
+    if account_code != 200 {
+        return Err(format!(
+            "{}({}): {}",
+            pick("账号信息请求失败", "Failed to fetch account profile"),
+            account_code,
+            response_message(&account)
+        ));
+    }
+
+    let user_id = extract_current_user_id(&account)
+        .ok_or_else(|| pick("未找到当前用户 ID", "Current user id not found").to_string())?;
+    let user_name = extract_current_user_name(&account)
+        .unwrap_or_else(|| pick("当前用户", "Current User").to_string());
+
+    let created_response = api
+        .user_playlist_create(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, 0)
+        .await
+        .map_err(|err| {
+            format!(
+                "{}: {err}",
+                pick("创建歌单请求失败", "Created playlists request failed")
+            )
+        })?;
+    let created_code = response_code(&created_response);
+    if created_code != 200 {
+        return Err(format!(
+            "{}({}): {}",
+            pick("创建歌单请求失败", "Created playlists request failed"),
+            created_code,
+            response_message(&created_response)
+        ));
+    }
+
+    let collected_response = api
+        .user_playlist_collect(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, 0)
+        .await
+        .map_err(|err| {
+            format!(
+                "{}: {err}",
+                pick("收藏歌单请求失败", "Collected playlists request failed")
+            )
+        })?;
+    let collected_code = response_code(&collected_response);
+    if collected_code != 200 {
+        return Err(format!(
+            "{}({}): {}",
+            pick("收藏歌单请求失败", "Collected playlists request failed"),
+            collected_code,
+            response_message(&collected_response)
+        ));
+    }
+
+    Ok(HomeSidebarFetch {
+        user_id,
+        liked_playlist_id: extract_liked_playlist_id(&account),
+        user_name,
+        created: parse_home_sidebar_playlists(&created_response),
+        collected: parse_home_sidebar_playlists(&collected_response),
+    })
+}
 type CoverFuture = SharedFuture<Arc<DynamicImage>>;
 type AsciiFuture = SharedFuture<String>;
 
@@ -1661,6 +1750,10 @@ pub struct App {
     pub login: LoginState,
     pub home: HomeState,
     pub home_sidebar: HomeSidebarState,
+    /// 侧边栏歌单的在途拉取（异步填充，不阻塞展开动画）。
+    home_sidebar_fetch: Option<HomeSidebarFetchFuture>,
+    /// 上次检查 stderr 日志体积的时刻。
+    stderr_trim_checked_at: Option<Instant>,
     home_sidebar_anim_span_cells: u16,
     pub playlist: PlaylistState,
     pub private_roam: PrivateRoamState,
@@ -1670,6 +1763,9 @@ pub struct App {
     pub now_playing_liked: bool,
     pub liked_song_ids: HashSet<String>,
     pub playback_queue: Vec<PlaybackTrack>,
+    /// 当前播放队列来源列表（专辑/歌单）的封面 URL。
+    /// 与 `self.playlist` 解耦：后者是"最后访问的页面"，会随浏览漂移。
+    playback_queue_cover_url: Option<String>,
     pub playback_index: Option<usize>,
     pub playback_repeat_mode: PlaybackRepeatMode,
     pub playback_state: PlaybackRuntimeState,
@@ -1772,6 +1868,8 @@ impl App {
             login: LoginState::default(),
             home: HomeState::default(),
             home_sidebar: HomeSidebarState::default(),
+            home_sidebar_fetch: None,
+            stderr_trim_checked_at: None,
             home_sidebar_anim_span_cells: 24,
             playlist: PlaylistState::default(),
             private_roam: PrivateRoamState::default(),
@@ -1781,6 +1879,7 @@ impl App {
             now_playing_liked: false,
             liked_song_ids: HashSet::new(),
             playback_queue: Vec::new(),
+            playback_queue_cover_url: None,
             playback_index: None,
             playback_repeat_mode: PlaybackRepeatMode::Sequence,
             playback_state: PlaybackRuntimeState::Stopped,
@@ -1883,6 +1982,8 @@ impl App {
         self.sync_mpris_exposure();
         self.tick_search_box_animation();
         self.tick_home_sidebar_animation();
+        self.tick_home_sidebar_fetch();
+        self.tick_stderr_log_trim();
         self.tick_startup_loading();
         #[cfg(feature = "easter-egg")]
         self.tick_about_easter_egg();
@@ -2558,8 +2659,59 @@ impl App {
             return;
         }
 
-        match self.load_home_sidebar_playlists().await {
-            Ok(()) => {
+        // 异步填充：立刻返回，动画照常跑，数据由 tick 搬入。
+        if self.home_sidebar_fetch.is_none() {
+            self.home_sidebar.loading = true;
+            let fut = fetch_home_sidebar_playlists(self.api.clone(), self.config.language);
+            let fut: Pin<Box<dyn Future<Output = Option<Result<HomeSidebarFetch, String>>>>> =
+                Box::pin(async move { Some(fut.await) });
+            self.home_sidebar_fetch = Some(shot_and_share(fut));
+        }
+    }
+
+    /// 周期性检查 stderr 日志体积。原生库可能持续刷 stderr，
+    /// 而那个文件不经 ftail，需要自己设上限。
+    fn tick_stderr_log_trim(&mut self) {
+        const CHECK_INTERVAL: Duration = Duration::from_secs(60);
+        let due = match self.stderr_trim_checked_at {
+            Some(at) => at.elapsed() >= CHECK_INTERVAL,
+            None => true,
+        };
+        if !due {
+            return;
+        }
+        self.stderr_trim_checked_at = Some(Instant::now());
+        crate::trim_stderr_log_if_needed();
+    }
+
+    /// 搬运侧边栏歌单的异步结果（每帧调用，结果就绪才动状态）。
+    fn tick_home_sidebar_fetch(&mut self) {
+        let Some(result) = peek_shared_future(&self.home_sidebar_fetch).cloned() else {
+            return;
+        };
+        self.home_sidebar_fetch = None;
+        self.home_sidebar.loading = false;
+
+        match result {
+            Ok(data) => {
+                self.home_sidebar.user_id = Some(data.user_id);
+                self.home_sidebar.liked_playlist_id = data.liked_playlist_id;
+                self.home_sidebar.user_name = data.user_name;
+                self.home_sidebar.created_playlists = data.created;
+                self.home_sidebar.collected_playlists = data.collected;
+                self.home_sidebar.clamp_focus();
+                self.home_sidebar.status_line = match self.config.language {
+                    Language::Zh => format!(
+                        "创建 {} 个，收藏 {} 个",
+                        self.home_sidebar.created_playlists.len(),
+                        self.home_sidebar.collected_playlists.len()
+                    ),
+                    Language::En => format!(
+                        "{} created, {} collected",
+                        self.home_sidebar.created_playlists.len(),
+                        self.home_sidebar.collected_playlists.len()
+                    ),
+                };
                 self.home.status_line = self.home_sidebar.status_line.clone();
                 self.home_sidebar.reset_focus();
             }
@@ -3081,7 +3233,8 @@ impl App {
                     .iter()
                     .filter_map(PlaybackTrack::from_playlist_track)
                     .collect();
-                self.replace_queue_and_play(queue, 0).await;
+                let source_cover = self.playlist.cover.url.clone();
+                self.replace_queue_and_play(queue, 0, source_cover).await;
                 return;
             }
         }
@@ -3505,7 +3658,12 @@ impl App {
         }
     }
 
-    async fn replace_queue_and_play(&mut self, queue: Vec<PlaybackTrack>, index: usize) {
+    async fn replace_queue_and_play(
+        &mut self,
+        queue: Vec<PlaybackTrack>,
+        index: usize,
+        source_cover_url: Option<String>,
+    ) {
         if queue.is_empty() {
             self.set_runtime_status(
                 self.lang_text("当前页面没有可播放歌曲", "No playable songs on this page"),
@@ -3514,6 +3672,8 @@ impl App {
         }
 
         self.playback_queue = queue;
+        // 在换队列的此刻记下来源封面，之后浏览别的页面不会影响它。
+        self.playback_queue_cover_url = source_cover_url;
         let target = index.min(self.playback_queue.len() - 1);
         self.play_queue_index(target, true).await;
     }
@@ -3562,7 +3722,8 @@ impl App {
         match track.kind {
             PlaylistTrackKind::Song => {
                 let (queue, target) = self.build_queue_from_playlist();
-                self.replace_queue_and_play(queue, target).await;
+                let source_cover = self.playlist.cover.url.clone();
+                self.replace_queue_and_play(queue, target, source_cover).await;
             }
             PlaylistTrackKind::Album | PlaylistTrackKind::Ep | PlaylistTrackKind::Single => {
                 self.open_focused_playlist_album().await;
@@ -3580,7 +3741,8 @@ impl App {
         }
 
         let (queue, target) = self.build_queue_from_search();
-        self.replace_queue_and_play(queue, target).await;
+        // 搜索结果没有"所属列表"，交给首歌封面兜底。
+        self.replace_queue_and_play(queue, target, None).await;
     }
 
     async fn play_focused_author_tile(&mut self) {
@@ -4988,7 +5150,8 @@ impl App {
         let mut playlist_cover = None;
 
         if playlist_cover.is_none() {
-            if let Some(cover_url) = self.playlist.cover.url.clone() {
+            // 用播放队列的来源封面，而非最后访问的页面封面。
+            if let Some(cover_url) = self.playback_queue_cover_url.clone() {
                 playlist_cover = self.fetch_cover_with_disk_cache(&cover_url).await
             }
         }
@@ -5267,6 +5430,7 @@ impl App {
         }
 
         self.playback_queue = queue;
+        self.playback_queue_cover_url = None;
         let target = record
             .current_index
             .unwrap_or(0)
@@ -5679,88 +5843,6 @@ impl App {
             )
             .to_string();
         Ok(())
-    }
-
-    async fn load_home_sidebar_playlists(&mut self) -> Result<()> {
-        self.home_sidebar.loading = true;
-
-        let result = (async || -> Result<()> {
-            let account = match self.api.user_account().await {
-                Ok(v) => v,
-                Err(_) => self.api.login_status().await?,
-            };
-            let account_code = response_code(&account);
-            if account_code != 200 {
-                return Err(anyhow!(
-                    "{}({}): {}",
-                    self.lang_text("账号信息请求失败", "Failed to fetch account profile"),
-                    account_code,
-                    response_message(&account)
-                ));
-            }
-
-            let uid = extract_current_user_id(&account).ok_or_else(|| {
-                anyhow!(self.lang_text("未找到当前用户 ID", "Current user id not found"))
-            })?;
-            let user_name = extract_current_user_name(&account)
-                .unwrap_or_else(|| self.lang_text("当前用户", "Current User").to_string());
-
-            let created_response = self
-                .api
-                .user_playlist_create(&uid, HOME_SIDEBAR_PLAYLIST_LIMIT, 0)
-                .await?;
-            let created_code = response_code(&created_response);
-            if created_code != 200 {
-                return Err(anyhow!(
-                    "{}({}): {}",
-                    self.lang_text("创建歌单请求失败", "Created playlists request failed"),
-                    created_code,
-                    response_message(&created_response)
-                ));
-            }
-
-            let collected_response = self
-                .api
-                .user_playlist_collect(&uid, HOME_SIDEBAR_PLAYLIST_LIMIT, 0)
-                .await?;
-            let collected_code = response_code(&collected_response);
-            if collected_code != 200 {
-                return Err(anyhow!(
-                    "{}({}): {}",
-                    self.lang_text("收藏歌单请求失败", "Collected playlists request failed"),
-                    collected_code,
-                    response_message(&collected_response)
-                ));
-            }
-
-            let created_playlists = parse_home_sidebar_playlists(&created_response);
-            let collected_playlists = parse_home_sidebar_playlists(&collected_response);
-
-            self.home_sidebar.user_id = Some(uid);
-            self.home_sidebar.liked_playlist_id = extract_liked_playlist_id(&account);
-            self.home_sidebar.user_name = user_name;
-            self.home_sidebar.created_playlists = created_playlists;
-            self.home_sidebar.collected_playlists = collected_playlists;
-            self.home_sidebar.clamp_focus();
-            self.home_sidebar.status_line = match self.config.language {
-                Language::Zh => format!(
-                    "创建 {} 个，收藏 {} 个",
-                    self.home_sidebar.created_playlists.len(),
-                    self.home_sidebar.collected_playlists.len()
-                ),
-                Language::En => format!(
-                    "{} created, {} collected",
-                    self.home_sidebar.created_playlists.len(),
-                    self.home_sidebar.collected_playlists.len()
-                ),
-            };
-
-            Ok(())
-        })()
-        .await;
-
-        self.home_sidebar.loading = false;
-        result
     }
 
     async fn resolve_current_user_id(&mut self) -> Result<String> {

@@ -32,6 +32,8 @@ mod imp {
     use std::fs;
     use std::hash::{Hash, Hasher};
     use std::sync::mpsc::{self as std_mpsc, Receiver, Sender};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     pub struct MprisBridge {
         tx: see::unsync::Sender<Option<MprisSyncPayload>>,
@@ -243,13 +245,35 @@ mod imp {
 
         if !path.is_file() {
             fs::write(&path, bytes).ok()?;
-            let _ = cleanup_cache_dir(art_dir, cache_policy);
+            cleanup_art_dir_throttled(art_dir, cache_policy);
+            // 清理可能按容量把刚写的文件也删了，补写一次。
             if !path.is_file() {
                 fs::write(&path, bytes).ok()?;
             }
         }
 
         Some(format!("file://{}", path.to_string_lossy()))
+    }
+
+    /// `cleanup_cache_dir` 会 `read_dir` 整个目录并对每个文件取 metadata，
+    /// 开销随封面数量线性增长。原先每写一张封面就调一次，等于每次切歌
+    /// 全目录扫描。这里限制最短间隔，把它摊薄成周期性维护。
+    fn cleanup_art_dir_throttled(art_dir: &Path, cache_policy: &CacheConfig) {
+        const MIN_INTERVAL: Duration = Duration::from_secs(300);
+        static LAST_RUN: Mutex<Option<Instant>> = Mutex::new(None);
+
+        let Ok(mut last) = LAST_RUN.lock() else {
+            return;
+        };
+        if let Some(at) = *last {
+            if at.elapsed() < MIN_INTERVAL {
+                return;
+            }
+        }
+        *last = Some(Instant::now());
+        drop(last);
+
+        let _ = cleanup_cache_dir(art_dir, cache_policy);
     }
 
     fn sanitize_for_filename(input: &str) -> String {

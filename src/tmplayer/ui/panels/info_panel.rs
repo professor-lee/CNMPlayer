@@ -6,7 +6,7 @@ use crate::tmplayer::ui::components::{control_buttons, progress_bar, volume_bar}
 use crate::tmplayer::utils::timefmt;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::collections::hash_map::DefaultHasher;
@@ -341,9 +341,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
             height: 1,
         };
 
+        // 爱心与主页底栏同色，故与标题分成两段渲染。
+        let heart_style = Style::default()
+            .fg(app.theme.color_accent3())
+            .add_modifier(Modifier::BOLD);
         let title_line = compose_left_right_line(title, heart, meta_rect.width as usize);
-        let t = Paragraph::new(Line::from(vec![Span::styled(title_line, text_style)]))
-            .alignment(Alignment::Left);
+        let title_spans = match title_line.strip_suffix(heart) {
+            Some(head) => vec![
+                Span::styled(head.to_string(), text_style),
+                Span::styled(heart.to_string(), heart_style),
+            ],
+            None => vec![Span::styled(title_line, text_style)],
+        };
+        let t = Paragraph::new(Line::from(title_spans)).alignment(Alignment::Left);
         f.render_widget(t, meta_rect);
 
         let a = Paragraph::new(clip_to_display_width(artist, meta_rect.width as usize))

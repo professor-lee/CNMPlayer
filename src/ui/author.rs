@@ -83,33 +83,20 @@ fn draw_author_header(frame: &mut Frame, app: &mut App, area: Rect) {
         .split(inner);
 
     let mut cover_line_limit = inner.height;
-    let cover_block = centered_visual_square_block(cols[0]);
-    if !cover_block.is_empty() {
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.color_surface())),
-            cover_block,
+    let cover_area = centered_visual_square_block(cols[0]);
+    if !cover_area.is_empty() {
+        cover_line_limit = cover_area.height;
+        let bg_style = surface_bg_style(app);
+        let draw_ascii = app.draw_ascii();
+        let text_style = Style::default().fg(app.theme.color_text());
+        app.author.cover.render(
+            frame,
+            &mut app.graphics_picker,
+            cover_area,
+            text_style,
+            Some(bg_style),
+            draw_ascii,
         );
-
-        let cover_area = cover_block.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
-        if !cover_area.is_empty() {
-            cover_line_limit = cover_area.height;
-            let bg_style = surface_bg_style(app);
-            let draw_ascii = app.draw_ascii();
-            let text_style = Style::default().fg(app.theme.color_text());
-            app.author.cover.render(
-                frame,
-                &mut app.graphics_picker,
-                cover_area,
-                text_style,
-                Some(bg_style),
-                draw_ascii,
-            );
-        }
     }
 
     let hot_count = app.author.hot_songs.len();
@@ -121,6 +108,17 @@ fn draw_author_header(frame: &mut Frame, app: &mut App, area: Rect) {
         horizontal: 1,
         vertical: 0,
     });
+    // 文字内容与封面同高、顶端对齐。
+    let info_area = if cover_area.is_empty() {
+        info_area
+    } else {
+        Rect {
+            x: info_area.x,
+            y: cover_area.y,
+            width: info_area.width,
+            height: cover_area.height,
+        }
+    };
     if info_area.width == 0 || info_area.height == 0 {
         return;
     }
@@ -361,19 +359,17 @@ fn draw_author_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn centered_visual_square_block(area: Rect) -> Rect {
-    if area.width < 4 || area.height < 3 {
+    if area.width < 2 || area.height < 1 {
         return Rect::default();
     }
 
-    let content_width = area.width.saturating_sub(2);
-    let content_height = area.height.saturating_sub(2);
-    let side = content_height.min(content_width / 2);
+    let side = area.height.min(area.width / 2);
     if side == 0 {
         return Rect::default();
     }
 
-    let width = side.saturating_mul(2).saturating_add(2);
-    let height = side.saturating_add(2);
+    let width = side.saturating_mul(2);
+    let height = side;
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
