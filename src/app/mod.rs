@@ -4188,6 +4188,13 @@ impl App {
                     self.close_overlay();
                 }
             }
+            // 空格等价于点击一次形象：重新计时即打断当前动画重头播放。
+            #[cfg(feature = "easter-egg")]
+            KeyCode::Char(' ') if key.modifiers.is_empty() => {
+                if self.about_egg.phase == EasterEggPhase::Active {
+                    self.about_egg.jelly_started_at = Some(Instant::now());
+                }
+            }
             _ => {}
         }
     }
