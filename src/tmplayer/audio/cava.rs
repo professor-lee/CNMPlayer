@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -267,6 +268,8 @@ fn user_cava_input_section() -> String {
 ///
 /// cava convention: `gradient_color_1` is the BOTTOM color and higher
 /// numbers go UP the screen. `gradient` is therefore stored bottom→top.
+/// On macOS, schemes handed out by [`user_cava_color_scheme`] follow the
+/// system appearance: in Dark Mode the gradient order is reversed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CavaColorScheme {
     /// Multi-stop gradient, ordered bottom→top. Empty when gradient is off.
@@ -294,6 +297,16 @@ impl CavaColorScheme {
         let frac = scaled - idx as f32;
         let (a, b) = (self.gradient[idx], self.gradient[idx + 1]);
         Some(mix_rgb(a, b, frac))
+    }
+
+    /// Same scheme with the gradient stop order flipped (bottom→top becomes
+    /// top→bottom). Used to adapt a Light-Mode scheme to macOS Dark Mode:
+    /// a gradient running dark→light upwards becomes light→dark, i.e.
+    /// white at the bottom and black at the top.
+    #[must_use]
+    pub fn reversed(mut self) -> Self {
+        self.gradient.reverse();
+        self
     }
 }
 
@@ -424,11 +437,173 @@ fn parse_color_scheme_from(content: &str) -> Option<CavaColorScheme> {
 }
 
 /// The user's cava `[color]` scheme, parsed once per process from
-/// `~/.config/cava/config`. `None` when the config has no usable colors
-/// (all defaults) — callers then fall back to their own palette.
+/// `~/.config/cava/config`, adapted to the macOS system appearance:
+/// in Dark Mode the gradient is reversed (white at the bottom → black at
+/// the top). `None` when the config has no usable colors (all defaults) —
+/// callers then fall back to their own palette.
 pub fn user_cava_color_scheme() -> Option<CavaColorScheme> {
     static CACHE: OnceLock<Option<CavaColorScheme>> = OnceLock::new();
-    CACHE.get_or_init(parse_user_cava_color_scheme).clone()
+    CACHE
+        .get_or_init(parse_user_cava_color_scheme)
+        .clone()
+        .map(|scheme| adapt_scheme_to_appearance(scheme, system_is_dark_mode()))
+}
+
+/// In Dark Mode the gradient is flipped so the light end sits at the bottom
+/// and the dark end on top; Light Mode keeps the config as-is. A flat
+/// foreground (no gradient) is left untouched.
+fn adapt_scheme_to_appearance(scheme: CavaColorScheme, dark: bool) -> CavaColorScheme {
+    if dark {
+        scheme.reversed()
+    } else {
+        scheme
+    }
+}
+
+/// Whether the macOS system appearance is currently Dark Mode. The result
+/// is cached for a short interval: renderers call this every frame, but the
+/// appearance lookup must not run that often.
+#[cfg(target_os = "macos")]
+fn system_is_dark_mode() -> bool {
+    static DARK: AtomicU8 = AtomicU8::new(0);
+    static LAST_CHECK_MS: AtomicI64 = AtomicI64::new(i64::MIN);
+    const CHECK_INTERVAL_MS: i64 = 3_000;
+
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let last = LAST_CHECK_MS.load(Ordering::Relaxed);
+    // Exactly one caller wins the exchange and refreshes the cache; the
+    // rest keep using the value from the previous round.
+    if now_ms.saturating_sub(last) >= CHECK_INTERVAL_MS
+        && LAST_CHECK_MS
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        let dark = macos_is_dark_mode();
+        DARK.store(u8::from(dark), Ordering::Relaxed);
+        return dark;
+    }
+    DARK.load(Ordering::Relaxed) == 1
+}
+
+/// Other platforms have no system Light/Dark appearance to follow.
+#[cfg(not(target_os = "macos"))]
+fn system_is_dark_mode() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn macos_is_dark_mode() -> bool {
+    session_style_is_dark(macos_appearance::apple_interface_style().as_deref())
+}
+
+/// Only the literal `Dark` (case-insensitive) means Dark Mode; an absent
+/// style means Light Mode (or Auto appearance during daytime).
+#[cfg(target_os = "macos")]
+fn session_style_is_dark(style: Option<&str>) -> bool {
+    style.is_some_and(|s| s.eq_ignore_ascii_case("dark"))
+}
+
+#[cfg(target_os = "macos")]
+mod macos_appearance {
+    //! Minimal CoreFoundation FFI to read the global `AppleInterfaceStyle`
+    //! preference — the exact same store `defaults read -g AppleInterfaceStyle`
+    //! consults, but in-process (no fork/exec, no TCC permission prompt).
+    //!
+    //! Semantics match `defaults read`: the key holds `Dark` while Dark Mode
+    //! is manually selected and is absent in Light Mode. Note that with
+    //! appearance set to Auto the key stays absent (macOS 15 verified), so
+    //! Auto's night-time dark is reported as light; manual toggles — the
+    //! common case — always update live via cfprefsd.
+
+    use std::ffi::{CStr, CString, c_char, c_void};
+
+    type CFStringRef = *const c_void;
+    type CFPropertyListRef = *const c_void;
+
+    /// `kCFStringEncodingUTF8`.
+    const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
+
+    /// `kCFPreferencesAnyApplication` — the global (`defaults read -g`) domain.
+    /// The constant's value equals its symbol name.
+    const K_CF_PREFERENCES_ANY_APPLICATION: &str = "kCFPreferencesAnyApplication";
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFPreferencesCopyAppValue(
+            key: CFStringRef,
+            application: CFStringRef,
+        ) -> CFPropertyListRef;
+        fn CFPreferencesAppSynchronize(application: CFStringRef);
+        fn CFStringCreateWithCString(
+            alloc: *const c_void,
+            c_str: *const c_char,
+            encoding: u32,
+        ) -> CFStringRef;
+        fn CFStringGetCString(
+            the_string: CFStringRef,
+            buffer: *mut c_char,
+            buffer_size: isize,
+            encoding: u32,
+        ) -> bool;
+        fn CFGetTypeID(cf: *const c_void) -> u64;
+        fn CFStringGetTypeID() -> u64;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    /// Reads a global-domain string preference via cfprefsd, e.g.
+    /// `AppleInterfaceStyle` → `Some("Dark")`. `None` when the key is absent
+    /// or not a string. Mirrors `defaults read -g <key>`.
+    fn read_global_string(key: &str) -> Option<String> {
+        unsafe {
+            let key_c = CString::new(key).ok()?;
+            let domain_c = CString::new(K_CF_PREFERENCES_ANY_APPLICATION).ok()?;
+            let key_ref =
+                CFStringCreateWithCString(std::ptr::null(), key_c.as_ptr(), K_CF_STRING_ENCODING_UTF8);
+            if key_ref.is_null() {
+                return None;
+            }
+            let domain_ref = CFStringCreateWithCString(
+                std::ptr::null(),
+                domain_c.as_ptr(),
+                K_CF_STRING_ENCODING_UTF8,
+            );
+            if domain_ref.is_null() {
+                CFRelease(key_ref);
+                return None;
+            }
+            // Refresh the in-process cache so preference changes made by
+            // System Settings / `defaults` are seen promptly.
+            CFPreferencesAppSynchronize(domain_ref);
+            let value = CFPreferencesCopyAppValue(key_ref, domain_ref);
+            CFRelease(key_ref);
+            CFRelease(domain_ref);
+            if value.is_null() || CFGetTypeID(value) != CFStringGetTypeID() {
+                return None; // absent, or unexpectedly a non-string
+            }
+            let mut buf: [c_char; 32] = [0; 32];
+            let out = if CFStringGetCString(
+                value as CFStringRef,
+                buf.as_mut_ptr(),
+                buf.len() as isize,
+                K_CF_STRING_ENCODING_UTF8,
+            ) {
+                Some(CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned())
+            } else {
+                None
+            };
+            CFRelease(value);
+            out
+        }
+    }
+
+    /// Current `AppleInterfaceStyle`: `Some("Dark")` in Dark Mode, `None` in
+    /// Light Mode (and Auto appearance, see module docs).
+    pub fn apple_interface_style() -> Option<String> {
+        read_global_string("AppleInterfaceStyle")
+    }
 }
 
 /// Visual channel mode inherited from the user's cava config `[output]`
@@ -696,5 +871,57 @@ mod tests {
         // Later sections don't reset the section scan result.
         let cfg = "[output]\nchannels = mono\n\n[color]\nforeground = white\n";
         assert_eq!(parse_channels_from(cfg), Some(CavaChannels::Mono));
+    }
+
+    #[test]
+    fn dark_mode_reverses_gradient_bottom_white_top_black() {
+        // The user's Light-Mode scheme: dark at the bottom → light at the top.
+        let stops = [
+            "#4C4C4C", "#535353", "#595959", "#666666", "#737373", "#8C8C8C", "#A0A0A0",
+            "#B3B3B3", "#C0C0C0", "#CCCCCC",
+        ];
+        let mut cfg = String::from("[color]\ngradient = 1\n");
+        for (i, c) in stops.iter().enumerate() {
+            cfg.push_str(&format!("gradient_color_{} = '{c}'\n", i + 1));
+        }
+        let light = parse_color_scheme_from(&cfg).expect("scheme should parse");
+
+        // Dark Mode: reversed — white at the bottom, black at the top.
+        let dark = adapt_scheme_to_appearance(light.clone(), true);
+        assert_eq!(dark.color_at(1.0), Some((0xcc, 0xcc, 0xcc))); // bottom
+        assert_eq!(dark.color_at(0.0), Some((0x4c, 0x4c, 0x4c))); // top
+        // Light Mode keeps the config's own order.
+        assert_eq!(light.color_at(1.0), Some((0x4c, 0x4c, 0x4c)));
+        assert_eq!(light.color_at(0.0), Some((0xcc, 0xcc, 0xcc)));
+    }
+
+    #[test]
+    fn dark_mode_leaves_flat_foreground_alone() {
+        let flat = CavaColorScheme {
+            gradient: Vec::new(),
+            foreground: Some((9, 9, 9)),
+        };
+        let dark = adapt_scheme_to_appearance(flat, true);
+        assert_eq!(dark.color_at(0.3), Some((9, 9, 9)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_dark_style_counts_as_dark() {
+        assert!(session_style_is_dark(Some("Dark")));
+        assert!(session_style_is_dark(Some("dark")));
+        // Light Mode and Auto-appearance daytime have no style at all.
+        assert!(!session_style_is_dark(None));
+        assert!(!session_style_is_dark(Some("Light")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn session_style_lookup_does_not_panic() {
+        // Smoke test for the FFI path: absent in Light Mode, `"Dark"` in
+        // Dark Mode. Whatever comes back must be a short style string.
+        if let Some(style) = macos_appearance::apple_interface_style() {
+            assert!(!style.is_empty() && style.len() < 16, "got {style:?}");
+        }
     }
 }
