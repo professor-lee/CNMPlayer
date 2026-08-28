@@ -119,8 +119,8 @@ impl Tui {
             layout_out.right = cols[1];
             layout_out.left_width = cols[0].width;
 
-            // right: lyrics (fixed 10 rows ≈ 8 visible lines) + spectrum (rest)
-            let lyric_h = 10u16.min(cols[1].height.saturating_sub(6));
+            // right: lyrics (fixed 12 rows ≈ 10 visible lines) + spectrum (rest)
+            let lyric_h = 12u16.min(cols[1].height.saturating_sub(6));
             let rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(lyric_h), Constraint::Min(1)])
