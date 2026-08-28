@@ -5,7 +5,7 @@ use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use see::unsync::Receiver;
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
@@ -89,11 +89,21 @@ impl CavaRunner {
             CavaChannels::Mono => "mono",
         };
         let reverse = if cfg.reverse { 1 } else { 0 };
+        // Inherit the user's cava [input] section if one exists. On macOS this is
+        // required: without a loopback source (e.g. `source = "BlackHole 2ch"`) cava 1.x
+        // aborts with "output mix capture still requires a loopback-capable device".
+        let user_input = user_cava_input_section();
+        let input_block = if user_input.is_empty() {
+            "[input]\n# Leave method/source unset: cava will pick the best supported backend (pipewire/pulse/etc).\n\n".to_string()
+        } else {
+            format!("[input]\n{user_input}\n")
+        };
         let cfg = format!(
-            "[general]\nframerate = {fr}\nbars = {bars}\nreverse = {reverse}\n\n[input]\n# Leave method/source unset: cava will pick the best supported backend (pipewire/pulse/etc).\n\n[output]\nmethod = raw\nchannels = {channels}\nraw_target = /dev/stdout\ndata_format = ascii\nascii_max_range = 1000\nbar_delimiter = 59\nframe_delimiter = 10\n",
+            "[general]\nframerate = {fr}\nbars = {bars}\nreverse = {reverse}\n\n{input_block}[output]\nmethod = raw\nchannels = {channels}\nraw_target = /dev/stdout\ndata_format = ascii\nascii_max_range = 1000\nbar_delimiter = 59\nframe_delimiter = 10\n",
             fr = framerate_hz,
             bars = bars,
             reverse = reverse,
+            input_block = input_block,
             channels = channels_str
         );
 
@@ -106,7 +116,7 @@ impl CavaRunner {
             .arg(&cfg_path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("spawn cava: {}", cava_exe.display()))?;
 
@@ -114,6 +124,10 @@ impl CavaRunner {
             .stdout
             .take()
             .context("failed to capture cava stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("failed to capture cava stderr")?;
 
         let left: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(vec![0.0; bars]));
         let right: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(vec![0.0; bars]));
@@ -122,12 +136,20 @@ impl CavaRunner {
 
         let reader = thread::spawn(move || {
             let mut br = BufReader::new(stdout);
+            let mut stderr = BufReader::new(stderr);
             let mut line = String::new();
             let mut next_is_left = true;
             loop {
                 line.clear();
                 match br.read_line(&mut line) {
-                    Ok(0) => break, // EOF
+                    Ok(0) => {
+                        // cava exited (or produced nothing). Surface its stderr
+                        // instead of failing silently with an empty spectrum.
+                        let mut err = String::new();
+                        let _ = stderr.read_to_string(&mut err);
+                        log::warn!("cava exited early (EOF on stdout); stderr: {}", err.trim());
+                        break;
+                    }
                     Ok(_) => {
                         let frames = parse_frames_ascii(&line, bars);
                         match channels {
@@ -200,6 +222,41 @@ impl CavaRunner {
             self.right.lock().unwrap().clone(),
         )
     }
+}
+
+/// Extract the `[input]` section from the user's cava config
+/// (`$XDG_CONFIG_HOME/cava/config` or `~/.config/cava/config`).
+/// Lets the app inherit a working input method/source (e.g.
+/// `method = coreaudio` + `source = "BlackHole 2ch"` on macOS).
+fn user_cava_input_section() -> String {
+    let cfg_path = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+        })
+        .join(".config")
+        .join("cava")
+        .join("config");
+    let Ok(content) = fs::read_to_string(&cfg_path) else {
+        return String::new();
+    };
+
+    let mut out = String::new();
+    let mut in_input = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_input = t == "[input]";
+            continue;
+        }
+        if in_input && !t.is_empty() && !t.starts_with('#') && !t.starts_with(';') {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 fn find_cava_executable() -> Option<PathBuf> {
