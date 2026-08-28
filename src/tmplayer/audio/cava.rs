@@ -304,9 +304,39 @@ fn mix_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
 }
 
 /// Parse a single cava color token: `'#rrggbb'`, `#rrggbb` or a named color.
+/// Tolerates trailing inline comments (`; ...` or ` # ...`), so real-world
+/// values like `'#4C4C4C'  # 明度 30%` parse as `#4C4C4C`.
 /// `default` and unknown tokens yield `None` (keep the caller's fallback).
-fn parse_cava_color(s: &str) -> Option<(u8, u8, u8)> {
-    let s = s.trim().trim_matches('\'');
+fn parse_cava_color(raw: &str) -> Option<(u8, u8, u8)> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // Quoted value: take the content between the first matching quote pair;
+    // anything after the closing quote (e.g. an inline comment) is dropped.
+    let first = raw.chars().next().unwrap();
+    if first == '\'' || first == '"' {
+        let s = match raw[1..].find(first) {
+            Some(end) => &raw[1..1 + end],
+            None => raw.trim_matches(first), // unterminated quote: best effort
+        };
+        return parse_bare_color(s);
+    }
+    // Unquoted: cut `;` comments first.
+    let s = raw.split(';').next().unwrap_or("").trim();
+    // A leading `#` begins a hex token, not a comment.
+    if let Some(hex) = s.strip_prefix('#') {
+        let head: String = hex.chars().take(6).collect();
+        return parse_bare_color(&format!("#{head}"));
+    }
+    // Otherwise an inline comment after whitespace ends the value; named
+    // colors are a single word, so keep only the first token.
+    let s = s.split_whitespace().next().unwrap_or("");
+    parse_bare_color(s)
+}
+
+fn parse_bare_color(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim();
     if let Some(hex) = s.strip_prefix('#') {
         if hex.len() == 6 {
             let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -331,7 +361,10 @@ fn parse_cava_color(s: &str) -> Option<(u8, u8, u8)> {
 
 fn parse_user_cava_color_scheme() -> Option<CavaColorScheme> {
     let content = fs::read_to_string(user_cava_config_path()).ok()?;
+    parse_color_scheme_from(&content)
+}
 
+fn parse_color_scheme_from(content: &str) -> Option<CavaColorScheme> {
     let mut in_color = false;
     let mut gradient = false;
     let mut foreground: Option<(u8, u8, u8)> = None;
@@ -352,12 +385,23 @@ fn parse_user_cava_color_scheme() -> Option<CavaColorScheme> {
         let key = key.trim();
         let val = val.trim();
         match key {
-            "gradient" => gradient = val == "1" || val.eq_ignore_ascii_case("true"),
+            "gradient" => {
+                let flag = val
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                gradient = flag == "1" || flag.eq_ignore_ascii_case("true");
+            }
             "foreground" => foreground = parse_cava_color(val),
             _ if key.starts_with("gradient_color_") => {
-                let n: usize = key["gradient_color_".len()..].trim().parse().ok()?;
-                if let Some(c) = parse_cava_color(val) {
-                    by_index.insert(n, c);
+                // A malformed index only skips that one stop.
+                if let Ok(n) = key["gradient_color_".len()..].trim().parse::<usize>() {
+                    if let Some(c) = parse_cava_color(val) {
+                        by_index.insert(n, c);
+                    }
                 }
             }
             _ => {}
@@ -517,6 +561,48 @@ mod tests {
         assert_eq!(scheme.color_at(0.0), Some((255, 255, 255))); // top → last color
         let mid = scheme.color_at(0.5).unwrap();
         assert!(mid.0 > 100 && mid.0 < 160, "mid gray expected, got {mid:?}");
+    }
+
+    #[test]
+    fn parses_colors_with_inline_comments() {
+        // The real-world format: quoted hex followed by a `# comment`.
+        assert_eq!(
+            parse_cava_color("'#4C4C4C'  # 明度 30%"),
+            Some((0x4c, 0x4c, 0x4c))
+        );
+        assert_eq!(parse_cava_color("white ; light"), Some((255, 255, 255)));
+        assert_eq!(parse_cava_color("cyan	# accent"), Some((0, 255, 255)));
+        // Unquoted hex with a trailing comment stays parseable.
+        assert_eq!(
+            parse_cava_color("#D20F39 ; brand red"),
+            Some((0xd2, 0x0f, 0x39))
+        );
+        assert_eq!(parse_cava_color("'#59cc33"), Some((0x59, 0xcc, 0x33)));
+    }
+
+    #[test]
+    fn scheme_from_user_style_config() {
+        // Mirrors a real user config: 10 stops, quoted values, inline comments.
+        let mut cfg = String::from("[general]\nbars = 40\n\n[color]\ngradient = 1\ngradient_count = 10\n\n");
+        let stops = [
+            "#4C4C4C", "#535353", "#595959", "#666666", "#737373", "#8C8C8C", "#A0A0A0",
+            "#B3B3B3", "#C0C0C0", "#CCCCCC",
+        ];
+        for (i, c) in stops.iter().enumerate() {
+            cfg.push_str(&format!("gradient_color_{}  = '{}'  # stop\n", i + 1, c));
+        }
+        cfg.push_str("\n[smoothing]\n\n");
+        let scheme = parse_color_scheme_from(&cfg).expect("scheme should parse");
+        assert_eq!(scheme.gradient.len(), 10);
+        assert_eq!(scheme.gradient[0], (0x4c, 0x4c, 0x4c)); // bottom
+        assert_eq!(scheme.gradient[9], (0xcc, 0xcc, 0xcc)); // top
+        // Dark at the bottom (t=1.0), light at the top (t=0.0).
+        assert_eq!(scheme.color_at(1.0), Some((0x4c, 0x4c, 0x4c)));
+        assert_eq!(scheme.color_at(0.0), Some((0xcc, 0xcc, 0xcc)));
+        // A stop that fails to parse only drops that stop, not the scheme.
+        cfg.push_str("gradient_color_11 = default\n");
+        let scheme = parse_color_scheme_from(&cfg).expect("scheme survives bad stop");
+        assert_eq!(scheme.gradient.len(), 10);
     }
 
     #[test]
