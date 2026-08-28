@@ -48,37 +48,8 @@ pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut Ap
         height: inner.height.saturating_sub(lyric_h),
     };
 
-    let (l1, l2) = current_two_lines(app);
-    if lyric_inner.height >= 1 && !l1.is_empty() {
-        f.render_widget(
-            Paragraph::new(l1)
-                .style(
-                    Style::default()
-                        .fg(app.theme.color_accent2())
-                        .add_modifier(Modifier::BOLD),
-                )
-                .alignment(Alignment::Center),
-            Rect {
-                x: lyric_inner.x,
-                y: lyric_inner.y,
-                width: lyric_inner.width,
-                height: 1,
-            },
-        );
-    }
-    if lyric_inner.height >= 2 && !l2.is_empty() {
-        f.render_widget(
-            Paragraph::new(l2)
-                .style(Style::default().fg(app.theme.color_subtext()))
-                .alignment(Alignment::Center),
-            Rect {
-                x: lyric_inner.x,
-                y: lyric_inner.y + 1,
-                width: lyric_inner.width,
-                height: 1,
-            },
-        );
-    }
+    // Centered scrolling lyric window in the top strip (as many lines as fit).
+    render_full_lyrics(f, lyric_inner, app);
 
     match app.config.visualize {
         VisualizeMode::Off => {}
@@ -141,22 +112,6 @@ fn no_lyrics_label(app: &AppState) -> &'static str {
         crate::data::config::Language::Zh => "暂无歌词",
         crate::data::config::Language::En => "No lyrics",
     }
-}
-
-fn current_two_lines(app: &AppState) -> (&str, &str) {
-    let Some(lines) = app.player.track.lyrics.as_ref() else {
-        return ("", "");
-    };
-    if lines.is_empty() {
-        return ("", "");
-    }
-
-    let pos_ms = app.player.position.as_millis() as u64;
-    let idx = current_lyric_index(lines, pos_ms);
-
-    let l1 = lines.get(idx).map(|l| l.text.as_str()).unwrap_or("");
-    let l2 = lines.get(idx + 1).map(|l| l.text.as_str()).unwrap_or("");
-    (l1, l2)
 }
 
 fn current_lyric_index(lines: &[LyricLine], pos_ms: u64) -> usize {

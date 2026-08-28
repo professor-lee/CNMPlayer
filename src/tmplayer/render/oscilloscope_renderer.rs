@@ -274,6 +274,14 @@ fn wrap_tau(mut x: f32) -> f32 {
 }
 
 fn vertical_gradient_color(app: &AppState, t: f32) -> Color {
+    // Prefer the user's cava config [color] section (multi-stop gradient,
+    // inherited exactly like the [input] section). Fall back to the theme's
+    // accent range when cava defines no colors.
+    if let Some(scheme) = crate::tmplayer::audio::cava::user_cava_color_scheme() {
+        if let Some((r, g, b)) = scheme.color_at(t) {
+            return Color::Rgb(r, g, b);
+        }
+    }
     let top = app.theme.color_accent2();
     let bottom = app.theme.color_accent3();
     mix(top, bottom, t)

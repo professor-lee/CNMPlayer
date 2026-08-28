@@ -224,12 +224,10 @@ impl CavaRunner {
     }
 }
 
-/// Extract the `[input]` section from the user's cava config
+/// Locate the user's cava config file
 /// (`$XDG_CONFIG_HOME/cava/config` or `~/.config/cava/config`).
-/// Lets the app inherit a working input method/source (e.g.
-/// `method = coreaudio` + `source = "BlackHole 2ch"` on macOS).
-fn user_cava_input_section() -> String {
-    let cfg_path = std::env::var_os("XDG_CONFIG_HOME")
+fn user_cava_config_path() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::env::var_os("HOME")
@@ -238,8 +236,14 @@ fn user_cava_input_section() -> String {
         })
         .join(".config")
         .join("cava")
-        .join("config");
-    let Ok(content) = fs::read_to_string(&cfg_path) else {
+        .join("config")
+}
+
+/// Extract the `[input]` section from the user's cava config.
+/// Lets the app inherit a working input method/source (e.g.
+/// `method = coreaudio` + `source = "BlackHole 2ch"` on macOS).
+fn user_cava_input_section() -> String {
+    let Ok(content) = fs::read_to_string(user_cava_config_path()) else {
         return String::new();
     };
 
@@ -257,6 +261,130 @@ fn user_cava_input_section() -> String {
         }
     }
     out
+}
+
+/// Colors inherited from the user's cava config `[color]` section.
+///
+/// cava convention: `gradient_color_1` is the BOTTOM color and higher
+/// numbers go UP the screen. `gradient` is therefore stored bottom→top.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CavaColorScheme {
+    /// Multi-stop gradient, ordered bottom→top. Empty when gradient is off.
+    pub gradient: Vec<(u8, u8, u8)>,
+    /// Flat foreground color (used when gradient is off / has no stops).
+    pub foreground: Option<(u8, u8, u8)>,
+}
+
+impl CavaColorScheme {
+    /// Resolve the color at height `t` of the spectrum, where `t` follows the
+    /// cnmplayer renderer convention: 0.0 = TOP of the bars, 1.0 = bottom.
+    /// Returns `None` when the scheme carries no usable color.
+    pub fn color_at(&self, t: f32) -> Option<(u8, u8, u8)> {
+        if self.gradient.is_empty() {
+            return self.foreground;
+        }
+        // Flip cnmplayer t (0=top) to cava position (0=bottom).
+        let pos = (1.0 - t).clamp(0.0, 1.0);
+        let n = self.gradient.len();
+        if n == 1 {
+            return Some(self.gradient[0]);
+        }
+        let scaled = pos * (n - 1) as f32;
+        let idx = (scaled.floor() as usize).min(n - 2);
+        let frac = scaled - idx as f32;
+        let (a, b) = (self.gradient[idx], self.gradient[idx + 1]);
+        Some(mix_rgb(a, b, frac))
+    }
+}
+
+fn mix_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    (lerp(a.0, b.0), lerp(a.1, b.1), lerp(a.2, b.2))
+}
+
+/// Parse a single cava color token: `'#rrggbb'`, `#rrggbb` or a named color.
+/// `default` and unknown tokens yield `None` (keep the caller's fallback).
+fn parse_cava_color(s: &str) -> Option<(u8, u8, u8)> {
+    let s = s.trim().trim_matches('\'');
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some((r, g, b));
+        }
+        return None;
+    }
+    match s.to_ascii_lowercase().as_str() {
+        "black" => Some((0, 0, 0)),
+        "red" => Some((255, 0, 0)),
+        "green" => Some((0, 255, 0)),
+        "yellow" => Some((255, 255, 0)),
+        "blue" => Some((0, 0, 255)),
+        "magenta" => Some((255, 0, 255)),
+        "cyan" => Some((0, 255, 255)),
+        "white" => Some((255, 255, 255)),
+        _ => None, // "default" and anything unknown → fall back
+    }
+}
+
+fn parse_user_cava_color_scheme() -> Option<CavaColorScheme> {
+    let content = fs::read_to_string(user_cava_config_path()).ok()?;
+
+    let mut in_color = false;
+    let mut gradient = false;
+    let mut foreground: Option<(u8, u8, u8)> = None;
+    let mut by_index: std::collections::BTreeMap<usize, (u8, u8, u8)> =
+        std::collections::BTreeMap::new();
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_color = t == "[color]";
+            continue;
+        }
+        if !in_color || t.is_empty() || t.starts_with('#') || t.starts_with(';') {
+            continue;
+        }
+        let Some((key, val)) = t.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let val = val.trim();
+        match key {
+            "gradient" => gradient = val == "1" || val.eq_ignore_ascii_case("true"),
+            "foreground" => foreground = parse_cava_color(val),
+            _ if key.starts_with("gradient_color_") => {
+                let n: usize = key["gradient_color_".len()..].trim().parse().ok()?;
+                if let Some(c) = parse_cava_color(val) {
+                    by_index.insert(n, c);
+                }
+            }
+            _ => {}
+        }
+    }
+    // Assemble bottom→top gradient (cava: gradient_color_1 = bottom),
+    // compacting any gaps between defined stops.
+    let gradient_colors: Vec<(u8, u8, u8)> = by_index.into_values().collect();
+
+    if gradient && !gradient_colors.is_empty() {
+        return Some(CavaColorScheme {
+            gradient: gradient_colors,
+            foreground,
+        });
+    }
+    foreground.map(|fg| CavaColorScheme {
+        gradient: Vec::new(),
+        foreground: Some(fg),
+    })
+}
+
+/// The user's cava `[color]` scheme, parsed once per process from
+/// `~/.config/cava/config`. `None` when the config has no usable colors
+/// (all defaults) — callers then fall back to their own palette.
+pub fn user_cava_color_scheme() -> Option<CavaColorScheme> {
+    static CACHE: OnceLock<Option<CavaColorScheme>> = OnceLock::new();
+    CACHE.get_or_init(parse_user_cava_color_scheme).clone()
 }
 
 fn find_cava_executable() -> Option<PathBuf> {
@@ -361,4 +489,47 @@ fn temp_cfg_path() -> String {
         .unwrap_or_default()
         .as_millis();
     format!("/tmp/tmplayer-cava-{pid}-{ts}.conf")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_hex_and_named_colors() {
+        assert_eq!(parse_cava_color("'#59cc33'"), Some((0x59, 0xcc, 0x33)));
+        assert_eq!(parse_cava_color("#D20F39"), Some((0xd2, 0x0f, 0x39)));
+        assert_eq!(parse_cava_color("black"), Some((0, 0, 0)));
+        assert_eq!(parse_cava_color("cyan"), Some((0, 255, 255)));
+        // "default" / unknown → None so the caller keeps its fallback.
+        assert_eq!(parse_cava_color("default"), None);
+        assert_eq!(parse_cava_color("hotpink"), None);
+    }
+
+    #[test]
+    fn gradient_flows_bottom_to_top() {
+        // cava: gradient_color_1 = bottom. cnmplayer t: 0.0 = top, 1.0 = bottom.
+        let scheme = CavaColorScheme {
+            gradient: vec![(0, 0, 0), (255, 255, 255)], // black bottom, white top
+            foreground: Some((1, 2, 3)),
+        };
+        assert_eq!(scheme.color_at(1.0), Some((0, 0, 0))); // bottom → color_1
+        assert_eq!(scheme.color_at(0.0), Some((255, 255, 255))); // top → last color
+        let mid = scheme.color_at(0.5).unwrap();
+        assert!(mid.0 > 100 && mid.0 < 160, "mid gray expected, got {mid:?}");
+    }
+
+    #[test]
+    fn flat_foreground_when_no_gradient() {
+        let flat = CavaColorScheme {
+            gradient: Vec::new(),
+            foreground: Some((9, 9, 9)),
+        };
+        assert_eq!(flat.color_at(0.3), Some((9, 9, 9)));
+        let empty = CavaColorScheme {
+            gradient: Vec::new(),
+            foreground: None,
+        };
+        assert_eq!(empty.color_at(0.3), None);
+    }
 }
