@@ -507,7 +507,9 @@ fn render_bar_settings_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppSt
         crate::tmplayer::data::config::BarNumber::N80 => "80",
         crate::tmplayer::data::config::BarNumber::N96 => "96",
     };
-    let channels_label = match app.config.bar_channels {
+    // Show the effective mode: cava config [output] channels may override
+    // the app setting (same inheritance as the spectrum colors).
+    let channels_label = match app.effective_bar_channels() {
         crate::tmplayer::data::config::BarChannels::Mono => "Mono",
         crate::tmplayer::data::config::BarChannels::Stereo => "Stereo",
     };

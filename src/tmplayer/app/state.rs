@@ -1,6 +1,7 @@
 use crate::data::config::Language;
+use crate::tmplayer::audio::cava::{self, CavaChannels};
 use crate::tmplayer::audio::smoother::Ema;
-use crate::tmplayer::data::config::Config;
+use crate::tmplayer::data::config::{BarChannels, Config};
 use crate::tmplayer::data::playlist::Playlist;
 use crate::tmplayer::playback::remote_fetch::TrackKey;
 use crate::tmplayer::render::cover_cache::CoverCache;
@@ -334,6 +335,18 @@ fn fill_ascii(width: u16, height: u16, ch: char) -> String {
 }
 
 impl AppState {
+    /// Effective spectrum channel mode: the user's cava config
+    /// (`[output] channels`) wins when it defines one — exactly like the
+    /// cava `[color]` scheme overrides theme accents. Otherwise fall back
+    /// to the app's own `bar_channels` setting.
+    pub fn effective_bar_channels(&self) -> BarChannels {
+        match cava::user_cava_channels() {
+            Some(CavaChannels::Mono) => BarChannels::Mono,
+            Some(CavaChannels::Stereo) => BarChannels::Stereo,
+            None => self.config.bar_channels,
+        }
+    }
+
     pub fn new(config: Config, theme: Theme, language: Language) -> Self {
         let (cover_render_tx, cover_render_req_rx) = mpsc::channel::<CoverRenderRequest>();
         let (cover_render_res_tx, cover_render_rx) = mpsc::channel::<CoverRenderResult>();

@@ -32,18 +32,14 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
         }
     }
 
+    let channels = app.effective_bar_channels();
     let (bar_widths, gap_width, draw_total, x_offset) =
-        compute_bar_layout(w, app.config.bars_gap, mono_count, app.config.bar_channels);
+        compute_bar_layout(w, app.config.bars_gap, mono_count, channels);
     if draw_total == 0 || bar_widths.is_empty() {
         return;
     }
 
-    let draw_vals = build_display_vals(
-        bars,
-        draw_total,
-        app.config.bar_channels,
-        app.config.bar_channel_reverse,
-    );
+    let draw_vals = build_display_vals(bars, draw_total, channels, app.config.bar_channel_reverse);
     let mut x_cursor = x_offset.min(w);
     for (i, &val) in draw_vals.iter().enumerate() {
         if x_cursor >= w {

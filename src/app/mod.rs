@@ -2209,10 +2209,13 @@ impl App {
         }
 
         if self.cava.is_none() {
+            // channels inherits the user's cava config ([output] channels),
+            // same idea as the [input] section / [color] scheme; default mono.
             let cfg = CavaConfig {
                 framerate_hz: self.config.spectrum_hz.clamp(1, 30),
                 bars: 20,
-                channels: CavaChannels::Mono,
+                channels: crate::tmplayer::audio::cava::user_cava_channels()
+                    .unwrap_or(CavaChannels::Mono),
                 reverse: false,
             };
 

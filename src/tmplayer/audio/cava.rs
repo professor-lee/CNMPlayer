@@ -431,6 +431,60 @@ pub fn user_cava_color_scheme() -> Option<CavaColorScheme> {
     CACHE.get_or_init(parse_user_cava_color_scheme).clone()
 }
 
+/// Visual channel mode inherited from the user's cava config `[output]`
+/// section (`channels = mono|stereo`), parsed once per process.
+///
+/// cava semantics match cnmplayer's spectrum exactly: `stereo` mirrors the
+/// bars with low frequencies in the center, `mono` draws a single row.
+/// `None` when the config doesn't define it (missing / commented out /
+/// unknown value) — callers then keep their own setting.
+pub fn user_cava_channels() -> Option<CavaChannels> {
+    static CACHE: OnceLock<Option<CavaChannels>> = OnceLock::new();
+    *CACHE.get_or_init(parse_user_cava_channels)
+}
+
+fn parse_user_cava_channels() -> Option<CavaChannels> {
+    let content = fs::read_to_string(user_cava_config_path()).ok()?;
+    parse_channels_from(&content)
+}
+
+fn parse_channels_from(content: &str) -> Option<CavaChannels> {
+    let mut in_output = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_output = t == "[output]";
+            continue;
+        }
+        if !in_output || t.is_empty() || t.starts_with('#') || t.starts_with(';') {
+            continue;
+        }
+        let Some((key, val)) = t.split_once('=') else {
+            continue;
+        };
+        if key.trim() == "channels" {
+            // Cut `;` comments first, then handle quotes like
+            // `parse_cava_color` does: `mono`, `'stereo'`, `"Mono"` and
+            // `'stereo'  # mirrored` all parse.
+            let bare = val.split(';').next().unwrap_or("").trim();
+            let flag = match bare.chars().next() {
+                Some(q @ ('\'' | '"')) => bare[1..]
+                    .find(q)
+                    .map(|end| &bare[1..1 + end])
+                    .unwrap_or_else(|| bare.trim_matches(q)),
+                _ => bare.split_whitespace().next().unwrap_or(""),
+            }
+            .to_ascii_lowercase();
+            return match flag.as_str() {
+                "mono" => Some(CavaChannels::Mono),
+                "stereo" => Some(CavaChannels::Stereo),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
 fn find_cava_executable() -> Option<PathBuf> {
     // Resolution order:
     // 1) env var override
@@ -617,5 +671,30 @@ mod tests {
             foreground: None,
         };
         assert_eq!(empty.color_at(0.3), None);
+    }
+
+    #[test]
+    fn parses_output_channels() {
+        // The real-world config: plain value in [output].
+        let cfg = "[general]\nbars = 40\n\n[output]\nmethod = raw\nchannels = mono\n";
+        assert_eq!(parse_channels_from(cfg), Some(CavaChannels::Mono));
+        // Quoted value with a trailing inline comment.
+        let cfg = "[output]\nchannels = 'stereo'  # mirrored\n";
+        assert_eq!(parse_channels_from(cfg), Some(CavaChannels::Stereo));
+        // Case-insensitive.
+        let cfg = "[output]\nchannels = Stereo\n";
+        assert_eq!(parse_channels_from(cfg), Some(CavaChannels::Stereo));
+        // Commented out → nothing to inherit.
+        let cfg = "[output]\n; channels = stereo\n";
+        assert_eq!(parse_channels_from(cfg), None);
+        // [input] channels (a different knob) must not leak in.
+        let cfg = "[input]\nchannels = mono\n\n[output]\nmethod = raw\n";
+        assert_eq!(parse_channels_from(cfg), None);
+        // Unknown value → keep the caller's setting.
+        let cfg = "[output]\nchannels = auto\n";
+        assert_eq!(parse_channels_from(cfg), None);
+        // Later sections don't reset the section scan result.
+        let cfg = "[output]\nchannels = mono\n\n[color]\nforeground = white\n";
+        assert_eq!(parse_channels_from(cfg), Some(CavaChannels::Mono));
     }
 }

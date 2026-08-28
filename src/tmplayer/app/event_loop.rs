@@ -1471,12 +1471,15 @@ fn auto_bar_number(width_cells: u16, channels: BarChannels) -> usize {
 }
 
 fn desired_bar_count(app: &AppState, layout: &UiLayout) -> usize {
+    // Use the same effective channel mode as the renderer, so bar sizing
+    // always matches what will be drawn (cava config may override).
+    let channels = app.effective_bar_channels();
     let raw = match app.config.bar_number {
-        BarNumber::Auto => auto_bar_number(layout.spectrum_rect.width, app.config.bar_channels),
+        BarNumber::Auto => auto_bar_number(layout.spectrum_rect.width, channels),
         v => bar_number_value(v),
     };
     let max_total = max_display_bars(layout.spectrum_rect.width, app.config.bars_gap);
-    let max_per_side = match app.config.bar_channels {
+    let max_per_side = match channels {
         BarChannels::Stereo => (max_total / 2).max(1),
         BarChannels::Mono => max_total.max(1),
     };
@@ -1484,6 +1487,9 @@ fn desired_bar_count(app: &AppState, layout: &UiLayout) -> usize {
 }
 
 fn desired_cava_config(app: &AppState, layout: &UiLayout) -> Option<CavaConfig> {
+    // channels inherits the user's cava config ([output] channels), same
+    // idea as the [input] section and the [color] scheme; default is mono.
+    let channels = crate::tmplayer::audio::cava::user_cava_channels().unwrap_or(CavaChannels::Mono);
     match app.config.visualize {
         VisualizeMode::Off => None,
         VisualizeMode::Bars => Some({
@@ -1491,14 +1497,14 @@ fn desired_cava_config(app: &AppState, layout: &UiLayout) -> Option<CavaConfig> 
             CavaConfig {
                 framerate_hz: app.config.spectrum_hz,
                 bars,
-                channels: CavaChannels::Mono,
+                channels,
                 reverse: app.config.bar_channel_reverse,
             }
         }),
         VisualizeMode::Oscilloscope => Some(CavaConfig {
             framerate_hz: app.config.spectrum_hz,
             bars: 64,
-            channels: CavaChannels::Mono,
+            channels,
             reverse: app.config.bar_channel_reverse,
         }),
     }
