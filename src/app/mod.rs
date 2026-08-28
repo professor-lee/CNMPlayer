@@ -2245,6 +2245,8 @@ impl App {
         self.tick_audio().await;
         self.tick_cover_fetch();
         self.tick_lyric_fetch();
+        self.tick_like_fetch();
+        self.tick_stream_fetch().await;
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
     }
