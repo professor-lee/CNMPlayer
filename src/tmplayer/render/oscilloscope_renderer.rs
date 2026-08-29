@@ -14,7 +14,9 @@
 
 use crate::tmplayer::app::state::AppState;
 use crate::tmplayer::audio::pcm_tap::PcmSnapshot;
+use crate::tmplayer::ui::theme::Theme;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
@@ -55,22 +57,33 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
     }
 
     rasterize(&mut app.scope, w_cells, h_cells, app.scope_gain.value());
-    paint(f, area, app, w_cells, h_cells);
+    paint(
+        f.buffer_mut(),
+        area,
+        &app.scope.grid,
+        &app.theme,
+        w_cells,
+        h_cells,
+    );
 }
 
-/// `gain` 是幅度包络：播放中为 1，暂停后缓动到 0 把波形收回中线。归零后干脆
-/// 不画，让位给 `paint` 的中轴线——两者在零电平上是同一个字形，只是颜色不同。
+/// `gain` 是幅度包络：播放开始后张开到 1，停止后衰减回 0。
+///
+/// **归零不是不画**。`gain = 0` 时每个子列的 min/max 都映到零电平那一行，
+/// [`draw_channel`] 于是自然画出一条贯穿全宽的居中直线 —— 那条线就是波形本身，
+/// 不存在独立的中线元素。因为包络是全局的，所有子列同乘一个系数，落平必然
+/// 同时发生。
 fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize, gain: f32) {
     let ScopeScratch { snapshot, grid } = scope;
 
     grid.clear();
     grid.resize(w_cells * h_cells, 0);
-    if gain <= 0.0 {
-        return;
-    }
 
     let window = window_frames(snapshot);
     if window < 2 {
+        // 环里还没有样本（无宿主、刚启动）。此时同样画居中直线，与落平后的
+        // 静止态是同一幅画面，不是空白。
+        draw_flat_line(grid, w_cells, h_cells);
         return;
     }
     let start = trigger_offset(snapshot, window);
@@ -91,6 +104,17 @@ fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize, gain: f32
             &snapshot.right[start..start + window],
             gain,
         );
+    }
+}
+
+/// 无样本时的静止画面：零电平那一行铺满整宽。
+///
+/// 与 `gain = 0` 时 [`draw_channel`] 的输出逐点一致，两条路径因此收敛到同一幅
+/// 画面（`no_samples_matches_settled_frame` 守着这条等价）。
+fn draw_flat_line(grid: &mut [u8], w_cells: usize, h_cells: usize) {
+    let zero = sample_row(0.0, (h_cells * 4) as i32);
+    for col in 0..(w_cells * 2) as i32 {
+        set_pixel(grid, w_cells, h_cells, col, zero);
     }
 }
 
@@ -181,40 +205,28 @@ fn sample_row(v: f32, h_px: i32) -> i32 {
 
 /// 逐单元格直写帧缓冲。波形配色沿用原有逻辑：整行一个颜色，按行在
 /// `accent2` → `accent3` 之间做纵向渐变。直写只是省掉每帧的字符串分配。
-fn paint(f: &mut Frame, area: Rect, app: &AppState, w_cells: usize, h_cells: usize) {
-    let grid = &app.scope.grid;
-
-    // 零电平中轴线。用盲文点位对准真正的零，而非单元格的几何中心；只画在
-    // 没有波形的格子里——一格只有一个前景色，波形优先。
-    let zero = sample_row(0.0, (h_cells * 4) as i32) as usize;
-    let (axis_row, axis_sub) = (zero / 4, zero % 4);
-    let axis_glyph = braille_from_bits(braille_bit(0, axis_sub) | braille_bit(1, axis_sub));
-    let axis_fg = app.theme.color_surface();
-
-    let buf = f.buffer_mut();
+///
+/// 只画 grid 里有的东西：静止时那条居中直线是 `rasterize` 画出来的波形，
+/// 这里没有任何中线的特例分支。取 `Buffer` 而非 `Frame`，因此可离屏验证。
+fn paint(buf: &mut Buffer, area: Rect, grid: &[u8], theme: &Theme, w_cells: usize, h_cells: usize) {
     let clip = area.intersection(buf.area);
-
     for row in 0..clip.height as usize {
         let t = if h_cells <= 1 {
             1.0
         } else {
             row as f32 / (h_cells - 1) as f32
         };
-        let fg = vertical_gradient_color(app, t);
+        let fg = vertical_gradient_color(theme, t);
 
         for col in 0..clip.width as usize {
             let bits = grid[row * w_cells + col];
-            let (glyph, colour) = if bits != 0 {
-                (braille_from_bits(bits), fg)
-            } else if row == axis_row {
-                (axis_glyph, axis_fg)
-            } else {
+            if bits == 0 {
                 continue;
-            };
+            }
 
             if let Some(cell) = buf.cell_mut((clip.x + col as u16, clip.y + row as u16)) {
-                cell.set_char(glyph);
-                cell.set_fg(colour);
+                cell.set_char(braille_from_bits(bits));
+                cell.set_fg(fg);
             }
         }
     }
@@ -263,10 +275,8 @@ fn braille_from_bits(bits: u8) -> char {
     char::from_u32(0x2800 + bits as u32).unwrap_or(' ')
 }
 
-fn vertical_gradient_color(app: &AppState, t: f32) -> Color {
-    let top = app.theme.color_accent2();
-    let bottom = app.theme.color_accent3();
-    mix(top, bottom, t)
+fn vertical_gradient_color(theme: &Theme, t: f32) -> Color {
+    mix(theme.color_accent2(), theme.color_accent3(), t)
 }
 
 /// 非 truecolor 终端（`Ansi256` / `NoColor`）上主题色不是 `Color::Rgb`，
@@ -287,6 +297,7 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmplayer::ui::theme::{ColorCapability, ThemeName, ThemePalette};
 
     const RATE: u32 = 48_000;
 
@@ -361,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_signal_stays_near_the_centre_line() {
+    fn quiet_signal_stays_near_zero_level() {
         let (w_cells, h_cells) = (60usize, 8usize);
         let window = (RATE as f32 * WINDOW_MS / 1000.0) as usize;
         let mut snapshot = sine(440.0, 0.0, window * 4);
@@ -394,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn gain_envelope_collapses_the_trace_toward_the_centre_line() {
+    fn gain_envelope_collapses_the_trace_toward_zero_level() {
         let (w_cells, h_cells) = (60usize, 8usize);
         let window = (RATE as f32 * WINDOW_MS / 1000.0) as usize;
         let snapshot = sine(440.0, 0.0, window * 4);
@@ -408,12 +419,152 @@ mod tests {
             rows.last().map(|hi| hi - rows[0] + 1).unwrap_or(0)
         };
 
-        // 幅度包络越小，波形占的行数越少 —— 暂停后就是这样收回中线的。
+        // 幅度包络越小，波形占的行数越少 —— 暂停后就是这样落回零电平的。
         let full = span(1.0);
         let half = span(0.5);
-        let settled = span(0.0);
         assert_eq!(full, h_cells, "满幅应撑满面板");
-        assert!(half < full && half > settled, "half={half} full={full}");
-        assert_eq!(settled, 1, "归零后只剩中线那一行");
+        assert!(half < full, "half={half} full={full}");
+        assert_eq!(span(0.0), 1, "只剩零电平那一行");
+    }
+
+    /// 落平后波形退化成居中直线：由 `draw_channel` 自己画出来，不是外加的中线。
+    #[test]
+    fn settled_scope_rasterizes_a_centred_flat_line() {
+        let (w_cells, h_cells) = (60usize, 8usize);
+        let mut scope = ScopeScratch {
+            snapshot: sine(440.0, 0.0, 8192),
+            grid: Vec::new(),
+        };
+
+        rasterize(&mut scope, w_cells, h_cells, 0.0);
+
+        // 恰好一行被点亮，且落在零电平所在的那一行。
+        let lit: Vec<usize> = (0..h_cells)
+            .filter(|row| (0..w_cells).any(|col| scope.grid[row * w_cells + col] != 0))
+            .collect();
+        let zero_row = sample_row(0.0, (h_cells * 4) as i32) as usize / 4;
+        assert_eq!(lit, vec![zero_row], "应只点亮零电平那一行");
+
+        // 且贯穿全宽：每一格都有点，才是一条不断的直线。
+        assert!(
+            (0..w_cells).all(|col| scope.grid[zero_row * w_cells + col] != 0),
+            "直线有断点"
+        );
+    }
+
+    /// 环里没有样本时（无宿主、刚启动）画的必须与落平后完全一致 —— 否则启动
+    /// 瞬间会闪一下空白，或停止后画面与启动态不符。
+    #[test]
+    fn no_samples_matches_settled_frame() {
+        let (w_cells, h_cells) = (60usize, 8usize);
+
+        let mut empty = ScopeScratch::default();
+        rasterize(&mut empty, w_cells, h_cells, 1.0);
+
+        let mut settled = ScopeScratch {
+            snapshot: sine(440.0, 0.0, 8192),
+            grid: Vec::new(),
+        };
+        rasterize(&mut settled, w_cells, h_cells, 0.0);
+
+        assert_eq!(empty.grid, settled.grid);
+    }
+
+    fn test_theme() -> Theme {
+        Theme {
+            name: ThemeName::Frappe,
+            palette: ThemePalette {
+                text: (198, 208, 245),
+                subtext: (165, 173, 206),
+                base: (48, 52, 70),
+                surface: (65, 69, 89),
+                buff: (81, 87, 109),
+                accent: (140, 170, 238),
+                accent2: (133, 193, 220),
+                accent3: (202, 158, 230),
+            },
+            capability: ColorCapability::TrueColor,
+        }
+    }
+
+    /// 离屏渲染一帧，返回 (点亮的单元格数, 出现过的前景色集合)。
+    fn paint_frame(gain: f32) -> (usize, Vec<Color>) {
+        let (w_cells, h_cells) = (60u16, 8u16);
+        let area = Rect::new(0, 0, w_cells, h_cells);
+        let mut scope = ScopeScratch {
+            snapshot: sine(440.0, 0.0, 8192),
+            grid: Vec::new(),
+        };
+        rasterize(&mut scope, w_cells as usize, h_cells as usize, gain);
+
+        let mut buf = Buffer::empty(area);
+        paint(
+            &mut buf,
+            area,
+            &scope.grid,
+            &test_theme(),
+            w_cells as usize,
+            h_cells as usize,
+        );
+
+        let mut colours = Vec::new();
+        let mut lit = 0;
+        for y in 0..h_cells {
+            for x in 0..w_cells {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == " " {
+                    continue;
+                }
+                lit += 1;
+                if !colours.contains(&cell.fg) {
+                    colours.push(cell.fg);
+                }
+            }
+        }
+        (lit, colours)
+    }
+
+    #[test]
+    fn settled_frame_is_a_single_centred_waveform_row() {
+        let (w_cells, _) = (60usize, 8usize);
+        let (playing, _) = paint_frame(1.0);
+        let (settled, colours) = paint_frame(0.0);
+
+        assert!(playing > w_cells, "播放中应画出波形");
+        // 静止态正好一整行：波形自己收成的直线，不多不少。
+        assert_eq!(settled, w_cells, "静止态应只剩居中那一行");
+        // 且用波形的渐变色，不是任何专供中线的颜色 —— 没有独立的中线元素。
+        assert_eq!(colours.len(), 1, "一行只有一个颜色: {colours:?}");
+        assert_ne!(colours[0], test_theme().color_surface());
+    }
+
+    /// 静止那条线必须落在垂直居中位置。
+    #[test]
+    fn settled_line_sits_vertically_centred() {
+        for h_cells in [4usize, 6, 8, 12] {
+            let w_cells = 8usize;
+            let area = Rect::new(0, 0, w_cells as u16, h_cells as u16);
+            let mut scope = ScopeScratch::default();
+            rasterize(&mut scope, w_cells, h_cells, 0.0);
+
+            let mut buf = Buffer::empty(area);
+            paint(&mut buf, area, &scope.grid, &test_theme(), w_cells, h_cells);
+
+            // 收集点亮的子行，取其中点，与面板正中比较。
+            let mut subrows = Vec::new();
+            for row in 0..h_cells {
+                let bits = scope.grid[row * w_cells];
+                for dy in 0..4 {
+                    if bits & braille_bit(0, dy) != 0 {
+                        subrows.push(row * 4 + dy);
+                    }
+                }
+            }
+            assert_eq!(subrows.len(), 1, "h={h_cells} 应只有一条线");
+
+            let centre = (h_cells * 4 - 1) as f32 / 2.0;
+            let offset = (subrows[0] as f32 - centre).abs();
+            assert!(offset <= 0.5, "h={h_cells} 偏离中心 {offset} 子行");
+        }
     }
 }

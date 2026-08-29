@@ -183,45 +183,126 @@ impl Default for SpectrumData {
     }
 }
 
-/// 暂停或停止后，波形缓动收回中线的时长。
-const SCOPE_SETTLE_DURATION: Duration = Duration::from_millis(420);
+/// cava 的平滑基准帧率，即其 `framerate_mod = 66 / framerate` 里的 66。
+const CAVA_REFERENCE_HZ: f32 = 66.0;
 
-/// 示波器的幅度包络。
+/// cava 默认的 `noise_reduction`（`config.c` 取 77 后除以 100）。
+const CAVA_NOISE_REDUCTION: f32 = 0.77;
+
+/// cava 每帧给 `cava_fall` 的增量（`cavacore.c`: `p->cava_fall[n] += 0.028`）。
+const CAVA_FALL_STEP: f32 = 0.028;
+
+/// 包络推进所依据的帧率。实际帧间隔用 `dt` 换算到这个基准，因此掉帧时动画仍
+/// 按时间走，不会随帧率变快变慢。
+const SCOPE_REFERENCE_HZ: f32 = 60.0;
+
+/// 视作已经到位的残差。指数逼近永远到不了端点，差到这一步就直接钳住。
+///
+/// 1/255 ≈ 一个 8 位色阶，也小于半个盲文子行在任何实际面板高度下的占比，
+/// 因此这一步钳位在视觉上不可见。
+const SCOPE_SETTLED_EPSILON: f32 = 1.0 / 255.0;
+
+/// 示波器的幅度包络：波形样本在绘制前统一乘上它。
 ///
 /// rodio 暂停时直接产出静音、不再拉取解码器，PCM 环因此停更，波形会僵在最后
-/// 一帧。这里给它一条收尾动画：播放中恒为 1，暂停或停止后缓动到 0，波形平滑
-/// 收拢到中线。恢复播放立即回满——环里随即就有新样本，渐入只会显得迟钝。
+/// 一帧。这里把 cava 的两级平滑（`cavacore.c` 的 `process [smoothing]`）搬过来
+/// 接管两端 —— 频谱条走的就是这套，观感因此同源：
+///
+/// - **起振**（cava 的 `integral`）：`out = mem·nr/integral_mod + raw`。输入恒定
+///   时这是个几何级数，等价于一阶滞后：每帧朝目标前进固定比例。
+/// - **回落**（cava 的 `falloff`）：`out = peak·(1 − fall²·gravity_mod)`，`fall`
+///   随时间线性增长 —— 自由落体，位移正比于时间平方。
+///
+/// 为什么回落不能用指数衰减：指数首帧就掉 35%、三帧只剩 27%，在几百毫秒的尺度
+/// 上看起来就是瞬间归零，根本看不出动画。自由落体前几帧几乎不动
+/// （1.0 → 0.96），跌落集中在后半段，这才是"回落"该有的样子。
+///
+/// 包络是**全局**的，不按列分开：所有盲文列同乘一个系数，于是归零发生在同一
+/// 瞬间，全部列同时落到垂直居中位置。按列各自衰减会让它们先后到位。
+///
+/// 归零不代表不画：幅度为 0 时波形退化成居中那条直线，那条线就是波形本身，
+/// 没有独立的中线元素。
 #[derive(Debug, Default)]
 pub struct ScopeGain {
     current: f32,
-    settle_started_at: Option<Instant>,
+    /// 回落起点的幅度，对应 cava 的 `cava_peak`。
+    peak: f32,
+    /// 已下落的时长，对应 cava 逐帧累加的 `cava_fall`。累的是时间而不是帧数，
+    /// 因此掉帧时落点不变。
+    fallen: Duration,
+    animating: bool,
 }
 
 impl ScopeGain {
-    fn tick(&mut self, playing: bool, now: Instant) {
+    /// cava `integral` 的记忆保留系数 `noise_reduction / integral_mod`。
+    fn integral_retention() -> f32 {
+        let framerate_mod = CAVA_REFERENCE_HZ / SCOPE_REFERENCE_HZ;
+        CAVA_NOISE_REDUCTION / framerate_mod.powf(0.1)
+    }
+
+    /// cava `falloff` 的 `gravity_mod`。
+    fn gravity() -> f32 {
+        let framerate_mod = CAVA_REFERENCE_HZ / SCOPE_REFERENCE_HZ;
+        framerate_mod.powf(2.5) * 2.0 / CAVA_NOISE_REDUCTION
+    }
+
+    fn tick(&mut self, playing: bool, dt: Duration) {
         if playing {
+            self.rise(dt);
+        } else {
+            self.fall(dt);
+        }
+    }
+
+    /// 起振：cava 的 integral。几何级数的归一化形式即一阶滞后，残差每帧乘
+    /// `retention`；按 `dt` 取幂，掉帧时到位时刻不变。
+    fn rise(&mut self, dt: Duration) {
+        // 重新起振即取消下落：下次下落从当时的幅度重新起算。
+        self.peak = 0.0;
+        self.fallen = Duration::ZERO;
+
+        if self.current >= 1.0 {
+            self.animating = false;
+            return;
+        }
+        self.animating = true;
+
+        let frames = dt.as_secs_f32() * SCOPE_REFERENCE_HZ;
+        let remaining = (1.0 - self.current) * Self::integral_retention().powf(frames);
+        self.current = 1.0 - remaining;
+
+        if remaining <= SCOPE_SETTLED_EPSILON {
             self.current = 1.0;
-            self.settle_started_at = None;
+            self.animating = false;
+        }
+    }
+
+    /// 回落：cava 的 falloff，位移正比于已下落时长的平方。
+    fn fall(&mut self, dt: Duration) {
+        if self.current <= 0.0 {
+            self.animating = false;
             return;
         }
 
-        match self.settle_started_at {
-            // 归零那一帧已经画出去了，现在才停掉重绘。若和归零放在同一帧，
-            // 重绘会先一步停掉，屏幕就停在收尾前的最后一丝残影上。
-            Some(_) if self.current <= 0.0 => self.settle_started_at = None,
-            Some(started_at) => {
-                let elapsed = now.saturating_duration_since(started_at);
-                let t = elapsed.as_secs_f32() / SCOPE_SETTLE_DURATION.as_secs_f32();
-                self.current = if t >= 1.0 {
-                    0.0
-                } else {
-                    // 收尾总是从满幅起步：恢复播放是瞬时的，没有停在半幅的中间态。
-                    1.0 - cubic_bezier_y(t, 0.0, 0.7)
-                };
-            }
-            // 刚从播放切过来：锚定起点，本帧仍按满幅画。
-            None if self.current > 0.0 => self.settle_started_at = Some(now),
-            None => {}
+        if self.peak <= 0.0 {
+            // 下落的第一帧：锚定峰值，本帧仍按当前幅度画 —— cava 同样是先记
+            // `cava_peak`、下一帧才开始扣。
+            self.peak = self.current;
+        }
+        self.animating = true;
+
+        // cava 每帧 `fall += FALL_STEP`，故 fall = 帧数 × step。这里用时间换算
+        // 帧数，得到与帧率无关的同一条抛物线。
+        self.fallen += dt;
+        let fall = self.fallen.as_secs_f32() * SCOPE_REFERENCE_HZ * CAVA_FALL_STEP;
+        self.current = self.peak * (1.0 - fall * fall * Self::gravity());
+
+        if self.current < SCOPE_SETTLED_EPSILON {
+            // 落平：波形收成居中的直线，动画到此结束。
+            self.current = 0.0;
+            self.peak = 0.0;
+            self.fallen = Duration::ZERO;
+            self.animating = false;
         }
     }
 
@@ -230,8 +311,8 @@ impl ScopeGain {
         self.current
     }
 
-    fn is_settling(&self) -> bool {
-        self.settle_started_at.is_some()
+    fn is_animating(&self) -> bool {
+        self.animating
     }
 }
 
@@ -511,6 +592,8 @@ impl AppState {
     }
 
     pub fn tick(&mut self, now: Instant) {
+        // 必须在覆盖 last_frame 之前取，否则帧间隔恒为 0。
+        let dt = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
 
         if !self.cover_render_inflight.borrow().is_empty() {
@@ -552,7 +635,7 @@ impl AppState {
 
         self.tick_playlist_slide(now);
         self.scope_gain
-            .tick(self.player.playback == PlaybackState::Playing, now);
+            .tick(self.player.playback == PlaybackState::Playing, dt);
     }
 
     /// 启动一次侧边栏滑入/滑出。记录当前位置作为起点，因此支持动画中途反向。
@@ -605,7 +688,7 @@ impl AppState {
             return true;
         }
 
-        if self.scope_is_settling() {
+        if self.scope_is_animating() {
             return true;
         }
 
@@ -640,7 +723,7 @@ impl AppState {
                         && self.has_spectrum_tail_motion())
             }
             VisualizeMode::Oscilloscope => {
-                self.player.playback == PlaybackState::Playing || self.scope_gain.is_settling()
+                self.player.playback == PlaybackState::Playing || self.scope_gain.is_animating()
             }
         };
 
@@ -661,12 +744,12 @@ impl AppState {
             || self.spectrum.bars_right.iter().any(|&v| v > TAIL_EPS)
     }
 
-    /// 示波器正在把波形收回中线，需要持续重绘把这段动画推完。
-    fn scope_is_settling(&self) -> bool {
+    /// 示波器的包络动画（起振或回落）正在进行，需要持续重绘把它推完。
+    fn scope_is_animating(&self) -> bool {
         matches!(
             self.config.visualize,
             crate::tmplayer::data::config::VisualizeMode::Oscilloscope
-        ) && self.scope_gain.is_settling()
+        ) && self.scope_gain.is_animating()
     }
 
     pub fn start_cover_anim(
@@ -694,77 +777,209 @@ impl AppState {
 mod tests {
     use super::*;
 
+    const FRAME: Duration = Duration::from_millis(1000 / 60);
+
+    /// 一帧一帧跑 cava `cavacore.c` 的两级平滑，作为对照实现。
+    ///
+    /// `raw` 恒定输入；返回归一化到稳态的逐帧输出。cava 的 integral 是个不收敛到
+    /// 1 的几何级数（稳态 `1/(1-k)`），归一化后才能和包络比。
+    fn cava_reference(raw: f32, frames: usize) -> Vec<f32> {
+        let framerate_mod = CAVA_REFERENCE_HZ / SCOPE_REFERENCE_HZ;
+        let gravity_mod = framerate_mod.powf(2.5) * 2.0 / CAVA_NOISE_REDUCTION;
+        let integral_mod = framerate_mod.powf(0.1);
+        let k = CAVA_NOISE_REDUCTION / integral_mod;
+
+        let (mut mem, mut prev, mut peak, mut fall) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let mut out_series = Vec::with_capacity(frames);
+        for _ in 0..frames {
+            let mut out = raw;
+            if out < prev && CAVA_NOISE_REDUCTION > 0.1 {
+                out = (peak * (1.0 - fall * fall * gravity_mod)).max(0.0);
+                fall += CAVA_FALL_STEP;
+            } else {
+                peak = out;
+                fall = 0.0;
+            }
+            prev = out;
+            out = mem * k + out;
+            mem = out;
+            out_series.push(out * (1.0 - k) / raw);
+        }
+        out_series
+    }
+
+    /// 起振逐帧对齐 cava 的 integral（归一化后）。
     #[test]
-    fn scope_gain_settles_to_zero_and_snaps_back_on_resume() {
+    fn rise_matches_cava_integral() {
+        let reference = cava_reference(1.0, 12);
         let mut gain = ScopeGain::default();
-        let t0 = Instant::now();
 
-        gain.tick(true, t0);
-        assert_eq!(gain.value(), 1.0);
-        assert!(!gain.is_settling());
+        for (frame, expected) in reference.iter().enumerate() {
+            gain.tick(true, Duration::from_secs_f32(1.0 / SCOPE_REFERENCE_HZ));
+            assert!(
+                (gain.value() - expected).abs() < 1.0e-3,
+                "第 {frame} 帧不一致: scope={} cava={expected}",
+                gain.value()
+            );
+        }
+    }
 
-        // 暂停后的第一帧只锚定起点，幅度仍是满的；从下一帧起才开始收。
-        gain.tick(false, t0);
-        assert_eq!(gain.value(), 1.0);
-        assert!(gain.is_settling());
+    /// 起振是一阶滞后：首帧就走掉可观一段，随后逐帧放缓。
+    #[test]
+    fn rise_is_front_loaded_and_decelerates() {
+        let mut gain = ScopeGain::default();
+        assert_eq!(gain.value(), 0.0, "静止态包络为 0，波形是居中直线");
 
-        // 之后必须单调收敛，且全程标记为动画中——否则重绘会被停掉，
-        // 收尾动画只推进一帧就卡住。
-        let mut prev = 1.0;
-        for ms in [1u64, 100, 200, 300, 419] {
-            gain.tick(false, t0 + Duration::from_millis(ms));
-            assert!(gain.value() < prev, "gain must shrink by {ms}ms");
-            assert!(gain.is_settling(), "must stay animating at {ms}ms");
+        let mut steps = Vec::new();
+        let mut prev = 0.0;
+        for _ in 0..8 {
+            gain.tick(true, FRAME);
+            steps.push(gain.value() - prev);
             prev = gain.value();
         }
 
-        gain.tick(false, t0 + SCOPE_SETTLE_DURATION);
-        assert_eq!(gain.value(), 0.0);
-        // 归零这一帧本身还得再画一次，所以此刻仍要求重绘；否则屏幕会停在
-        // 收尾前的最后一丝残影上，直到别处偶然触发重绘才补上。
-        assert!(gain.is_settling());
-
-        gain.tick(
-            false,
-            t0 + SCOPE_SETTLE_DURATION + Duration::from_millis(16),
+        assert!(steps[0] > 0.2, "首帧应明显张开: {}", steps[0]);
+        assert!(
+            steps.windows(2).all(|pair| pair[1] < pair[0]),
+            "步长应逐帧变小: {steps:?}"
         );
-        assert!(!gain.is_settling());
+    }
 
-        // 之后继续 tick 不该再请求重绘。
-        gain.tick(false, t0 + Duration::from_secs(5));
-        assert!(!gain.is_settling());
-
-        gain.tick(true, t0 + Duration::from_secs(6));
+    /// 回落是自由落体：**前段几乎不动**，跌落集中在后半段。
+    ///
+    /// 这条是"看得见回落动画"的判据。换成指数衰减会立刻挂：指数首帧就掉 35%。
+    #[test]
+    fn fall_is_gravity_shaped_not_exponential() {
+        let mut gain = ScopeGain::default();
+        gain.tick(true, Duration::from_secs(1));
         assert_eq!(gain.value(), 1.0);
+
+        let mut values = Vec::new();
+        loop {
+            gain.tick(false, FRAME);
+            values.push(gain.value());
+            if gain.value() == 0.0 || values.len() > 120 {
+                break;
+            }
+        }
+
+        // 起手极慢：第 3 帧还留着九成以上。指数衰减此时只剩 0.27。
+        assert!(values[2] > 0.9, "起手应几乎不动: {}", values[2]);
+        // 过半时间才掉一半左右，而不是早早贴底。
+        let half = values[values.len() / 2];
+        assert!(half > 0.4 && half < 0.85, "中点幅度 {half} 不像自由落体");
+        // 单调下落，且确实落到零。
+        assert!(
+            values.windows(2).all(|pair| pair[1] <= pair[0]),
+            "幅度不得回升: {values:?}"
+        );
+        assert_eq!(*values.last().unwrap(), 0.0);
+    }
+
+    /// 回落逐帧对齐 cava 的 falloff（同一条抛物线）。
+    #[test]
+    fn fall_matches_cava_falloff() {
+        let one_frame = Duration::from_secs_f32(1.0 / SCOPE_REFERENCE_HZ);
+        let framerate_mod = CAVA_REFERENCE_HZ / SCOPE_REFERENCE_HZ;
+        let gravity_mod = framerate_mod.powf(2.5) * 2.0 / CAVA_NOISE_REDUCTION;
+
+        let mut gain = ScopeGain::default();
+        gain.tick(true, Duration::from_secs(1));
+
+        // cava 侧：peak 已锚定为 1.0，fall 从 0 起累加。
+        let mut fall = 0.0f32;
+        for frame in 0..25 {
+            gain.tick(false, one_frame);
+            fall += CAVA_FALL_STEP;
+            let expected = (1.0 - fall * fall * gravity_mod).max(0.0);
+            if expected < SCOPE_SETTLED_EPSILON {
+                assert_eq!(gain.value(), 0.0, "第 {frame} 帧应已落平");
+                break;
+            }
+            assert!(
+                (gain.value() - expected).abs() < 1.0e-3,
+                "第 {frame} 帧不一致: scope={} cava={expected}",
+                gain.value()
+            );
+        }
     }
 
     #[test]
-    fn resuming_mid_settle_restarts_a_full_length_settle() {
+    fn fall_returns_to_flat_and_stops_requesting_redraw() {
         let mut gain = ScopeGain::default();
-        let t0 = Instant::now();
+        gain.tick(true, Duration::from_secs(1));
 
-        gain.tick(true, t0);
-        gain.tick(false, t0 + Duration::from_millis(300));
-        gain.tick(false, t0 + Duration::from_millis(400));
-        assert!(gain.value() < 1.0);
+        // 停止：全程标记为动画中——否则重绘会被停掉，回落只推进一帧就卡住。
+        for frame in 0..40 {
+            gain.tick(false, FRAME);
+            if gain.value() == 0.0 {
+                break;
+            }
+            assert!(gain.is_animating(), "第 {frame} 帧应仍在动画中");
+        }
 
-        gain.tick(true, t0 + Duration::from_millis(410));
-        assert_eq!(gain.value(), 1.0);
+        assert_eq!(gain.value(), 0.0, "应已落平");
+        assert!(!gain.is_animating());
 
-        // 再次暂停：计时从这一刻重新起算。若沿用上一轮起点，下面这帧的
-        // elapsed 会超过整个时长，幅度提前归零。
-        let pause_at = t0 + Duration::from_millis(420);
-        gain.tick(false, pause_at);
-        gain.tick(
-            false,
-            pause_at + SCOPE_SETTLE_DURATION - Duration::from_millis(1),
-        );
-        assert!(
-            gain.value() > 0.0,
-            "settle must restart from the resume point"
-        );
-
-        gain.tick(false, pause_at + SCOPE_SETTLE_DURATION);
+        // 落平后继续 tick 不该再请求重绘。
+        gain.tick(false, FRAME);
+        assert!(!gain.is_animating());
         assert_eq!(gain.value(), 0.0);
+    }
+
+    #[test]
+    fn resuming_mid_fall_ramps_up_from_the_residual_value() {
+        let mut gain = ScopeGain::default();
+        gain.tick(true, Duration::from_secs(1));
+
+        for _ in 0..8 {
+            gain.tick(false, FRAME);
+        }
+        let mid = gain.value();
+        assert!(mid > 0.0 && mid < 1.0, "应处于回落途中: {mid}");
+
+        // 恢复播放从残值继续张开，不跳变、也不从 0 重来。
+        gain.tick(true, FRAME);
+        assert!(
+            gain.value() > mid,
+            "应从残值继续增长: {} vs {mid}",
+            gain.value()
+        );
+
+        // 再次停止：抛物线从这一刻重新起算，而不是接着上一轮的 fallen。
+        gain.tick(false, FRAME);
+        assert!(
+            gain.value() > mid,
+            "重新起算应高于上一轮同期: {} vs {mid}",
+            gain.value()
+        );
+    }
+
+    /// 两端动画都必须与帧率无关：掉帧时按时间补足。
+    #[test]
+    fn envelope_is_frame_rate_independent() {
+        let elapsed = Duration::from_millis(150);
+
+        for playing in [true, false] {
+            let mut fast = ScopeGain::default();
+            let mut slow = ScopeGain::default();
+            if !playing {
+                fast.tick(true, Duration::from_secs(1));
+                slow.tick(true, Duration::from_secs(1));
+            }
+
+            let step = elapsed / 20;
+            for _ in 0..20 {
+                fast.tick(playing, step);
+            }
+            slow.tick(playing, elapsed);
+
+            assert!(
+                (fast.value() - slow.value()).abs() < 1.0e-3,
+                "playing={playing} fast={} slow={}",
+                fast.value(),
+                slow.value()
+            );
+        }
     }
 }

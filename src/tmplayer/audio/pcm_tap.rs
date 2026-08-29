@@ -140,12 +140,13 @@ impl PcmRing {
     pub fn snapshot(&self, out: &mut PcmSnapshot) {
         out.sample_rate = self.sample_rate.load(Ordering::Relaxed);
 
-        let generation = self.generation.load(Ordering::Acquire);
         let Ok(mut ring) = self.inner.lock() else {
             out.clear();
             return;
         };
-        ring.sync_generation(generation);
+        // 代号必须在锁内读：锁外读会漏掉"读代号之后、取到锁之前"落地的 reset，
+        // 那一帧就会画出跳转前的波形。
+        ring.sync_generation(self.generation.load(Ordering::Acquire));
 
         let len = ring.filled;
         out.len = len;
