@@ -12,6 +12,8 @@ const THEME_LATTE_TOML: &str = include_str!("../../../themes/catppuccin_latte.to
 const THEME_FRAPPE_TOML: &str = include_str!("../../../themes/catppuccin_frappe.toml");
 const THEME_MACCHIATO_TOML: &str = include_str!("../../../themes/catppuccin_macchiato.toml");
 const THEME_MOCHA_TOML: &str = include_str!("../../../themes/catppuccin_mocha.toml");
+const THEME_ATOM_ONE_DARK_TOML: &str = include_str!("../../../themes/atom_one_dark.toml");
+const THEME_ATOM_ONE_LIGHT_TOML: &str = include_str!("../../../themes/atom_one_light.toml");
 
 pub fn resolve_asset_root() -> PathBuf {
     if let Some(p) = std::env::var_os(ENV_ASSET_DIR) {
@@ -137,6 +139,14 @@ fn ensure_themes(root: &Path) -> Result<()> {
         THEME_MACCHIATO_TOML,
     )?;
     write_if_missing(&root.join("themes/catppuccin_mocha.toml"), THEME_MOCHA_TOML)?;
+    write_if_missing(
+        &root.join("themes/atom_one_dark.toml"),
+        THEME_ATOM_ONE_DARK_TOML,
+    )?;
+    write_if_missing(
+        &root.join("themes/atom_one_light.toml"),
+        THEME_ATOM_ONE_LIGHT_TOML,
+    )?;
 
     Ok(())
 }

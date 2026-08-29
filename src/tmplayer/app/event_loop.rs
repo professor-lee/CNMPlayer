@@ -1287,13 +1287,15 @@ async fn handle_action(
     Ok(())
 }
 
-fn themes() -> [ThemeName; 5] {
+fn themes() -> [ThemeName; 7] {
     [
         ThemeName::System,
         ThemeName::Latte,
         ThemeName::Frappe,
         ThemeName::Macchiato,
         ThemeName::Mocha,
+        ThemeName::AtomOneDark,
+        ThemeName::AtomOneLight,
     ]
 }
 
@@ -1317,6 +1319,8 @@ fn theme_key(name: ThemeName) -> &'static str {
         ThemeName::Frappe => "frappe",
         ThemeName::Macchiato => "macchiato",
         ThemeName::Mocha => "mocha",
+        ThemeName::AtomOneDark => "atom-one-dark",
+        ThemeName::AtomOneLight => "atom-one-light",
     }
 }
 

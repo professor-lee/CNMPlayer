@@ -14,6 +14,8 @@ pub enum ThemeName {
     Frappe,
     Macchiato,
     Mocha,
+    AtomOneDark,
+    AtomOneLight,
 }
 
 impl ThemeName {
@@ -23,6 +25,8 @@ impl ThemeName {
             "frappe" => Self::Frappe,
             "macchiato" => Self::Macchiato,
             "mocha" => Self::Mocha,
+            "atom-one-dark" | "atom_one_dark" => Self::AtomOneDark,
+            "atom-one-light" | "atom_one_light" => Self::AtomOneLight,
             _ => Self::System,
         }
     }

@@ -30,6 +30,8 @@ impl ThemeLoader {
             ThemeName::Frappe => PathBuf::from("themes/catppuccin_frappe.toml"),
             ThemeName::Macchiato => PathBuf::from("themes/catppuccin_macchiato.toml"),
             ThemeName::Mocha => PathBuf::from("themes/catppuccin_mocha.toml"),
+            ThemeName::AtomOneDark => PathBuf::from("themes/atom_one_dark.toml"),
+            ThemeName::AtomOneLight => PathBuf::from("themes/atom_one_light.toml"),
         };
 
         let path = assets::resolve_asset_path(&rel);

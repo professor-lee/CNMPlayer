@@ -4269,7 +4269,15 @@ impl App {
     async fn apply_settings_root_delta(&mut self, delta: i32) {
         match self.settings_selected {
             0 => {
-                let themes = ["system", "latte", "frappe", "macchiato", "mocha"];
+                let themes = [
+                    "system",
+                    "latte",
+                    "frappe",
+                    "macchiato",
+                    "mocha",
+                    "atom-one-dark",
+                    "atom-one-light",
+                ];
                 let current = themes
                     .iter()
                     .position(|name| name.eq_ignore_ascii_case(self.config.theme.as_str()))
