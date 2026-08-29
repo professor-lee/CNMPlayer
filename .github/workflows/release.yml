@@ -61,7 +61,8 @@ jobs:
           fi
 
   build:
-    name: Build ${{ matrix.target }}
+    # 用产物架构名（amd64/aarch64）而非 Rust 三元组：与 tarball 名一致，也更短
+    name: Build ${{ matrix.arch }}
     needs: guard
     strategy:
       fail-fast: false
@@ -124,10 +125,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh release create --verify-tag 需要 git 仓库上下文来校验 tag，
+      # 缺了 checkout 会以 "fatal: not a git repository" 失败。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.tag }}
+
+      # 下到子目录：避免 ./*.tar.xz 把仓库自身文件也匹配进去
       - uses: actions/download-artifact@v4
         with:
           pattern: rel-*
           merge-multiple: true
+          path: dist
 
       # create 已存在时回退为 upload，保证 re-run 幂等
       - name: Create release with tarballs
@@ -135,8 +144,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.guard.outputs.tag }}
         run: |
-          gh release create "$TAG" --verify-tag --generate-notes ./*.tar.xz \
-            || gh release upload "$TAG" --clobber ./*.tar.xz
+          gh release create "$TAG" --verify-tag --generate-notes dist/*.tar.xz \
+            || gh release upload "$TAG" --clobber dist/*.tar.xz
 
   aur:
     name: Sync AUR packages
@@ -187,4 +196,10 @@ jobs:
             TAG="$GITHUB_REF_NAME"
             DRY_RUN=false
           fi
-          sudo -u builder -H bash "$GITHUB_WORKSPACE/.github/scripts/aur_sync.sh" "$TAG" "$DRY_RUN"
+          # 脚本在 cwd 里 git clone 两个 AUR 仓库，而 $GITHUB_WORKSPACE 属 root，
+          # builder 无写权限（曾以 "could not create work tree dir: Permission denied"
+          # 失败）。因此在 builder 自己的 HOME 下另开一个工作目录。
+          workdir=/home/builder/aur
+          install -d -m755 -o builder -g builder "$workdir"
+          sudo -u builder -H bash -c \
+            "cd '$workdir' && bash '$GITHUB_WORKSPACE/.github/scripts/aur_sync.sh' '$TAG' '$DRY_RUN'"
