@@ -96,7 +96,7 @@ fn centered_lyric_window(app: &AppState, visible_rows: usize) -> Vec<Line<'stati
         let lyric = &lines[lyric_idx as usize];
         let style = if lyric_idx as usize == current_idx {
             Style::default()
-                .fg(app.theme.color_accent2())
+                .fg(app.theme.color_accent())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.theme.color_subtext())
