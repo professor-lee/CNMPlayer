@@ -33,21 +33,13 @@ const TRIGGER_HYSTERESIS: f32 = 0.05;
 /// 滞回带的绝对下限：静音时不让浮点噪声触发。
 const TRIGGER_FLOOR: f32 = 1.0e-4;
 
-/// 右声道颜色向背景压暗的比例。
-///
-/// 不能靠色相区分左右：System 主题的 accent / accent2 / accent3 全是 `#FFFFFF`，
-/// 任何色相方案在该主题下都不可见。压暗在所有主题下都成立。
-const RIGHT_CHANNEL_DIM: f32 = 0.55;
-
 /// 示波器的复用缓冲。存在 `AppState` 里，渲染路径因此不做任何分配。
 #[derive(Debug, Default)]
 pub struct ScopeScratch {
     snapshot: PcmSnapshot,
-    /// 每单元格一个盲文点位掩码，行优先
-    left: Vec<u8>,
-    right: Vec<u8>,
-    /// 本帧右声道是否真的画了东西
-    stereo: bool,
+    /// 每单元格一个盲文点位掩码，行优先。左右声道叠加在同一张图上：
+    /// 一个盲文单元格只有一个前景色，配色按行取纵向渐变，与声道无关。
+    grid: Vec<u8>,
 }
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
@@ -67,19 +59,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
 }
 
 fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize) {
-    let ScopeScratch {
-        snapshot,
-        left,
-        right,
-        stereo,
-    } = scope;
+    let ScopeScratch { snapshot, grid } = scope;
 
-    let cells = w_cells * h_cells;
-    left.clear();
-    left.resize(cells, 0);
-    right.clear();
-    right.resize(cells, 0);
-    *stereo = false;
+    grid.clear();
+    grid.resize(w_cells * h_cells, 0);
 
     let window = window_frames(snapshot);
     if window < 2 {
@@ -88,19 +71,19 @@ fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize) {
     let start = trigger_offset(snapshot, window);
 
     draw_channel(
-        left,
+        grid,
         w_cells,
         h_cells,
         &snapshot.left[start..start + window],
     );
+    // 单声道音源两声道逐位相同，再画一遍只是白烧一半光栅化开销。
     if snapshot.stereo {
         draw_channel(
-            right,
+            grid,
             w_cells,
             h_cells,
             &snapshot.right[start..start + window],
         );
-        *stereo = true;
     }
 }
 
@@ -188,18 +171,17 @@ fn sample_row(v: f32, h_px: i32) -> i32 {
     ((1.0 - v) * 0.5 * span).round().clamp(0.0, span) as i32
 }
 
-/// 逐单元格直写帧缓冲：颜色按格变化（左声道 / 右声道 / 中线三种），
-/// 整行一个 Span 表达不了，直写也省掉每帧的字符串分配。
+/// 逐单元格直写帧缓冲。波形配色沿用原有逻辑：整行一个颜色，按行在
+/// `accent2` → `accent3` 之间做纵向渐变。直写只是省掉每帧的字符串分配。
 fn paint(f: &mut Frame, area: Rect, app: &AppState, w_cells: usize, h_cells: usize) {
-    let scope = &app.scope;
-    let h_px = (h_cells * 4) as i32;
+    let grid = &app.scope.grid;
 
-    // 中线 graticule：用盲文点位精确落在零电平那一子行上，而非单元格的几何中心。
-    let zero_row = sample_row(0.0, h_px) as usize;
-    let (graticule_row, graticule_sub) = (zero_row / 4, zero_row % 4);
-    let graticule =
-        braille_from_bits(braille_bit(0, graticule_sub) | braille_bit(1, graticule_sub));
-    let graticule_fg = app.theme.color_subtext();
+    // 零电平中轴线。用盲文点位对准真正的零，而非单元格的几何中心；只画在
+    // 没有波形的格子里——一格只有一个前景色，波形优先。
+    let zero = sample_row(0.0, (h_cells * 4) as i32) as usize;
+    let (axis_row, axis_sub) = (zero / 4, zero % 4);
+    let axis_glyph = braille_from_bits(braille_bit(0, axis_sub) | braille_bit(1, axis_sub));
+    let axis_fg = app.theme.color_surface();
 
     let buf = f.buffer_mut();
     let clip = area.intersection(buf.area);
@@ -210,25 +192,21 @@ fn paint(f: &mut Frame, area: Rect, app: &AppState, w_cells: usize, h_cells: usi
         } else {
             row as f32 / (h_cells - 1) as f32
         };
-        let trace_fg = vertical_gradient_color(app, t);
-        let right_fg = mix(trace_fg, app.theme.color_base(), RIGHT_CHANNEL_DIM);
+        let fg = vertical_gradient_color(app, t);
 
         for col in 0..clip.width as usize {
-            let index = row * w_cells + col;
-            let left = scope.left[index];
-            let right = if scope.stereo { scope.right[index] } else { 0 };
-
-            // 两声道重叠的格子归左声道：亮色压暗色，与叠加显示的惯例一致。
-            let (glyph, fg) = match (left, right) {
-                (0, 0) if row == graticule_row => (graticule, graticule_fg),
-                (0, 0) => continue,
-                (0, r) => (braille_from_bits(r), right_fg),
-                (l, r) => (braille_from_bits(l | r), trace_fg),
+            let bits = grid[row * w_cells + col];
+            let (glyph, colour) = if bits != 0 {
+                (braille_from_bits(bits), fg)
+            } else if row == axis_row {
+                (axis_glyph, axis_fg)
+            } else {
+                continue;
             };
 
             if let Some(cell) = buf.cell_mut((clip.x + col as u16, clip.y + row as u16)) {
                 cell.set_char(glyph);
-                cell.set_fg(fg);
+                cell.set_fg(colour);
             }
         }
     }
