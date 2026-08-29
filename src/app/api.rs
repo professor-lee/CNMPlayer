@@ -339,7 +339,7 @@ impl ApiState {
             .param("type", &search_type.to_string())
             .param("limit", &limit.max(1).to_string())
             .param("offset", &offset.to_string());
-        let response = self.client.search(&query).await?;
+        let response = self.client.cloudsearch(&query).await?;
         Ok(response)
     }
 

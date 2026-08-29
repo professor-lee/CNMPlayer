@@ -16,6 +16,7 @@ use crate::render::cover_renderer::render_cover_ascii;
 use crate::render::graphics_overlay::cover_viewport;
 use crate::tmplayer::app::state::LyricLine;
 use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, MiniCavaState};
+use crate::tmplayer::audio::pcm_tap::PcmRing;
 use crate::tmplayer::playback::metadata::{parse_lrc, parse_plain_lyrics};
 use crate::ui::theme::Theme;
 use anyhow::{Result, anyhow};
@@ -2309,6 +2310,11 @@ impl App {
         self.cava.as_ref().map(|x| x.bars()).unwrap_or_default()
     }
 
+    /// 播放链路上的 PCM 抽头环句柄，经 `HostPlaybackBridge` 交给全屏页示波器。
+    pub fn pcm_ring(&self) -> Arc<PcmRing> {
+        self.audio_player.pcm_ring()
+    }
+
     pub fn main_spectrum_braille(&mut self) -> String {
         let mut out = String::with_capacity(10);
         for i in 0..10 {
@@ -4478,13 +4484,8 @@ impl App {
 
         match self.settings_playback_selected {
             0 => {
-                if crate::tmplayer::audio::cava::is_available() {
-                    self.config.visualize = self.config.visualize.cycle(delta);
-                    let _ = self.config.save();
-                } else if self.config.visualize != crate::data::config::VisualizeMode::Off {
-                    self.config.visualize = crate::data::config::VisualizeMode::Off;
-                    let _ = self.config.save();
-                }
+                self.config.visualize = self.config.visualize.cycle(delta);
+                let _ = self.config.save();
             }
             1 => {
                 self.config.super_smooth_bar = !self.config.super_smooth_bar;

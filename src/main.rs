@@ -70,6 +70,10 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
         }
     }
 
+    fn pcm_ring(&self) -> std::sync::Arc<tmplayer::audio::pcm_tap::PcmRing> {
+        self.app.pcm_ring()
+    }
+
     fn snapshot(&mut self) -> tmplayer::HostPlaybackSnapshot {
         let snapshot = self.app.fullscreen_playback_snapshot();
 
