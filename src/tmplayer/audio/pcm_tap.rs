@@ -251,3 +251,100 @@ impl PcmTap {
         self.len = 0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn ramp(from: usize, count: usize) -> Vec<f32> {
+        (from..from + count).map(|i| i as f32).collect()
+    }
+
+    #[test]
+    fn snapshot_returns_newest_samples_in_order_across_wrap() {
+        let ring = PcmRing::new();
+        let total = CAPACITY + 777;
+        let data = ramp(0, total);
+        for chunk in data.chunks(FLUSH_FRAMES) {
+            ring.push(chunk, chunk, 48_000);
+        }
+
+        let mut snap = PcmSnapshot::default();
+        ring.snapshot(&mut snap);
+
+        assert_eq!(snap.len, CAPACITY);
+        assert_eq!(snap.sample_rate, 48_000);
+        assert_eq!(snap.left[0], (total - CAPACITY) as f32);
+        assert_eq!(snap.left[CAPACITY - 1], (total - 1) as f32);
+        assert!(snap.left[..snap.len].windows(2).all(|w| w[1] - w[0] == 1.0));
+    }
+
+    #[test]
+    fn reset_empties_the_ring_without_a_further_push() {
+        let ring = PcmRing::new();
+        ring.push(&[0.5; 64], &[0.5; 64], 48_000);
+        ring.reset();
+
+        let mut snap = PcmSnapshot::default();
+        ring.snapshot(&mut snap);
+        assert_eq!(snap.len, 0);
+    }
+
+    #[test]
+    fn identical_channels_are_reported_as_mono() {
+        let ring = PcmRing::new();
+        let left = ramp(0, 128);
+        ring.push(&left, &left, 48_000);
+
+        let mut snap = PcmSnapshot::default();
+        ring.snapshot(&mut snap);
+        assert!(!snap.stereo);
+
+        let mut right = left.clone();
+        right[7] = -1.0;
+        ring.push(&left, &right, 48_000);
+        ring.snapshot(&mut snap);
+        assert!(snap.stereo);
+    }
+
+    #[test]
+    fn tap_splits_stereo_and_mirrors_mono() {
+        let stereo = Arc::new(PcmRing::new());
+        let mut tap = PcmTap::new(Arc::clone(&stereo), 2, 48_000);
+        for (channel, sample) in [(0, 1.0), (1, 2.0), (0, 3.0), (1, 4.0)] {
+            tap.push_sample(channel, sample);
+        }
+        tap.flush();
+
+        let mut snap = PcmSnapshot::default();
+        stereo.snapshot(&mut snap);
+        assert_eq!(snap.len, 2);
+        assert_eq!(&snap.left[..2], &[1.0, 3.0]);
+        assert_eq!(&snap.right[..2], &[2.0, 4.0]);
+
+        let mono = Arc::new(PcmRing::new());
+        let mut tap = PcmTap::new(Arc::clone(&mono), 1, 48_000);
+        tap.push_sample(0, 0.25);
+        tap.flush();
+
+        mono.snapshot(&mut snap);
+        assert_eq!(snap.len, 1);
+        assert_eq!(snap.left[0], snap.right[0]);
+        assert!(!snap.stereo);
+    }
+
+    #[test]
+    fn tap_flushes_on_its_own_once_staging_fills() {
+        let ring = Arc::new(PcmRing::new());
+        let mut tap = PcmTap::new(Arc::clone(&ring), 1, 48_000);
+        for i in 0..FLUSH_FRAMES {
+            tap.push_sample(0, i as f32);
+        }
+
+        // 没有手动 flush：攒满一批就该自动落环。
+        let mut snap = PcmSnapshot::default();
+        ring.snapshot(&mut snap);
+        assert_eq!(snap.len, FLUSH_FRAMES);
+    }
+}

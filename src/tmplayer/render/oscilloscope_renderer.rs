@@ -297,3 +297,112 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
         _ => a,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RATE: u32 = 48_000;
+
+    fn sine(freq: f32, phase: f32, len: usize) -> PcmSnapshot {
+        let mut snapshot = PcmSnapshot::default();
+        for i in 0..len {
+            let t = i as f32 / RATE as f32;
+            snapshot.left[i] = (std::f32::consts::TAU * freq * t + phase).sin();
+            snapshot.right[i] = snapshot.left[i];
+        }
+        snapshot.len = len;
+        snapshot.sample_rate = RATE;
+        snapshot
+    }
+
+    #[test]
+    fn trigger_locks_onto_a_rising_zero_crossing_at_any_phase() {
+        let window = (RATE as f32 * WINDOW_MS / 1000.0) as usize;
+        for step in 0..8 {
+            let phase = step as f32 * std::f32::consts::TAU / 8.0;
+            let snapshot = sine(440.0, phase, window * 4);
+            let start = trigger_offset(&snapshot, window);
+
+            // 触发点必须真的落在上升沿上：本身刚过零、前一个为负、后一个为正。
+            assert!(snapshot.left[start] >= 0.0 && snapshot.left[start] < 0.07);
+            assert!(snapshot.left[start - 1] < 0.0);
+            assert!(snapshot.left[start + 1] > 0.0);
+        }
+    }
+
+    #[test]
+    fn silence_falls_back_to_the_newest_window() {
+        let snapshot = PcmSnapshot {
+            len: 4096,
+            sample_rate: RATE,
+            ..Default::default()
+        };
+
+        let window = window_frames(&snapshot);
+        assert_eq!(trigger_offset(&snapshot, window), snapshot.len - window);
+    }
+
+    #[test]
+    fn full_scale_trace_is_continuous_and_spans_the_grid() {
+        let (w_cells, h_cells) = (60usize, 8usize);
+        let window = (RATE as f32 * WINDOW_MS / 1000.0) as usize;
+        let snapshot = sine(440.0, 0.0, window * 4);
+        let start = trigger_offset(&snapshot, window);
+
+        let mut grid = vec![0u8; w_cells * h_cells];
+        draw_channel(
+            &mut grid,
+            w_cells,
+            h_cells,
+            &snapshot.left[start..start + window],
+        );
+
+        // 每一列都得有点亮的格子：包络带连续，接合逻辑没漏掉断点。
+        for col in 0..w_cells {
+            assert!(
+                (0..h_cells).any(|row| grid[row * w_cells + col] != 0),
+                "column {col} is empty"
+            );
+        }
+        // 绝对映射：满幅信号必须触到顶行与底行，不被归一化压扁。
+        assert!((0..w_cells).any(|col| grid[col] != 0), "top row untouched");
+        assert!(
+            (0..w_cells).any(|col| grid[(h_cells - 1) * w_cells + col] != 0),
+            "bottom row untouched"
+        );
+    }
+
+    #[test]
+    fn quiet_signal_stays_near_the_centre_line() {
+        let (w_cells, h_cells) = (60usize, 8usize);
+        let window = (RATE as f32 * WINDOW_MS / 1000.0) as usize;
+        let mut snapshot = sine(440.0, 0.0, window * 4);
+        for v in snapshot.left.iter_mut() {
+            *v *= 0.02;
+        }
+
+        let mut grid = vec![0u8; w_cells * h_cells];
+        draw_channel(&mut grid, w_cells, h_cells, &snapshot.left[0..window]);
+
+        // 顶行与底行必须是空的：响度动态没有被 AGC 抹掉。
+        assert!((0..w_cells).all(|col| grid[col] == 0));
+        assert!((0..w_cells).all(|col| grid[(h_cells - 1) * w_cells + col] == 0));
+    }
+
+    #[test]
+    fn fewer_samples_than_subcolumns_still_draws_every_column() {
+        let (w_cells, h_cells) = (60usize, 6usize);
+        let samples: Vec<f32> = (0..17).map(|i| ((i % 5) as f32 - 2.0) / 2.0).collect();
+
+        let mut grid = vec![0u8; w_cells * h_cells];
+        draw_channel(&mut grid, w_cells, h_cells, &samples);
+
+        for col in 0..w_cells {
+            assert!(
+                (0..h_cells).any(|row| grid[row * w_cells + col] != 0),
+                "column {col} is empty"
+            );
+        }
+    }
+}
