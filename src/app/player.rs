@@ -216,8 +216,8 @@ impl AudioPlayer {
             handle.cancel();
         }
         self.player.stop();
-        // 停止后环若不清，示波器会一直冻在最后一段波形上。
-        self.pcm_ring.reset();
+        // 这里刻意不清 PCM 环：停止后示波器要靠这段残留把波形缓动收回中线。
+        // 换歌不会漏看上一首——所有播放入口都经 clear_and_play，那里会清。
         self.progress_rx = None;
         self.total_duration = None;
         // 丢弃未完成的跳转：切歌后旧的 seek 结果不再有意义

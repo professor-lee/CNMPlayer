@@ -183,6 +183,58 @@ impl Default for SpectrumData {
     }
 }
 
+/// 暂停或停止后，波形缓动收回中线的时长。
+const SCOPE_SETTLE_DURATION: Duration = Duration::from_millis(420);
+
+/// 示波器的幅度包络。
+///
+/// rodio 暂停时直接产出静音、不再拉取解码器，PCM 环因此停更，波形会僵在最后
+/// 一帧。这里给它一条收尾动画：播放中恒为 1，暂停或停止后缓动到 0，波形平滑
+/// 收拢到中线。恢复播放立即回满——环里随即就有新样本，渐入只会显得迟钝。
+#[derive(Debug, Default)]
+pub struct ScopeGain {
+    current: f32,
+    settle_started_at: Option<Instant>,
+}
+
+impl ScopeGain {
+    fn tick(&mut self, playing: bool, now: Instant) {
+        if playing {
+            self.current = 1.0;
+            self.settle_started_at = None;
+            return;
+        }
+
+        match self.settle_started_at {
+            // 归零那一帧已经画出去了，现在才停掉重绘。若和归零放在同一帧，
+            // 重绘会先一步停掉，屏幕就停在收尾前的最后一丝残影上。
+            Some(_) if self.current <= 0.0 => self.settle_started_at = None,
+            Some(started_at) => {
+                let elapsed = now.saturating_duration_since(started_at);
+                let t = elapsed.as_secs_f32() / SCOPE_SETTLE_DURATION.as_secs_f32();
+                self.current = if t >= 1.0 {
+                    0.0
+                } else {
+                    // 收尾总是从满幅起步：恢复播放是瞬时的，没有停在半幅的中间态。
+                    1.0 - cubic_bezier_y(t, 0.0, 0.7)
+                };
+            }
+            // 刚从播放切过来：锚定起点，本帧仍按满幅画。
+            None if self.current > 0.0 => self.settle_started_at = Some(now),
+            None => {}
+        }
+    }
+
+    /// 当前幅度系数，渲染时乘在样本上。
+    pub fn value(&self) -> f32 {
+        self.current
+    }
+
+    fn is_settling(&self) -> bool {
+        self.settle_started_at.is_some()
+    }
+}
+
 #[derive(Debug)]
 pub struct PlayerState {
     pub mode: PlayMode,
@@ -252,6 +304,8 @@ pub struct AppState {
     pub pcm_ring: Option<Arc<crate::tmplayer::audio::pcm_tap::PcmRing>>,
     /// 示波器的复用缓冲，渲染路径因此零分配。
     pub scope: crate::tmplayer::render::oscilloscope_renderer::ScopeScratch,
+    /// 波形幅度包络，暂停/停止后驱动波形收回中线。
+    pub scope_gain: ScopeGain,
 
     pub cover_cache: RefCell<CoverCache>,
     pub cover_dominant_rgb_cache: RefCell<HashMap<u64, (u8, u8, u8)>>,
@@ -374,6 +428,7 @@ impl AppState {
             spectrum_render_grid: Vec::new(),
             pcm_ring: None,
             scope: Default::default(),
+            scope_gain: ScopeGain::default(),
             cover_cache: RefCell::new(CoverCache::new(20)),
             cover_dominant_rgb_cache: RefCell::new(HashMap::new()),
             cover_render_tx,
@@ -496,6 +551,8 @@ impl AppState {
         }
 
         self.tick_playlist_slide(now);
+        self.scope_gain
+            .tick(self.player.playback == PlaybackState::Playing, now);
     }
 
     /// 启动一次侧边栏滑入/滑出。记录当前位置作为起点，因此支持动画中途反向。
@@ -548,6 +605,10 @@ impl AppState {
             return true;
         }
 
+        if self.scope_is_settling() {
+            return true;
+        }
+
         if self.cover_anim.is_some()
             || self.playlist_album_anim.is_some()
             || self.pending_system_cover_anim.is_some()
@@ -567,27 +628,25 @@ impl AppState {
     }
 
     pub fn active_render_fps(&self) -> u32 {
+        use crate::tmplayer::data::config::VisualizeMode;
+
         let base = self.config.ui_fps.clamp(10, 60);
-        if self.player.playback == PlaybackState::Playing {
-            match self.config.visualize {
-                crate::tmplayer::data::config::VisualizeMode::Off => {}
-                crate::tmplayer::data::config::VisualizeMode::Bars
-                | crate::tmplayer::data::config::VisualizeMode::Oscilloscope => {
-                    return self.config.spectrum_hz.clamp(base, 60);
-                }
+        // 频谱靠 cava 的拖尾衰减，示波器靠自己的收尾动画：暂停后两者都还在动。
+        let visual_active = match self.config.visualize {
+            VisualizeMode::Off => false,
+            VisualizeMode::Bars => {
+                self.player.playback == PlaybackState::Playing
+                    || (self.player.playback == PlaybackState::Paused
+                        && self.has_spectrum_tail_motion())
             }
-        }
-
-        if self.player.playback == PlaybackState::Paused && self.has_spectrum_tail_motion() {
-            match self.config.visualize {
-                crate::tmplayer::data::config::VisualizeMode::Off => {}
-                crate::tmplayer::data::config::VisualizeMode::Bars
-                | crate::tmplayer::data::config::VisualizeMode::Oscilloscope => {
-                    return self.config.spectrum_hz.clamp(base, 60);
-                }
+            VisualizeMode::Oscilloscope => {
+                self.player.playback == PlaybackState::Playing || self.scope_gain.is_settling()
             }
-        }
+        };
 
+        if visual_active {
+            return self.config.spectrum_hz.clamp(base, 60);
+        }
         base
     }
 
@@ -600,6 +659,14 @@ impl AppState {
         self.spectrum.bars.iter().any(|&v| v > TAIL_EPS)
             || self.spectrum.bars_left.iter().any(|&v| v > TAIL_EPS)
             || self.spectrum.bars_right.iter().any(|&v| v > TAIL_EPS)
+    }
+
+    /// 示波器正在把波形收回中线，需要持续重绘把这段动画推完。
+    fn scope_is_settling(&self) -> bool {
+        matches!(
+            self.config.visualize,
+            crate::tmplayer::data::config::VisualizeMode::Oscilloscope
+        ) && self.scope_gain.is_settling()
     }
 
     pub fn start_cover_anim(
@@ -620,5 +687,84 @@ impl AppState {
 
     pub fn close_overlay(&mut self) {
         self.overlay = Overlay::None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_gain_settles_to_zero_and_snaps_back_on_resume() {
+        let mut gain = ScopeGain::default();
+        let t0 = Instant::now();
+
+        gain.tick(true, t0);
+        assert_eq!(gain.value(), 1.0);
+        assert!(!gain.is_settling());
+
+        // 暂停后的第一帧只锚定起点，幅度仍是满的；从下一帧起才开始收。
+        gain.tick(false, t0);
+        assert_eq!(gain.value(), 1.0);
+        assert!(gain.is_settling());
+
+        // 之后必须单调收敛，且全程标记为动画中——否则重绘会被停掉，
+        // 收尾动画只推进一帧就卡住。
+        let mut prev = 1.0;
+        for ms in [1u64, 100, 200, 300, 419] {
+            gain.tick(false, t0 + Duration::from_millis(ms));
+            assert!(gain.value() < prev, "gain must shrink by {ms}ms");
+            assert!(gain.is_settling(), "must stay animating at {ms}ms");
+            prev = gain.value();
+        }
+
+        gain.tick(false, t0 + SCOPE_SETTLE_DURATION);
+        assert_eq!(gain.value(), 0.0);
+        // 归零这一帧本身还得再画一次，所以此刻仍要求重绘；否则屏幕会停在
+        // 收尾前的最后一丝残影上，直到别处偶然触发重绘才补上。
+        assert!(gain.is_settling());
+
+        gain.tick(
+            false,
+            t0 + SCOPE_SETTLE_DURATION + Duration::from_millis(16),
+        );
+        assert!(!gain.is_settling());
+
+        // 之后继续 tick 不该再请求重绘。
+        gain.tick(false, t0 + Duration::from_secs(5));
+        assert!(!gain.is_settling());
+
+        gain.tick(true, t0 + Duration::from_secs(6));
+        assert_eq!(gain.value(), 1.0);
+    }
+
+    #[test]
+    fn resuming_mid_settle_restarts_a_full_length_settle() {
+        let mut gain = ScopeGain::default();
+        let t0 = Instant::now();
+
+        gain.tick(true, t0);
+        gain.tick(false, t0 + Duration::from_millis(300));
+        gain.tick(false, t0 + Duration::from_millis(400));
+        assert!(gain.value() < 1.0);
+
+        gain.tick(true, t0 + Duration::from_millis(410));
+        assert_eq!(gain.value(), 1.0);
+
+        // 再次暂停：计时从这一刻重新起算。若沿用上一轮起点，下面这帧的
+        // elapsed 会超过整个时长，幅度提前归零。
+        let pause_at = t0 + Duration::from_millis(420);
+        gain.tick(false, pause_at);
+        gain.tick(
+            false,
+            pause_at + SCOPE_SETTLE_DURATION - Duration::from_millis(1),
+        );
+        assert!(
+            gain.value() > 0.0,
+            "settle must restart from the resume point"
+        );
+
+        gain.tick(false, pause_at + SCOPE_SETTLE_DURATION);
+        assert_eq!(gain.value(), 0.0);
     }
 }

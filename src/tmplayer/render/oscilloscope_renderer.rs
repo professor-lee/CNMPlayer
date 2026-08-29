@@ -54,15 +54,20 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
         None => app.scope.snapshot.clear(),
     }
 
-    rasterize(&mut app.scope, w_cells, h_cells);
+    rasterize(&mut app.scope, w_cells, h_cells, app.scope_gain.value());
     paint(f, area, app, w_cells, h_cells);
 }
 
-fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize) {
+/// `gain` 是幅度包络：播放中为 1，暂停后缓动到 0 把波形收回中线。归零后干脆
+/// 不画，让位给 `paint` 的中轴线——两者在零电平上是同一个字形，只是颜色不同。
+fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize, gain: f32) {
     let ScopeScratch { snapshot, grid } = scope;
 
     grid.clear();
     grid.resize(w_cells * h_cells, 0);
+    if gain <= 0.0 {
+        return;
+    }
 
     let window = window_frames(snapshot);
     if window < 2 {
@@ -75,6 +80,7 @@ fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize) {
         w_cells,
         h_cells,
         &snapshot.left[start..start + window],
+        gain,
     );
     // 单声道音源两声道逐位相同，再画一遍只是白烧一半光栅化开销。
     if snapshot.stereo {
@@ -83,6 +89,7 @@ fn rasterize(scope: &mut ScopeScratch, w_cells: usize, h_cells: usize) {
             w_cells,
             h_cells,
             &snapshot.right[start..start + window],
+            gain,
         );
     }
 }
@@ -136,7 +143,7 @@ fn mono(snapshot: &PcmSnapshot, index: usize) -> f32 {
 /// 相邻子列的跨度不相接时互相延伸一格，轨迹因此连续 —— 陡沿处等价于连线，
 /// 但不必单独走一遍 Bresenham。样本比子列还少时每列复用最近的样本，
 /// 由同一段接合逻辑连成折线，无需第二条代码路径。
-fn draw_channel(grid: &mut [u8], w_cells: usize, h_cells: usize, samples: &[f32]) {
+fn draw_channel(grid: &mut [u8], w_cells: usize, h_cells: usize, samples: &[f32], gain: f32) {
     let w_px = w_cells * 2;
     let h_px = (h_cells * 4) as i32;
     let n = samples.len();
@@ -151,7 +158,8 @@ fn draw_channel(grid: &mut [u8], w_cells: usize, h_cells: usize, samples: &[f32]
             hi = hi.max(v);
         }
 
-        let (top, bottom) = (sample_row(hi, h_px), sample_row(lo, h_px));
+        // gain 非负，先取极值再缩放与逐样本缩放等价，但少 n-2 次乘法。
+        let (top, bottom) = (sample_row(hi * gain, h_px), sample_row(lo * gain, h_px));
         let (mut from, mut to) = (top, bottom);
         if let Some((prev_top, prev_bottom)) = prev {
             from = from.min(prev_bottom);
@@ -334,6 +342,7 @@ mod tests {
             w_cells,
             h_cells,
             &snapshot.left[start..start + window],
+            1.0,
         );
 
         // 每一列都得有点亮的格子：包络带连续，接合逻辑没漏掉断点。
@@ -361,7 +370,7 @@ mod tests {
         }
 
         let mut grid = vec![0u8; w_cells * h_cells];
-        draw_channel(&mut grid, w_cells, h_cells, &snapshot.left[0..window]);
+        draw_channel(&mut grid, w_cells, h_cells, &snapshot.left[0..window], 1.0);
 
         // 顶行与底行必须是空的：响度动态没有被 AGC 抹掉。
         assert!((0..w_cells).all(|col| grid[col] == 0));
@@ -374,7 +383,7 @@ mod tests {
         let samples: Vec<f32> = (0..17).map(|i| ((i % 5) as f32 - 2.0) / 2.0).collect();
 
         let mut grid = vec![0u8; w_cells * h_cells];
-        draw_channel(&mut grid, w_cells, h_cells, &samples);
+        draw_channel(&mut grid, w_cells, h_cells, &samples, 1.0);
 
         for col in 0..w_cells {
             assert!(
@@ -382,5 +391,29 @@ mod tests {
                 "column {col} is empty"
             );
         }
+    }
+
+    #[test]
+    fn gain_envelope_collapses_the_trace_toward_the_centre_line() {
+        let (w_cells, h_cells) = (60usize, 8usize);
+        let window = (RATE as f32 * WINDOW_MS / 1000.0) as usize;
+        let snapshot = sine(440.0, 0.0, window * 4);
+
+        let span = |gain: f32| {
+            let mut grid = vec![0u8; w_cells * h_cells];
+            draw_channel(&mut grid, w_cells, h_cells, &snapshot.left[0..window], gain);
+            let rows: Vec<usize> = (0..h_cells)
+                .filter(|row| (0..w_cells).any(|col| grid[row * w_cells + col] != 0))
+                .collect();
+            rows.last().map(|hi| hi - rows[0] + 1).unwrap_or(0)
+        };
+
+        // 幅度包络越小，波形占的行数越少 —— 暂停后就是这样收回中线的。
+        let full = span(1.0);
+        let half = span(0.5);
+        let settled = span(0.0);
+        assert_eq!(full, h_cells, "满幅应撑满面板");
+        assert!(half < full && half > settled, "half={half} full={full}");
+        assert_eq!(settled, 1, "归零后只剩中线那一行");
     }
 }
