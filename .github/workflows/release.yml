@@ -1,0 +1,190 @@
+name: Release
+
+# push tag v* → 双架构构建 → GitHub Release → AUR 同步（链式，同一 workflow 内完成）。
+# 说明：GitHub 不允许 GITHUB_TOKEN 创建的事件触发其他 workflow，
+# 因此 AUR 同步作为本 workflow 的 job 而非独立的 release 触发 workflow。
+# workflow_dispatch 用于空跑演练（默认只构建不发布）或手动补同步 AUR（sync_aur=true）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build, e.g. v0.6.0'
+        required: true
+      sync_aur:
+        description: 'Also sync AUR (release must already exist; NOT a dry run)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Verify tag/version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$GITHUB_REF_NAME"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+
+      - name: Tag must match Cargo.toml version
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          WANT_VER="${TAG#v}"
+          HAVE_VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$WANT_VER" != "$HAVE_VER" ]; then
+            echo "::error::tag version $WANT_VER != Cargo.toml version $HAVE_VER"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      TAG: ${{ needs.guard.outputs.tag }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.tag }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libasound2-dev libpipewire-0.3-dev libssl-dev libglib2.0-dev libclang-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      # 与既有发布约定一致：tarball 内平铺 cnmplayer + LICENSE（无顶层目录）
+      - name: Package
+        run: |
+          mkdir pkg
+          cp "target/${{ matrix.target }}/release/cnmplayer" pkg/
+          cp LICENSE pkg/
+          (cd pkg && tar -cJf "../CNMPlayer_${TAG}_linux_${ARCH}.tar.xz" cnmplayer LICENSE)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rel-${{ matrix.arch }}
+          path: CNMPlayer_${{ needs.guard.outputs.tag }}_linux_${{ matrix.arch }}.tar.xz
+          if-no-files-found: error
+
+  publish:
+    name: GitHub Release
+    needs: [guard, build]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rel-*
+          merge-multiple: true
+
+      # create 已存在时回退为 upload，保证 re-run 幂等
+      - name: Create release with tarballs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          gh release create "$TAG" --verify-tag --generate-notes ./*.tar.xz \
+            || gh release upload "$TAG" --clobber ./*.tar.xz
+
+  aur:
+    name: Sync AUR packages
+    needs: [guard, build, publish]
+    # push：随发布自动同步；dispatch+sync_aur：手动补同步（此时 publish 被跳过）
+    if: ${{ !cancelled() && needs.publish.result != 'failed' && (github.event_name == 'push' || inputs.sync_aur == true) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    container:
+      image: archlinux:base-devel
+    env:
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+    steps:
+      - name: Prepare container
+        run: |
+          pacman -Syu --noconfirm git openssh curl
+          useradd -m builder
+
+      - name: Install SSH key & git identity
+        run: |
+          [ -n "$AUR_SSH_KEY" ] || { echo "::error::secret AUR_SSH_KEY is not set"; exit 1; }
+          install -d -m700 -o builder -g builder /home/builder/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > /home/builder/.ssh/aur_key
+          chown builder:builder /home/builder/.ssh/aur_key
+          chmod 600 /home/builder/.ssh/aur_key
+          ssh-keyscan -H aur.archlinux.org > /home/builder/.ssh/known_hosts
+          chown builder:builder /home/builder/.ssh/known_hosts
+          git config --file /home/builder/.gitconfig core.sshCommand \
+            "ssh -i /home/builder/.ssh/aur_key -oIdentitiesOnly=yes"
+          git config --file /home/builder/.gitconfig user.name "白鞋油"
+          git config --file /home/builder/.gitconfig user.email \
+            "89632742+professor-lee@users.noreply.github.com"
+          chown builder:builder /home/builder/.gitconfig
+
+      - uses: actions/checkout@v4
+
+      - name: Run AUR sync as builder
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          SYNC_AUR: ${{ inputs.sync_aur }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+            if [ "$SYNC_AUR" = "true" ]; then DRY_RUN=false; else DRY_RUN=true; fi
+          else
+            TAG="$GITHUB_REF_NAME"
+            DRY_RUN=false
+          fi
+          sudo -u builder -H bash "$GITHUB_WORKSPACE/.github/scripts/aur_sync.sh" "$TAG" "$DRY_RUN"
