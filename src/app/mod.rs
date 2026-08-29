@@ -1598,7 +1598,9 @@ struct LikeCheckRequest {
 #[derive(Debug)]
 struct LikeCheckResult {
     song_id: String,
-    liked: bool,
+    /// `None` 表示接口失败（网络异常、非 200、响应结构不识别），
+    /// 此时应保留本地缓存的红心状态而不是误判为未喜欢。
+    liked: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -1620,18 +1622,18 @@ struct PendingStream {
     announce: bool,
 }
 
-async fn like_check_liked(api: &mut ApiState, song_id: &str) -> bool {
+async fn like_check_liked(api: &mut ApiState, song_id: &str) -> Option<bool> {
     let Ok(song_id_num) = song_id.parse::<u64>() else {
-        return false;
+        return None;
     };
     let ids_json = format!("[{song_id_num}]");
     let Ok(response) = api.song_like_check(&ids_json).await else {
-        return false;
+        return None;
     };
     if response_code(&response) != 200 {
-        return false;
+        return None;
     }
-    parse_song_like_check_result(&response.body, song_id).unwrap_or(false)
+    parse_song_like_check_result(&response.body, song_id)
 }
 
 async fn loop_like_check(
@@ -3005,18 +3007,22 @@ impl App {
             self.like_fetch_inflight_song_id = None;
         }
 
+        // 接口失败时保留本地缓存的红心状态，避免把已喜欢的歌误标为未喜欢。
+        let Some(liked) = result.liked else {
+            return;
+        };
+
+        if liked {
+            self.liked_song_ids.insert(result.song_id.clone());
+        } else {
+            self.liked_song_ids.remove(&result.song_id);
+        }
+
         let Some(now) = self.now_playing.as_ref() else {
             return;
         };
-        if now.song_id != result.song_id {
-            return;
-        }
-
-        self.now_playing_liked = result.liked;
-        if result.liked {
-            self.liked_song_ids.insert(result.song_id);
-        } else {
-            self.liked_song_ids.remove(&result.song_id);
+        if now.song_id == result.song_id {
+            self.now_playing_liked = liked;
         }
     }
 
@@ -6877,7 +6883,26 @@ fn parse_song_like_check_result(body: &Value, song_id: &str) -> Option<bool> {
         }
     }
 
+    // /api/song/like/check 实际返回 {"code":200,"ids":[<已喜欢的 id>, ...]}，
+    // ids 数组即请求的歌曲中已被喜欢的集合；存在该字段时结果是确定的。
+    if let Some(ids) = body.get("ids").and_then(|value| value.as_array()) {
+        return Some(ids.iter().any(|item| like_check_id_matches(item, song_id)));
+    }
+
     None
+}
+
+fn like_check_id_matches(item: &Value, song_id: &str) -> bool {
+    if let Some(id) = item.as_i64() {
+        return id.to_string() == song_id;
+    }
+    if let Some(id) = item.as_u64() {
+        return id.to_string() == song_id;
+    }
+    if let Some(id) = item.as_str() {
+        return id.trim() == song_id;
+    }
+    false
 }
 
 fn parse_song_like_check_flag(value: &Value) -> Option<bool> {
