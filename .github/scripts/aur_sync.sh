@@ -7,10 +7,11 @@ TAG="$1"
 DRY_RUN="$2"
 VER="${TAG#v}"
 
-# ---- cnmplayer（源码包）：仅升 pkgver，校验和保持 SKIP ----
+# ---- cnmplayer（源码包）：升 pkgver 并重置 pkgrel，校验和保持 SKIP ----
 git clone -q ssh://aur@aur.archlinux.org/cnmplayer.git
 cd cnmplayer
 sed -i "s/^pkgver=.*/pkgver=${VER}/" PKGBUILD
+sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 makepkg --printsrcinfo > .SRCINFO
 if git commit -aqm "functional update"; then
   [ "${DRY_RUN}" = "true" ] || git push -q
@@ -19,12 +20,13 @@ else
 fi
 cd ..
 
-# ---- cnmplayer-bin（预编译包）：升 pkgver 并重算全部资产 sha256 ----
+# ---- cnmplayer-bin（预编译包）：升 pkgver/pkgrel 并重算全部资产 sha256 ----
 git ls-remote ssh://aur@aur.archlinux.org/cnmplayer-bin.git > /dev/null 2>&1 \
   || { echo "cnmplayer-bin missing on AUR — push the initial package manually first"; exit 1; }
 git clone -q ssh://aur@aur.archlinux.org/cnmplayer-bin.git
 cd cnmplayer-bin
 sed -i "s/^pkgver=.*/pkgver=${VER}/" PKGBUILD
+sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
 # PKGBUILD 中 URL 为参数化写法（${pkgver}/${_asset_arch}），
 # 须 source 求值得到展开后的真实 URL（与 makepkg 同机制），再按架构行原位重算 sha256。
 # 兼容未来加入 source_aarch64：届时无需改动本脚本。
