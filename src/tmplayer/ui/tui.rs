@@ -650,9 +650,7 @@ fn render_bar_settings_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppSt
     ];
 
     for (idx, text) in items.iter().enumerate() {
-        let style = if idx == 0 && !crate::tmplayer::audio::cava::is_available() {
-            Style::default().fg(app.theme.color_subtext())
-        } else if idx == app.bar_settings_selected {
+        let style = if idx == app.bar_settings_selected {
             Style::default()
                 .fg(app.theme.color_accent2())
                 .add_modifier(Modifier::BOLD)

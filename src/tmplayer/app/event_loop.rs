@@ -33,20 +33,15 @@ fn sync_playlists_when_viewing_playback(app: &mut AppState) {
 }
 
 fn clear_spectrum(app: &mut AppState) {
-    let bar_len = app.spectrum.bars.len().max(1);
-    app.spectrum.bars = vec![0.0; bar_len];
-    app.spectrum.bars_left = vec![0.0; bar_len];
-    app.spectrum.bars_right = vec![0.0; bar_len];
-    app.spectrum.stereo_left = [0.0; 64];
-    app.spectrum.stereo_right = [0.0; 64];
+    app.spectrum.bars.fill(0.0);
+    app.spectrum.bars_left.fill(0.0);
+    app.spectrum.bars_right.fill(0.0);
 }
 
 fn has_spectrum_data(app: &AppState) -> bool {
     app.spectrum.bars.iter().any(|&v| v > 0.0)
         || app.spectrum.bars_left.iter().any(|&v| v > 0.0)
         || app.spectrum.bars_right.iter().any(|&v| v > 0.0)
-        || app.spectrum.stereo_left.iter().any(|&v| v > 0.0)
-        || app.spectrum.stereo_right.iter().any(|&v| v > 0.0)
 }
 
 fn map_host_state(state: HostPlaybackState) -> PlaybackState {
@@ -502,6 +497,9 @@ pub async fn run(
 
     let mut last_layout = UiLayout::default();
 
+    // 示波器读宿主播放链路上的 PCM 抽头环。独立运行（无宿主）时为空，只画中线。
+    app.pcm_ring = host_bridge.as_ref().map(|bridge| bridge.pcm_ring());
+
     // Initialize cava with the current desired config (best-effort).
     ensure_cava(
         &mut cava,
@@ -566,52 +564,28 @@ pub async fn run(
             ensure_bar_buffers(app, bars);
         }
 
-        // spectrum update
-        if app.config.visualize == VisualizeMode::Off {
-            if has_spectrum_data(app) {
-                clear_spectrum(app);
+        // 频谱采集。示波器不走这里 —— 它在渲染时直接读 PCM 抽头环。但残留的
+        // cava 数据会让 has_spectrum_tail_motion() 长期为真，暂停后仍按高帧率
+        // 空转，所以切走时必须清零。
+        if app.config.visualize.needs_cava() {
+            let period = Duration::from_millis((1000 / app.config.spectrum_hz.max(1)) as u64);
+            if frame_start.duration_since(last_spectrum) >= period {
+                last_spectrum = frame_start;
                 state_changed = true;
-            }
-        } else if frame_start.duration_since(last_spectrum)
-            >= Duration::from_millis((1000 / app.config.spectrum_hz.max(1)) as u64)
-        {
-            last_spectrum = frame_start;
-            state_changed = true;
-
-            match app.config.visualize {
-                VisualizeMode::Off => clear_spectrum(app),
-                VisualizeMode::Bars => {
-                    if let Some(c) = cava.as_ref() {
+                match cava.as_ref() {
+                    Some(c) => {
                         let (l, r) = c.latest_stereo_bars();
                         app.spectrum.bars_left = l;
                         app.spectrum.bars_right = r;
                         let raw = c.latest_bars();
                         app.spectrum.bars = app.spectrum_bar_smoother.apply(&raw);
-                    } else {
-                        clear_spectrum(app);
                     }
-                }
-                VisualizeMode::Oscilloscope => {
-                    if let Some(c) = cava.as_ref() {
-                        let (l, r) = c.latest_stereo_bars();
-                        fill_fixed_bars(&mut app.spectrum.stereo_left, &l);
-                        fill_fixed_bars(&mut app.spectrum.stereo_right, &r);
-                        app.spectrum.bars = c.latest_bars();
-                    } else {
-                        clear_spectrum(app);
-                    }
-
-                    let dt = 1.0 / app.config.spectrum_hz.max(1) as f32;
-                    crate::tmplayer::render::oscilloscope_renderer::advance_phases(
-                        &mut app.spectrum.osc_phase_left,
-                        dt,
-                    );
-                    crate::tmplayer::render::oscilloscope_renderer::advance_phases(
-                        &mut app.spectrum.osc_phase_right,
-                        dt,
-                    );
+                    None => clear_spectrum(app),
                 }
             }
+        } else if has_spectrum_data(app) {
+            clear_spectrum(app);
+            state_changed = true;
         }
 
         if app.player.mode == PlayMode::Idle
@@ -872,15 +846,8 @@ async fn handle_action(
             },
             Overlay::BarSettingsModal => match app.bar_settings_selected {
                 0 => {
-                    if crate::tmplayer::audio::cava::is_available() {
-                        app.config.visualize = app.config.visualize.cycle(1);
-                        save_and_sync_host_config(app, host_bridge).await;
-                    } else if app.config.visualize
-                        != crate::tmplayer::data::config::VisualizeMode::Off
-                    {
-                        app.config.visualize = crate::tmplayer::data::config::VisualizeMode::Off;
-                        save_and_sync_host_config(app, host_bridge).await;
-                    }
+                    app.config.visualize = app.config.visualize.cycle(1);
+                    save_and_sync_host_config(app, host_bridge).await;
                 }
                 1 => {
                     app.config.super_smooth_bar = !app.config.super_smooth_bar;
@@ -1039,10 +1006,8 @@ async fn handle_action(
             } else if app.overlay == Overlay::BarSettingsModal {
                 match app.bar_settings_selected {
                     0 => {
-                        if crate::tmplayer::audio::cava::is_available() {
-                            app.config.visualize = app.config.visualize.cycle(-1);
-                            save_and_sync_host_config(app, host_bridge).await;
-                        }
+                        app.config.visualize = app.config.visualize.cycle(-1);
+                        save_and_sync_host_config(app, host_bridge).await;
                     }
                     1 => {
                         app.config.super_smooth_bar = !app.config.super_smooth_bar;
@@ -1096,10 +1061,8 @@ async fn handle_action(
             } else if app.overlay == Overlay::BarSettingsModal {
                 match app.bar_settings_selected {
                     0 => {
-                        if crate::tmplayer::audio::cava::is_available() {
-                            app.config.visualize = app.config.visualize.cycle(1);
-                            save_and_sync_host_config(app, host_bridge).await;
-                        }
+                        app.config.visualize = app.config.visualize.cycle(1);
+                        save_and_sync_host_config(app, host_bridge).await;
                     }
                     1 => {
                         app.config.super_smooth_bar = !app.config.super_smooth_bar;
@@ -1493,24 +1456,15 @@ fn desired_bar_count(app: &AppState, layout: &UiLayout) -> usize {
 }
 
 fn desired_cava_config(app: &AppState, layout: &UiLayout) -> Option<CavaConfig> {
-    match app.config.visualize {
-        VisualizeMode::Off => None,
-        VisualizeMode::Bars => Some({
-            let bars = desired_bar_count(app, layout);
-            CavaConfig {
-                framerate_hz: app.config.spectrum_hz,
-                bars,
-                channels: CavaChannels::Mono,
-                reverse: app.config.bar_channel_reverse,
-            }
-        }),
-        VisualizeMode::Oscilloscope => Some(CavaConfig {
-            framerate_hz: app.config.spectrum_hz,
-            bars: 64,
-            channels: CavaChannels::Mono,
-            reverse: app.config.bar_channel_reverse,
-        }),
+    if !app.config.visualize.needs_cava() {
+        return None;
     }
+    Some(CavaConfig {
+        framerate_hz: app.config.spectrum_hz,
+        bars: desired_bar_count(app, layout),
+        channels: CavaChannels::Mono,
+        reverse: app.config.bar_channel_reverse,
+    })
 }
 
 fn ensure_cava(
@@ -1563,12 +1517,6 @@ fn max_display_bars(width_cells: u16, gap: bool) -> usize {
         w.div_ceil(2).max(1)
     } else {
         (w / 2).max(1)
-    }
-}
-
-fn fill_fixed_bars(dst: &mut [f32; 64], src: &[f32]) {
-    for i in 0..64 {
-        dst[i] = src.get(i).copied().unwrap_or(0.0);
     }
 }
 

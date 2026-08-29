@@ -11,6 +11,7 @@ use anyhow::Result;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::data::config::{
@@ -119,6 +120,8 @@ pub trait HostPlaybackBridge {
     async fn tick(&mut self);
     fn metadata_signature(&self) -> u64;
     fn runtime_snapshot(&self) -> HostPlaybackRuntimeSnapshot;
+    /// 宿主播放链路上的 PCM 抽头环，示波器由此取真实波形。
+    fn pcm_ring(&self) -> Arc<crate::tmplayer::audio::pcm_tap::PcmRing>;
     fn snapshot(&mut self) -> HostPlaybackSnapshot;
     fn config_snapshot(&self) -> HostConfigSync;
     async fn apply_config_sync(&mut self, config: HostConfigSync);

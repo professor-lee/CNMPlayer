@@ -238,6 +238,17 @@ pub enum VisualizeMode {
 }
 
 impl VisualizeMode {
+    /// 该模式是否依赖 cava 的频谱数据。示波器读播放链路上的 PCM 抽头，不需要。
+    pub fn needs_cava(self) -> bool {
+        matches!(self, VisualizeMode::Bars)
+    }
+
+    /// 数据源就绪，可供用户选中。
+    pub fn is_available(self) -> bool {
+        !self.needs_cava() || crate::tmplayer::audio::cava::is_available()
+    }
+
+    /// 切到下一个**可用**模式：数据源缺失的模式被跳过，而不是让整项无法调整。
     pub fn cycle(self, delta: i32) -> Self {
         const MODES: [VisualizeMode; 3] = [
             VisualizeMode::Off,
@@ -245,9 +256,13 @@ impl VisualizeMode {
             VisualizeMode::Oscilloscope,
         ];
 
-        let index = MODES.iter().position(|mode| *mode == self).unwrap_or(1) as i32;
-        let next = (index + delta).rem_euclid(MODES.len() as i32) as usize;
-        MODES[next]
+        let len = MODES.len() as i32;
+        let step = if delta < 0 { -1 } else { 1 };
+        let start = MODES.iter().position(|mode| *mode == self).unwrap_or(1) as i32;
+        (1..=len)
+            .map(|offset| MODES[(start + step * offset).rem_euclid(len) as usize])
+            .find(|mode| mode.is_available())
+            .unwrap_or(self)
     }
 }
 
@@ -365,7 +380,8 @@ fn default_visualize() -> VisualizeMode {
     if crate::tmplayer::audio::cava::is_available() {
         VisualizeMode::Bars
     } else {
-        VisualizeMode::Off
+        // 示波器不依赖 cava，比直接关掉可视化更有用。
+        VisualizeMode::Oscilloscope
     }
 }
 
@@ -575,10 +591,11 @@ impl Config {
             cfg.spectrum_hz = 30;
         }
 
-        let mut forced_visualize_off = false;
-        if !crate::tmplayer::audio::cava::is_available() && cfg.visualize != VisualizeMode::Off {
-            cfg.visualize = VisualizeMode::Off;
-            forced_visualize_off = true;
+        let mut forced_visualize_fallback = false;
+        if !cfg.visualize.is_available() {
+            // 只有依赖 cava 的模式会落到这里；退到同样无需外部进程的示波器。
+            cfg.visualize = VisualizeMode::Oscilloscope;
+            forced_visualize_fallback = true;
         }
 
         let mut migrated_legacy_sidebar = false;
@@ -608,7 +625,7 @@ impl Config {
             || !raw.contains("keybind_page_up")
             || !raw.contains("keybind_page_down")
             || !raw.contains("keybind_prev")
-            || forced_visualize_off
+            || forced_visualize_fallback
             || !raw.contains("keybind_next")
             || !raw.contains("keybind_toggle_play_pause")
             || !raw.contains("keybind_toggle_mode")

@@ -2,6 +2,7 @@ use crate::STORAGE;
 use crate::app::streaming::{StreamingReader, StreamingReaderHandle};
 use crate::data::config::{CacheCleanStrategy, Config};
 use crate::tmplayer::app::state::{EQ_BANDS, EQ_FREQS_HZ, EqSettings};
+use crate::tmplayer::audio::pcm_tap::{PcmRing, PcmTap};
 use anyhow::{Context, Result};
 use rodio::cpal::Error;
 use rodio::decoder::DecoderBuilder;
@@ -37,6 +38,9 @@ pub struct AudioPlayer {
     progress_rx: Option<Receiver<(u64, u64)>>,
     seek_state: Arc<Mutex<SeekState>>,
     stream_handle: Option<StreamingReaderHandle>,
+    /// PCM 时域抽头：`EqSource` 逐样本写入，全屏页示波器读取。
+    /// 环的寿命长于单个 `EqSource`，故切歌与跳转时必须显式重置。
+    pcm_ring: Arc<PcmRing>,
     /// 切歌时若有未完成的跳转，下次 clear_and_play 需要用归零 seek 使其失效
     invalidate_seek_on_next_play: bool,
 }
@@ -86,6 +90,8 @@ impl AudioPlayer {
         let had_pending_seek = self.invalidate_seek_on_next_play
             || self.seek_state.lock().unwrap().pending_target.is_some();
         self.player.stop();
+        // 环内还是上一首的样本；不清掉的话示波器会先画一段前一首的波形。
+        self.pcm_ring.reset();
         self.player.append(src);
         self.player.play();
         if had_pending_seek {
@@ -127,6 +133,7 @@ impl AudioPlayer {
             progress_rx: None,
             seek_state: Arc::new(Mutex::new(SeekState::default())),
             stream_handle: None,
+            pcm_ring: Arc::new(PcmRing::new()),
             invalidate_seek_on_next_play: false,
         };
 
@@ -139,12 +146,17 @@ impl AudioPlayer {
         self.cache_dir.join(name)
     }
 
+    /// 共享 PCM 抽头环的句柄，供全屏页示波器读取真实波形。
+    pub fn pcm_ring(&self) -> Arc<PcmRing> {
+        self.pcm_ring.clone()
+    }
+
     pub fn play_from_file(&mut self, file_path: &PathBuf) -> Result<()> {
         let file = File::open(file_path)?;
         let builder = DecoderBuilder::new().with_byte_len(file.metadata()?.len());
         let decoder = builder.with_data(BufReader::new(file)).build()?;
         let total_duration = decoder.total_duration();
-        let source = EqSource::new(decoder, self.eq_params.clone());
+        let source = EqSource::new(decoder, self.eq_params.clone(), self.pcm_ring.clone());
         self.clear_and_play(source)?;
         self.stream_handle = None;
         self.total_duration = total_duration;
@@ -162,7 +174,7 @@ impl AudioPlayer {
         let f = move || builder.with_data(BufReader::new(reader)).build();
         let decoder = compio::runtime::spawn_blocking(f).await.unwrap()?;
         let total_duration = decoder.total_duration();
-        let source = EqSource::new(decoder, self.eq_params.clone());
+        let source = EqSource::new(decoder, self.eq_params.clone(), self.pcm_ring.clone());
         self.clear_and_play(source)?;
         self.stream_handle = Some(stream_handle);
         self.total_duration = total_duration;
@@ -204,6 +216,8 @@ impl AudioPlayer {
             handle.cancel();
         }
         self.player.stop();
+        // 停止后环若不清，示波器会一直冻在最后一段波形上。
+        self.pcm_ring.reset();
         self.progress_rx = None;
         self.total_duration = None;
         // 丢弃未完成的跳转：切歌后旧的 seek 结果不再有意义
@@ -378,15 +392,17 @@ where
     last_db_x10: [i32; EQ_BANDS],
     coeffs: [BiquadCoeffs; EQ_BANDS],
     states: Vec<BiquadState>,
+    tap: PcmTap,
 }
 
 impl<S> EqSource<S>
 where
     S: Source<Item = f32>,
 {
-    fn new(inner: S, params: Arc<EqParams>) -> Self {
+    fn new(inner: S, params: Arc<EqParams>, pcm_ring: Arc<PcmRing>) -> Self {
         let channels = inner.channels();
-        let fs = inner.sample_rate().get() as f32;
+        let sample_rate = inner.sample_rate().get();
+        let fs = sample_rate as f32;
         let eq_db = params.load_db();
         let last_db_x10 = params.load_db_x10();
         let coeffs =
@@ -401,6 +417,7 @@ where
             last_db_x10,
             coeffs,
             states,
+            tap: PcmTap::new(pcm_ring, channels.get() as usize, sample_rate),
         }
     }
 
@@ -435,6 +452,9 @@ where
             let state_idx = self.state_index(channel, band);
             output = biquad_process(&self.coeffs[band], &mut self.states[state_idx], output);
         }
+        // PCM 抽头取 EQ 之后、音量之前的样本：波形反映均衡效果，但不随音量缩放。
+        // 逐样本只写一次暂存数组，攒够一批才落环（见 pcm_tap 的线程模型说明）。
+        self.tap.push_sample(channel, output);
         Some(output)
     }
 }
@@ -463,6 +483,8 @@ where
         for state in &mut self.states {
             *state = BiquadState::default();
         }
+        // 环里是跳转前那一段的样本，留着会让示波器先闪一下旧波形。
+        self.tap.reset();
         self.inner.try_seek(pos)
     }
 }

@@ -11,6 +11,7 @@ use crate::tmplayer::ui::theme::Theme;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -170,12 +171,6 @@ pub struct SpectrumData {
     pub bars: Vec<f32>,
     pub bars_left: Vec<f32>,
     pub bars_right: Vec<f32>,
-    pub stereo_left: [f32; 64],
-    pub stereo_right: [f32; 64],
-
-    // Oscilloscope synthesis state (kept across frames for stability).
-    pub osc_phase_left: [f32; 64],
-    pub osc_phase_right: [f32; 64],
 }
 
 impl Default for SpectrumData {
@@ -184,10 +179,6 @@ impl Default for SpectrumData {
             bars: vec![0.0; 64],
             bars_left: vec![0.0; 64],
             bars_right: vec![0.0; 64],
-            stereo_left: [0.0; 64],
-            stereo_right: [0.0; 64],
-            osc_phase_left: [0.0; 64],
-            osc_phase_right: [0.0; 64],
         }
     }
 }
@@ -256,6 +247,11 @@ pub struct AppState {
     pub spectrum: SpectrumData,
     pub spectrum_bar_smoother: Ema,
     pub spectrum_render_grid: Vec<Vec<char>>,
+
+    /// 宿主播放链路上的 PCM 抽头环；无宿主（独立全屏）时为 None。
+    pub pcm_ring: Option<Arc<crate::tmplayer::audio::pcm_tap::PcmRing>>,
+    /// 示波器的复用缓冲，渲染路径因此零分配。
+    pub scope: crate::tmplayer::render::oscilloscope_renderer::ScopeScratch,
 
     pub cover_cache: RefCell<CoverCache>,
     pub cover_dominant_rgb_cache: RefCell<HashMap<u64, (u8, u8, u8)>>,
@@ -376,6 +372,8 @@ impl AppState {
             spectrum: SpectrumData::default(),
             spectrum_bar_smoother: Ema::new(0.35, 64),
             spectrum_render_grid: Vec::new(),
+            pcm_ring: None,
+            scope: Default::default(),
             cover_cache: RefCell::new(CoverCache::new(20)),
             cover_dominant_rgb_cache: RefCell::new(HashMap::new()),
             cover_render_tx,
