@@ -1,7 +1,7 @@
 name = "atom-one-dark"
 
 text = "#ABB2BF"
-subtext = "#5C6370"
+subtext = "#CCCCCC"
 base = "#282C34"
 surface = "#21252B"
 buff = "#3E4451"

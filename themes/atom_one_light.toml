@@ -1,7 +1,7 @@
 name = "atom-one-light"
 
 text = "#383A42"
-subtext = "#A0A1A7"
+subtext = "#333333"
 base = "#FAFAFA"
 surface = "#F0F0F1"
 buff = "#E5E5E6"

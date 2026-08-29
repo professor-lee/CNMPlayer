@@ -65,7 +65,7 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(Span::styled(
             line1,
             Style::default()
-                .fg(app.theme.color_accent2())
+                .fg(app.theme.color_accent())
                 .add_modifier(Modifier::BOLD),
         )))
         .alignment(Alignment::Center)
