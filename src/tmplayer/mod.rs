@@ -106,6 +106,7 @@ pub struct HostConfigSync {
     pub playback_memory: bool,
     pub vip_audio_unlocked: bool,
     pub show_hints: bool,
+    pub small_window_display: bool,
     pub home_more_recommend: bool,
     pub visualize: VisualizeMode,
     pub super_smooth_bar: bool,
@@ -184,6 +185,7 @@ fn tm_config_from_host(host: &HostConfig) -> data::config::Config {
         },
         playback_memory: host.playback_memory,
         show_hints: host.show_hints,
+        small_window_display: host.small_window_display,
         home_more_recommend: host.home_more_recommend,
         bar_number: match host.bar_number {
             HostBarNumber::Auto => data::config::BarNumber::Auto,
@@ -223,6 +225,7 @@ fn tm_config_from_host(host: &HostConfig) -> data::config::Config {
         keybind_fullscreen_eq: host.keybind_fullscreen_eq.clone(),
         keybind_fullscreen_eq_reset: host.keybind_fullscreen_eq_reset.clone(),
         keybind_toggle_like_fullscreen: host.keybind_toggle_like_fullscreen.clone(),
+        keybind_small_window_toggle: host.keybind_small_window_toggle.clone(),
     }
 }
 

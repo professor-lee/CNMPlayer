@@ -16,7 +16,7 @@ pub fn draw_playlist(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
     frame.render_widget(Block::default().style(base_bg_style(app)), size);
 
-    if size.width < 40 || size.height < 14 {
+    if !app.config.small_window_display && (size.width < 40 || size.height < 14) {
         frame.render_widget(
             Paragraph::new(match app.config.language {
                 Language::Zh => "终端窗口过小",

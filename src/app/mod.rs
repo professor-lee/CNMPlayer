@@ -62,9 +62,18 @@ const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
 /// 侧边栏滑出动画时长（time-based，与帧率解耦）。主页与全屏播放页共用。
 pub(crate) const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
 const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
-const SETTINGS_ROOT_ITEMS: usize = 10;
+const SETTINGS_ROOT_ITEMS: usize = 11;
 const SETTINGS_PLAYBACK_ITEMS: usize = 9;
-pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 19;
+pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 20;
+/// 主程序内容页小窗口模式的统一触发阈值，与主页既有判定一致。
+pub(crate) const SMALL_WINDOW_MIN_WIDTH: u16 = 32;
+pub(crate) const SMALL_WINDOW_MIN_HEIGHT: u16 = 12;
+/// 全屏页普通布局的最小宽度；主程序小于该宽度时不响应打开全屏。
+const FULLSCREEN_MIN_WIDTH: u16 = 50;
+/// 扁窗视口高度下限，即折叠播放栏区域高度。
+const FLAT_SMALL_HEIGHT: u16 = 5;
+/// 扁窗播放栏/歌词栏切换动画时长。
+const FLAT_SWITCH_ANIM_DURATION: Duration = Duration::from_millis(220);
 const CONTENT_DOUBLE_CLICK_MS: u64 = 400;
 const GLOBAL_HOTKEY_COOLDOWN_MS: u64 = 120;
 const STARTUP_LOADING_MIN_VISIBLE_SECS: f32 = 0.75;
@@ -74,6 +83,13 @@ const RESERVED_RESET_KEYBIND: &str = "Ctrl+Alt+R";
 const COVER_CACHE_SUBDIR: &str = "cover";
 const COVER_FETCH_RETRY_MS: u64 = 1500;
 const LYRICS_FETCH_RETRY_MS: u64 = 1500;
+/// 窄窗 LUFS 表显示范围：-60..0 LUFS。
+const VU_LUFS_FLOOR: f32 = -120.0;
+const VU_LUFS_MIN: f32 = -60.0;
+const VU_LUFS_MAX: f32 = 0.0;
+const VU_ATTACK_SECS: f32 = 0.08;
+const VU_RELEASE_SECS: f32 = 0.35;
+const VU_SETTLED_EPSILON: f32 = 0.05;
 
 const DEFAULT_KEYBIND_SEARCH_BOX: &str = "Ctrl+S";
 const DEFAULT_KEYBIND_FULLSCREEN: &str = "Ctrl+F";
@@ -94,6 +110,7 @@ const DEFAULT_KEYBIND_FULLSCREEN_EQ: &str = "E";
 const DEFAULT_KEYBIND_FULLSCREEN_EQ_RESET: &str = "Alt+R";
 const DEFAULT_KEYBIND_TOGGLE_LIKE_FULLSCREEN: &str = "L";
 const DEFAULT_KEYBIND_TOGGLE_LIKE_COLLAPSED: &str = "Alt+L";
+const DEFAULT_KEYBIND_SMALL_WINDOW_TOGGLE: &str = "Alt+X";
 
 #[derive(Debug, Clone, Copy)]
 enum KeybindAction {
@@ -116,6 +133,7 @@ enum KeybindAction {
     FullscreenEqReset,
     ToggleLikeFullscreen,
     ToggleLikeCollapsed,
+    SmallWindowToggle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +153,25 @@ pub enum Overlay {
     SettingsKeybinds,
     SettingsAbout,
     SearchBox,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmallWindowMode {
+    Flat,
+    Narrow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlatPanel {
+    Player,
+    Lyrics,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FlatSwitchAnim {
+    pub from_x: f32,
+    pub to_x: f32,
+    pub started_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,10 +314,12 @@ async fn fetch_home_sidebar_playlists(
 
     let account = match api.user_account().await {
         Ok(v) => v,
-        Err(_) => api
-            .login_status()
-            .await
-            .map_err(|err| format!("{}: {err}", pick("账号信息请求失败", "Account request failed")))?,
+        Err(_) => api.login_status().await.map_err(|err| {
+            format!(
+                "{}: {err}",
+                pick("账号信息请求失败", "Account request failed")
+            )
+        })?,
     };
     let account_code = response_code(&account);
     if account_code != 200 {
@@ -1778,6 +1817,23 @@ pub struct App {
     pub playback_state: PlaybackRuntimeState,
     pub startup_loading_progress: f32,
     pub player_bar_hits: PlayerBarHitTargets,
+    /// 最近一次同步到的终端尺寸（单元格）。
+    pub term_width: u16,
+    pub term_height: u16,
+    /// 当前生效的小窗口模式；None 表示普通内容页或未启用小窗口显示。
+    pub small_window_mode: Option<SmallWindowMode>,
+    /// 扁窗高度恰为播放栏高度时，Alt+X 切换的当前目标面板。
+    pub flat_panel: FlatPanel,
+    /// 扁窗切换动画；None 表示已停在目标面板。
+    pub flat_switch_anim: Option<FlatSwitchAnim>,
+    /// 上一帧是否处于“扁窗高度恰为播放栏高度”的子状态。
+    flat_exact_height: bool,
+    /// 窄窗音量条的显示端平滑值（LUFS）。以 VU_FLOOR 表示静音。
+    pub vu_left_lufs: f32,
+    pub vu_right_lufs: f32,
+    pub vu_animating: bool,
+    vu_last_tick_at: Option<Instant>,
+    vu_last_meter_generation: u64,
     pub home_sidebar_panel_hit: Option<HitRect>,
     pub home_sidebar_playlist_hits: Vec<(HitRect, HomeSidebarHit)>,
     pub home_tile_hits: Vec<(HitRect, usize)>,
@@ -1893,6 +1949,17 @@ impl App {
             playback_state: PlaybackRuntimeState::Stopped,
             startup_loading_progress: 0.0,
             player_bar_hits: PlayerBarHitTargets::default(),
+            term_width: 0,
+            term_height: 0,
+            small_window_mode: None,
+            flat_panel: FlatPanel::Player,
+            flat_switch_anim: None,
+            flat_exact_height: false,
+            vu_left_lufs: VU_LUFS_FLOOR,
+            vu_right_lufs: VU_LUFS_FLOOR,
+            vu_animating: false,
+            vu_last_tick_at: None,
+            vu_last_meter_generation: 0,
             home_sidebar_panel_hit: None,
             home_sidebar_playlist_hits: Vec::new(),
             home_tile_hits: Vec::new(),
@@ -1954,6 +2021,7 @@ impl App {
         }
 
         app.sync_cava();
+        app.sync_terminal_size();
 
         if let Some(cookie) = saved_cookie {
             match app.api.validate_cookie(&cookie).await {
@@ -1988,6 +2056,9 @@ impl App {
         self.tick_lyric_fetch();
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
+        let now = Instant::now();
+        self.tick_flat_switch();
+        self.tick_vu_meter(now);
         self.tick_search_box_animation();
         self.tick_home_sidebar_animation();
         self.tick_home_sidebar_fetch();
@@ -2025,6 +2096,11 @@ impl App {
             return;
         }
 
+        if self.is_small_window_context() {
+            self.handle_small_window_key(key).await;
+            return;
+        }
+
         if self.page != Page::Login
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
@@ -2057,8 +2133,77 @@ impl App {
         }
     }
 
+    async fn handle_small_window_key(&mut self, key: KeyEvent) {
+        if keybind_matches(self.config.keybind_small_window_toggle.as_str(), key) {
+            if self.small_window_mode == Some(SmallWindowMode::Flat) {
+                self.toggle_flat_panel();
+            }
+            return;
+        }
+
+        let Some(action) = self.keybind_action_from_event(key) else {
+            return;
+        };
+        match action {
+            KeybindAction::Quit => {
+                self.should_quit = true;
+            }
+            KeybindAction::Prev
+            | KeybindAction::Next
+            | KeybindAction::TogglePlayPause
+            | KeybindAction::ToggleMode
+            | KeybindAction::ToggleLikeCollapsed => {
+                if self.can_execute_global_hotkey() {
+                    self.trigger_keybind_action(action).await;
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub async fn handle_mouse(&mut self, mouse: MouseEvent) {
         if self.page == Page::Login || self.page == Page::Loading {
+            return;
+        }
+
+        if self.is_small_window_context() {
+            if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                let col = mouse.column;
+                let row = mouse.row;
+                let hits = self.player_bar_hits;
+                if hits
+                    .prev
+                    .map(|rect| rect.contains(col, row))
+                    .unwrap_or(false)
+                {
+                    self.play_previous_hotkey().await;
+                } else if hits
+                    .play_pause
+                    .map(|rect| rect.contains(col, row))
+                    .unwrap_or(false)
+                {
+                    self.toggle_play_pause_hotkey().await;
+                } else if hits
+                    .next
+                    .map(|rect| rect.contains(col, row))
+                    .unwrap_or(false)
+                {
+                    self.play_next_hotkey().await;
+                } else if hits
+                    .progress
+                    .map(|rect| rect.contains(col, row))
+                    .unwrap_or(false)
+                {
+                    let rect = hits.progress.unwrap_or_default();
+                    let relative_x = col.saturating_sub(rect.x) as f32;
+                    let ratio = if rect.width <= 1 {
+                        0.0
+                    } else {
+                        (relative_x / (rect.width - 1) as f32).clamp(0.0, 1.0)
+                    };
+                    self.seek_to_ratio(ratio);
+                }
+            }
             return;
         }
 
@@ -2273,6 +2418,19 @@ impl App {
         if self.page == Page::Loading && self.startup_loading_progress < 1.0 {
             return true;
         }
+        if self.flat_switch_anim.is_some() {
+            return true;
+        }
+        if self.small_window_mode == Some(SmallWindowMode::Flat)
+            && self.playback_state == PlaybackRuntimeState::Playing
+        {
+            return true;
+        }
+        if self.small_window_mode == Some(SmallWindowMode::Narrow)
+            && (self.playback_state == PlaybackRuntimeState::Playing || self.vu_animating)
+        {
+            return true;
+        }
         // about 彩蛋：蓄力/迸发在动，激活后边框噪点也持续流动。
         #[cfg(feature = "easter-egg")]
         if self.about_egg.phase != EasterEggPhase::Idle {
@@ -2315,6 +2473,229 @@ impl App {
         self.audio_player.pcm_ring()
     }
 
+    /// 是否处于“小窗口相关”上下文：设置开启、已登录内容页、且终端低于统一阈值。
+    /// 该上下文包含扁窗、窄窗，以及两个方向都过小而只显示提示的情况。
+    pub fn is_small_window_context(&self) -> bool {
+        if !self.config.small_window_display {
+            return false;
+        }
+        if matches!(self.page, Page::Login | Page::Loading) {
+            return false;
+        }
+        self.term_width < SMALL_WINDOW_MIN_WIDTH || self.term_height < SMALL_WINDOW_MIN_HEIGHT
+    }
+
+    pub fn set_terminal_size(&mut self, width: u16, height: u16) {
+        let was_small_context = self.is_small_window_context();
+        self.term_width = width;
+        self.term_height = height;
+        if !was_small_context && self.is_small_window_context() {
+            // 普通尺寸进入小窗口上下文（含“双轴过小”）：立即关闭弹窗与侧边栏。
+            self.close_panels_for_small_window();
+        }
+        self.recompute_small_window_mode();
+    }
+
+    pub fn sync_terminal_size(&mut self) {
+        if let Ok((width, height)) = crossterm::terminal::size() {
+            self.set_terminal_size(width, height);
+        }
+    }
+
+    fn compute_small_window_mode(&self) -> Option<SmallWindowMode> {
+        if !self.is_small_window_context() {
+            return None;
+        }
+
+        let width = self.term_width;
+        let height = self.term_height;
+        if height >= SMALL_WINDOW_MIN_HEIGHT && width < SMALL_WINDOW_MIN_WIDTH {
+            Some(SmallWindowMode::Narrow)
+        } else if width >= SMALL_WINDOW_MIN_WIDTH
+            && (FLAT_SMALL_HEIGHT..SMALL_WINDOW_MIN_HEIGHT).contains(&height)
+        {
+            Some(SmallWindowMode::Flat)
+        } else {
+            // 高度不足扁窗下限，或宽高同时过小：仍显示“终端窗口过小”。
+            None
+        }
+    }
+
+    fn recompute_small_window_mode(&mut self) {
+        let mode = self.compute_small_window_mode();
+        if mode == self.small_window_mode {
+            if mode == Some(SmallWindowMode::Flat) {
+                let width = self.term_width.max(1) as f32;
+                let current = self.flat_switch_offset().min(width);
+                if let Some(anim) = &mut self.flat_switch_anim {
+                    anim.to_x = match self.flat_panel {
+                        FlatPanel::Player => 0.0,
+                        FlatPanel::Lyrics => width,
+                    };
+                    anim.from_x = current;
+                }
+                let exact = self.term_height == FLAT_SMALL_HEIGHT;
+                if exact && !self.flat_exact_height {
+                    // 从“上方有歌词”的扁窗缩到只剩播放栏高度时，重新以播放栏为默认面板。
+                    self.flat_panel = FlatPanel::Player;
+                    self.flat_switch_anim = None;
+                }
+                self.flat_exact_height = exact;
+            }
+            return;
+        }
+
+        self.small_window_mode = mode;
+        match mode {
+            Some(SmallWindowMode::Flat) => {
+                // 每次进入扁窗都从缩略播放栏开始。
+                self.flat_panel = FlatPanel::Player;
+                self.flat_switch_anim = None;
+                self.flat_exact_height = self.term_height == FLAT_SMALL_HEIGHT;
+                self.close_panels_for_small_window();
+            }
+            Some(SmallWindowMode::Narrow) => {
+                self.flat_exact_height = false;
+                self.flat_switch_anim = None;
+                self.vu_left_lufs = VU_LUFS_FLOOR;
+                self.vu_right_lufs = VU_LUFS_FLOOR;
+                self.vu_animating = false;
+                self.vu_last_tick_at = None;
+                self.close_panels_for_small_window();
+            }
+            None => {
+                // 离开小窗口回到普通页面：清掉小窗口阶段可能残留的命中区域。
+                self.flat_exact_height = false;
+                self.flat_switch_anim = None;
+                self.clear_content_hits();
+                self.clear_player_bar_hits();
+            }
+        }
+
+        // 宽高同时过小、只显示“终端窗口过小”时没有独立模式，
+        // 但同样属于小窗口上下文：关闭已打开的弹窗与侧边栏。
+        if mode.is_none() && self.is_small_window_context() {
+            self.close_panels_for_small_window();
+        }
+    }
+
+    /// 进入小窗口时关闭设置/搜索等弹窗与侧边栏，并清理隐藏页面的命中区域。
+    fn close_panels_for_small_window(&mut self) {
+        if self.overlay.is_some() {
+            self.close_overlay();
+        }
+        self.home_sidebar.expanded = false;
+        self.home_sidebar.anim_progress = 0.0;
+        self.home_sidebar.anim_from = 0.0;
+        self.home_sidebar.anim_started_at = None;
+        self.clear_content_hits();
+        self.clear_player_bar_hits();
+    }
+
+    /// 扁窗 5 行视口下两个面板的水平偏移（0=播放栏，width=歌词栏）。
+    pub fn flat_switch_offset(&self) -> f32 {
+        let width = self.term_width.max(1) as f32;
+        if let Some(anim) = &self.flat_switch_anim {
+            let elapsed = anim.started_at.elapsed().as_secs_f32();
+            let t = if elapsed >= FLAT_SWITCH_ANIM_DURATION.as_secs_f32() {
+                1.0
+            } else {
+                elapsed / FLAT_SWITCH_ANIM_DURATION.as_secs_f32()
+            };
+            let eased = cubic_bezier_y(t, 0.0, 0.7);
+            return anim.from_x + (anim.to_x - anim.from_x) * eased;
+        }
+        match self.flat_panel {
+            FlatPanel::Player => 0.0,
+            FlatPanel::Lyrics => width,
+        }
+    }
+
+    pub fn flat_switch_animating(&self) -> bool {
+        self.flat_switch_anim.is_some()
+    }
+
+    pub fn toggle_flat_panel(&mut self) {
+        if self.small_window_mode != Some(SmallWindowMode::Flat)
+            || self.term_height != FLAT_SMALL_HEIGHT
+        {
+            return;
+        }
+
+        let width = self.term_width.max(1) as f32;
+        let current = self.flat_switch_offset().clamp(0.0, width);
+        let visually_lyrics = current >= width * 0.5;
+        self.flat_panel = if visually_lyrics {
+            FlatPanel::Player
+        } else {
+            FlatPanel::Lyrics
+        };
+        let to_x = match self.flat_panel {
+            FlatPanel::Player => 0.0,
+            FlatPanel::Lyrics => width,
+        };
+        self.flat_switch_anim = Some(FlatSwitchAnim {
+            from_x: current,
+            to_x,
+            started_at: Instant::now(),
+        });
+    }
+
+    fn tick_flat_switch(&mut self) {
+        let Some(anim) = &mut self.flat_switch_anim else {
+            return;
+        };
+        let width = self.term_width.max(1) as f32;
+        let target = match self.flat_panel {
+            FlatPanel::Player => 0.0,
+            FlatPanel::Lyrics => width,
+        };
+        anim.to_x = target;
+        if (anim.from_x - target).abs() < 0.5 {
+            self.flat_switch_anim = None;
+            return;
+        }
+        if anim.started_at.elapsed() >= FLAT_SWITCH_ANIM_DURATION {
+            self.flat_switch_anim = None;
+        }
+    }
+
+    fn tick_vu_meter(&mut self, now: Instant) {
+        if self.small_window_mode != Some(SmallWindowMode::Narrow) {
+            self.vu_animating = false;
+            self.vu_last_tick_at = None;
+            return;
+        }
+
+        let reading = self.audio_player.lufs_meter().latest();
+        let dt = self
+            .vu_last_tick_at
+            .map(|at| now.saturating_duration_since(at).as_secs_f32().min(0.25))
+            .unwrap_or(0.0);
+        self.vu_last_tick_at = Some(now);
+
+        let stale = self.vu_last_meter_generation == reading.generation
+            && self.playback_state != PlaybackRuntimeState::Playing;
+        self.vu_last_meter_generation = reading.generation;
+
+        let target_left = if stale || self.now_playing.is_none() {
+            VU_LUFS_FLOOR
+        } else {
+            mean_square_to_lufs(reading.left_mean_square)
+        };
+        let target_right = if stale || self.now_playing.is_none() {
+            VU_LUFS_FLOOR
+        } else {
+            mean_square_to_lufs(reading.right_mean_square)
+        };
+
+        let (left, left_moving) = smooth_lufs_level(self.vu_left_lufs, target_left, dt);
+        let (right, right_moving) = smooth_lufs_level(self.vu_right_lufs, target_right, dt);
+        self.vu_left_lufs = left;
+        self.vu_right_lufs = right;
+        self.vu_animating = left_moving || right_moving;
+    }
+
     pub fn main_spectrum_braille(&mut self) -> String {
         let mut out = String::with_capacity(10);
         for i in 0..10 {
@@ -2330,6 +2711,7 @@ impl App {
 
     pub fn sync_on_change(&mut self) {
         self.sync_cava();
+        self.sync_terminal_size();
     }
 
     fn sync_cava(&mut self) {
@@ -2600,6 +2982,7 @@ impl App {
                 | KeybindAction::FullscreenToggleMode
                 | KeybindAction::FullscreenEq
                 | KeybindAction::FullscreenEqReset
+                | KeybindAction::SmallWindowToggle
         ) {
             return false;
         }
@@ -2627,7 +3010,11 @@ impl App {
         match action {
             KeybindAction::SearchBox => self.open_search_box(),
             KeybindAction::Fullscreen => {
-                self.launch_fullscreen_requested = true;
+                // 全屏页普通布局最小宽度为 50；更窄的窗口直接忽略打开全屏，
+                // 避免“进入全屏后立即因过小退出”。
+                if self.term_width >= FULLSCREEN_MIN_WIDTH {
+                    self.launch_fullscreen_requested = true;
+                }
             }
             KeybindAction::Settings => self.open_settings(),
             KeybindAction::Sidebar => self.toggle_home_sidebar().await,
@@ -2648,6 +3035,7 @@ impl App {
             KeybindAction::FullscreenEqReset => {}
             KeybindAction::ToggleLikeFullscreen => {}
             KeybindAction::ToggleLikeCollapsed => self.toggle_like_hotkey().await,
+            KeybindAction::SmallWindowToggle => {}
         }
     }
 
@@ -2810,6 +3198,7 @@ impl App {
             KeybindAction::FullscreenEqReset,
             KeybindAction::ToggleLikeFullscreen,
             KeybindAction::ToggleLikeCollapsed,
+            KeybindAction::SmallWindowToggle,
         ];
 
         actions
@@ -2840,6 +3229,7 @@ impl App {
             KeybindAction::FullscreenEqReset => &self.config.keybind_fullscreen_eq_reset,
             KeybindAction::ToggleLikeFullscreen => &self.config.keybind_toggle_like_fullscreen,
             KeybindAction::ToggleLikeCollapsed => &self.config.keybind_toggle_like_collapsed,
+            KeybindAction::SmallWindowToggle => &self.config.keybind_small_window_toggle,
         }
     }
 
@@ -2864,6 +3254,7 @@ impl App {
             16 => Some(&mut self.config.keybind_toggle_like_fullscreen),
             17 => Some(&mut self.config.keybind_toggle_mode),
             18 => Some(&mut self.config.keybind_toggle_like_collapsed),
+            19 => Some(&mut self.config.keybind_small_window_toggle),
             _ => None,
         }
     }
@@ -2889,6 +3280,7 @@ impl App {
             16 => Some(self.config.keybind_toggle_like_fullscreen.as_str()),
             17 => Some(self.config.keybind_toggle_mode.as_str()),
             18 => Some(self.config.keybind_toggle_like_collapsed.as_str()),
+            19 => Some(self.config.keybind_small_window_toggle.as_str()),
             _ => None,
         }
     }
@@ -2933,6 +3325,7 @@ impl App {
             16 => self.lang_text("全屏收藏/取消收藏", "Fullscreen Like/Unlike"),
             17 => self.lang_text("折叠栏模式切换", "Collapsed Mode Switch"),
             18 => self.lang_text("折叠栏收藏/取消收藏", "Collapsed Like/Unlike"),
+            19 => self.lang_text("小窗口切换显示", "Small Window Switch"),
             _ => self.lang_text("未知", "Unknown"),
         }
     }
@@ -2961,6 +3354,7 @@ impl App {
             DEFAULT_KEYBIND_TOGGLE_LIKE_FULLSCREEN.to_string();
         self.config.keybind_toggle_like_collapsed =
             DEFAULT_KEYBIND_TOGGLE_LIKE_COLLAPSED.to_string();
+        self.config.keybind_small_window_toggle = DEFAULT_KEYBIND_SMALL_WINDOW_TOGGLE.to_string();
     }
 
     pub fn keybind_label_for_index(&self, index: usize) -> String {
@@ -2984,6 +3378,7 @@ impl App {
             16 => KeybindAction::ToggleLikeFullscreen,
             17 => KeybindAction::ToggleMode,
             18 => KeybindAction::ToggleLikeCollapsed,
+            19 => KeybindAction::SmallWindowToggle,
             _ => KeybindAction::SearchBox,
         });
         format!("{}: {}", self.keybind_name_for_index(index), value)
@@ -3738,7 +4133,8 @@ impl App {
             PlaylistTrackKind::Song => {
                 let (queue, target) = self.build_queue_from_playlist();
                 let source_cover = self.playlist.cover.url.clone();
-                self.replace_queue_and_play(queue, target, source_cover).await;
+                self.replace_queue_and_play(queue, target, source_cover)
+                    .await;
             }
             PlaylistTrackKind::Album | PlaylistTrackKind::Ep | PlaylistTrackKind::Single => {
                 self.open_focused_playlist_album().await;
@@ -4204,8 +4600,9 @@ impl App {
                 }
                 6 => self.apply_settings_root_delta(1).await,
                 7 => self.apply_settings_root_delta(1).await,
-                8 => self.logout_to_login().await,
-                9 => {
+                8 => self.apply_settings_root_delta(1).await,
+                9 => self.logout_to_login().await,
+                10 => {
                     self.overlay = Some(Overlay::SettingsAbout);
                 }
                 _ => {}
@@ -4457,6 +4854,17 @@ impl App {
             }
             7 => {
                 if delta != 0 {
+                    let was_small_context = self.is_small_window_context();
+                    self.config.small_window_display = !self.config.small_window_display;
+                    let _ = self.config.save();
+                    if !was_small_context && self.is_small_window_context() {
+                        self.close_panels_for_small_window();
+                    }
+                    self.sync_terminal_size();
+                }
+            }
+            8 => {
+                if delta != 0 {
                     self.config.home_more_recommend = !self.config.home_more_recommend;
                     let _ = self.config.save();
                     if self.page == Page::Home {
@@ -4674,7 +5082,9 @@ impl App {
     fn tick_search_box_animation(&mut self) {
         if matches!(self.overlay, Some(Overlay::SearchBox)) {
             // time-based：动画时长与驱动帧率解耦，与 startup_loading 同风格
-            let started_at = self.search_box_anim_started_at.get_or_insert_with(Instant::now);
+            let started_at = self
+                .search_box_anim_started_at
+                .get_or_insert_with(Instant::now);
             let elapsed = started_at.elapsed();
             if elapsed >= SEARCH_BOX_ANIM_DURATION {
                 self.search_box_anim_height = SEARCH_BOX_TARGET_HEIGHT;
@@ -5014,6 +5424,7 @@ impl App {
             playback_memory: self.config.playback_memory,
             vip_audio_unlocked: self.vip_audio_unlocked,
             show_hints: self.config.show_hints,
+            small_window_display: self.config.small_window_display,
             home_more_recommend: self.config.home_more_recommend,
             visualize: self.config.visualize,
             super_smooth_bar: self.config.super_smooth_bar,
@@ -5094,6 +5505,11 @@ impl App {
 
         if self.config.show_hints != sync.show_hints {
             self.config.show_hints = sync.show_hints;
+            changed = true;
+        }
+
+        if self.config.small_window_display != sync.small_window_display {
+            self.config.small_window_display = sync.small_window_display;
             changed = true;
         }
 
@@ -6047,9 +6463,7 @@ impl App {
         let focus_index = self.private_roam.last_played_index;
 
         self.playlist.id = Some(HOME_PRIVATE_ROAM_TILE_ID.to_string());
-        self.playlist.title = self
-            .lang_text("私人漫游", "Private Roam")
-            .to_string();
+        self.playlist.title = self.lang_text("私人漫游", "Private Roam").to_string();
         self.playlist.artist = self
             .lang_text("网易云音乐", "Netease Cloud Music")
             .to_string();
@@ -6113,12 +6527,7 @@ impl App {
         let mut added = false;
         let mut new_queue_items = Vec::new();
         for track in fetched {
-            if !self
-                .private_roam
-                .tracks
-                .iter()
-                .any(|t| t.id == track.id)
-            {
+            if !self.private_roam.tracks.iter().any(|t| t.id == track.id) {
                 if let Some(item) = PlaybackTrack::from_playlist_track(&track) {
                     new_queue_items.push(item);
                 }
@@ -6236,14 +6645,12 @@ impl App {
         self.private_roam.last_played_index = record.last_played_index;
         self.private_roam.last_played_cover_url = record.last_played_cover_url.clone();
         self.private_roam.last_refresh_day = record.last_refresh_day;
-        self.private_roam.cover_url = record
-            .last_played_cover_url
-            .or_else(|| {
-                self.private_roam
-                    .tracks
-                    .first()
-                    .and_then(|track| track.cover_url.clone())
-            });
+        self.private_roam.cover_url = record.last_played_cover_url.or_else(|| {
+            self.private_roam
+                .tracks
+                .first()
+                .and_then(|track| track.cover_url.clone())
+        });
     }
 
     fn sync_home_roam_tile_cover(&mut self) {
@@ -6744,6 +7151,50 @@ fn startup_loading_progress_at(
         (complete_elapsed.unwrap_or(0.0) / STARTUP_LOADING_COMPLETE_RAMP_SECS).clamp(0.0, 1.0);
     let complete_eased = cubic_bezier_y(complete_t, 0.25, 1.0);
     (base + (1.0 - base) * complete_eased).clamp(0.0, 1.0)
+}
+
+pub(crate) fn mean_square_to_lufs(mean_square: f32) -> f32 {
+    if mean_square <= 1.0e-12 {
+        VU_LUFS_FLOOR
+    } else {
+        (-0.691 + 10.0 * mean_square.log10()).max(VU_LUFS_FLOOR)
+    }
+}
+
+pub(crate) fn lufs_to_mean_square(lufs: f32) -> f32 {
+    if lufs <= VU_LUFS_FLOOR + 0.5 {
+        0.0
+    } else {
+        10.0_f32.powf((lufs + 0.691) / 10.0)
+    }
+}
+
+pub(crate) fn lufs_to_bar_level(lufs: f32) -> f32 {
+    ((lufs - VU_LUFS_MIN) / (VU_LUFS_MAX - VU_LUFS_MIN)).clamp(0.0, 1.0)
+}
+
+fn smooth_lufs_level(current: f32, target: f32, dt: f32) -> (f32, bool) {
+    let target = target.max(VU_LUFS_FLOOR);
+    let mut current = current.max(VU_LUFS_FLOOR);
+    if (current - target).abs() <= VU_SETTLED_EPSILON {
+        return (target, false);
+    }
+
+    let tau = if target > current {
+        VU_ATTACK_SECS
+    } else {
+        VU_RELEASE_SECS
+    };
+    let amount = if dt <= 0.0 {
+        0.0
+    } else {
+        1.0 - (-dt / tau).exp()
+    };
+    current += (target - current) * amount;
+    if (current - target).abs() <= VU_SETTLED_EPSILON {
+        current = target;
+    }
+    (current, (current - target).abs() > VU_SETTLED_EPSILON)
 }
 
 pub(crate) fn cubic_bezier_y(t: f32, p1y: f32, p2y: f32) -> f32 {
@@ -8155,5 +8606,14 @@ mod tests {
         assert_eq!(normalized[0]["ar"][0]["name"], "artist-a");
         // 原有字段不受影响
         assert_eq!(normalized[0]["name"], "song");
+    }
+
+    #[test]
+    fn lufs_mapping_uses_minus_60_to_zero_range() {
+        assert!((mean_square_to_lufs(0.5) - (-3.701)).abs() < 0.01);
+        assert!((lufs_to_bar_level(-30.0) - 0.5).abs() < 1.0e-6);
+        assert_eq!(lufs_to_bar_level(VU_LUFS_FLOOR), 0.0);
+        assert_eq!(lufs_to_bar_level(0.0), 1.0);
+        assert_eq!(lufs_to_mean_square(VU_LUFS_FLOOR), 0.0);
     }
 }

@@ -86,6 +86,16 @@ impl Tui {
 
         let mut layout_out = UiLayout::default();
 
+        // 小窗口显示开启时，全屏页过小不再显示提示，而是直接请求退出回主程序。
+        // 在 draw 之前检测，避免过小提示闪现一帧。
+        if app.config.small_window_display
+            && let Ok((width, height)) = terminal::size()
+            && (width < 50 || height < 12)
+        {
+            self.should_quit = true;
+            return Ok(layout_out);
+        }
+
         self.terminal.draw(|f| {
             let size = f.area();
             layout_out.full = size;
@@ -278,12 +288,7 @@ impl Tui {
     /// ratatui 在这些占位处跳过写入，于是底边框残留成 `─ ─ ─` 的断连样子。
     /// 这一点已用 TestBackend 逐 cell 验证：仅 Block 时该行完整，叠加重绘
     /// 后才出现空格。
-    fn render_hint_in_border(
-        f: &mut ratatui::Frame,
-        app: &AppState,
-        area: Rect,
-        left_panel: Rect,
-    ) {
+    fn render_hint_in_border(f: &mut ratatui::Frame, app: &AppState, area: Rect, left_panel: Rect) {
         // 只覆盖左面板横向范围，且要留出它自己的左右下角
         if left_panel.width < 4 || area.height == 0 {
             return;
@@ -444,6 +449,11 @@ fn render_settings_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState)
         ),
         format!(
             "{}: {}",
+            lang_text(app, "小窗口显示", "Small Window Display"),
+            lang_on_off(app, app.config.small_window_display)
+        ),
+        format!(
+            "{}: {}",
             lang_text(app, "主页更多推荐", "More Home Recommendations"),
             lang_on_off(app, app.config.home_more_recommend)
         ),
@@ -475,12 +485,27 @@ fn render_settings_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState)
         );
     }
 
+    let bottom_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(rows[2]);
+
     f.render_widget(
         Paragraph::new(Line::styled(
             format!("  {}", items[about_idx]),
             item_style(about_idx),
         )),
-        rows[2],
+        bottom_cols[0],
+    );
+    f.render_widget(
+        Paragraph::new(format!(
+            "{}: {}",
+            lang_text(app, "小窗口切换显示", "Small Window Switch"),
+            app.config.keybind_small_window_toggle
+        ))
+        .style(Style::default().fg(app.theme.color_subtext()))
+        .alignment(Alignment::Right),
+        bottom_cols[1],
     );
 }
 

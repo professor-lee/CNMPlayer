@@ -84,6 +84,7 @@ fn host_config_sync_from_app(app: &AppState) -> HostConfigSync {
         playback_memory: app.config.playback_memory,
         vip_audio_unlocked: app.vip_audio_unlocked,
         show_hints: app.config.show_hints,
+        small_window_display: app.config.small_window_display,
         home_more_recommend: app.config.home_more_recommend,
         visualize: app.config.visualize,
         super_smooth_bar: app.config.super_smooth_bar,
@@ -134,6 +135,7 @@ fn apply_host_config_sync(app: &mut AppState, config: HostConfigSync) {
     app.eq.bands_db = config.eq_bands_db;
     app.config.playback_memory = config.playback_memory;
     app.config.show_hints = config.show_hints;
+    app.config.small_window_display = config.small_window_display;
     app.config.home_more_recommend = config.home_more_recommend;
     app.config.visualize = config.visualize;
     app.config.super_smooth_bar = config.super_smooth_bar;
@@ -709,7 +711,7 @@ async fn handle_action(
             app.set_toast("Bye");
         }
         Action::OpenSettingsModal => {
-            app.settings_selected = app.settings_selected.min(9);
+            app.settings_selected = app.settings_selected.min(10);
             app.overlay = Overlay::SettingsModal;
         }
         Action::OpenHelpModal => {
@@ -829,9 +831,12 @@ async fn handle_action(
                     apply_settings_delta(app, host_bridge, 1).await;
                 }
                 8 => {
-                    app.set_toast("Logout is unavailable in fullscreen");
+                    apply_settings_delta(app, host_bridge, 1).await;
                 }
                 9 => {
+                    app.set_toast("Logout is unavailable in fullscreen");
+                }
+                10 => {
                     app.overlay = Overlay::AboutModal;
                 }
                 _ => {}
@@ -936,7 +941,7 @@ async fn handle_action(
         Action::PrevAlbum | Action::NextAlbum => (),
         Action::ModalUp => {
             if app.overlay == Overlay::SettingsModal {
-                let count = 10;
+                let count = 11;
                 if app.settings_selected == 0 {
                     app.settings_selected = count - 1;
                 } else {
@@ -973,7 +978,7 @@ async fn handle_action(
         }
         Action::ModalDown => {
             if app.overlay == Overlay::SettingsModal {
-                let count = 10;
+                let count = 11;
                 app.settings_selected = (app.settings_selected + 1) % count;
             } else if app.overlay == Overlay::BarSettingsModal {
                 let count = 9;
@@ -1339,8 +1344,15 @@ async fn apply_settings_delta(
                 save_and_sync_host_config(app, host_bridge).await;
             }
         }
-        // Home more recommendations
+        // Small window display
         7 => {
+            if delta != 0 {
+                app.config.small_window_display = !app.config.small_window_display;
+                save_and_sync_host_config(app, host_bridge).await;
+            }
+        }
+        // Home more recommendations
+        8 => {
             if delta != 0 {
                 app.config.home_more_recommend = !app.config.home_more_recommend;
                 save_and_sync_host_config(app, host_bridge).await;

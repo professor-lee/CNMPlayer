@@ -93,6 +93,11 @@ fn draw_root_settings(frame: &mut Frame, app: &App, inner: Rect) {
         ),
         format!(
             "{}: {}",
+            l(app, "小窗口显示", "Small Window Display"),
+            on_off(app, app.config.small_window_display)
+        ),
+        format!(
+            "{}: {}",
             l(app, "主页更多推荐", "More Home Recommendations"),
             on_off(app, app.config.home_more_recommend)
         ),

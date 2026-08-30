@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-const PAGE_LYRICS_PANEL_HEIGHT: u16 = 4;
+pub(crate) const PAGE_LYRICS_PANEL_HEIGHT: u16 = 4;
 
 pub fn overlay_panel_area(content_area: Rect) -> Rect {
     if content_area.width < 18 || content_area.height < PAGE_LYRICS_PANEL_HEIGHT {

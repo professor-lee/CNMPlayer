@@ -109,7 +109,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
     f.render_widget(Paragraph::new(lines), area);
 }
 
-fn compute_bar_layout(
+pub(crate) fn compute_bar_layout(
     width: usize,
     gap: bool,
     data_len: usize,
@@ -242,7 +242,7 @@ fn apply_height_curve(v: f32) -> f32 {
     v.powf(0.72)
 }
 
-fn density_char(level: usize, height: usize) -> char {
+pub(crate) fn density_char(level: usize, height: usize) -> char {
     // bottom dense, top light
     if height == 0 {
         return ' ';
@@ -262,7 +262,7 @@ fn density_char(level: usize, height: usize) -> char {
     }
 }
 
-fn smooth_char(frac: f32) -> char {
+pub(crate) fn smooth_char(frac: f32) -> char {
     // Order: " ▂▃▄▅▆▇█" (low to high)
     if frac <= 0.0 {
         ' '

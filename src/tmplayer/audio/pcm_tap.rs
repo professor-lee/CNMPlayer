@@ -11,6 +11,8 @@
 //!
 //! 丢一批约 12 ms，在可视化上不可感知，故写侧的丢弃策略是安全的。
 
+use crate::tmplayer::audio::lufs_meter::LufsMeter;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -193,6 +195,7 @@ fn read_wrapping(src: &[f32], pos: usize, dst: &mut [f32]) {
 #[derive(Debug)]
 pub struct PcmTap {
     ring: std::sync::Arc<PcmRing>,
+    lufs_meter: Option<Arc<LufsMeter>>,
     left: Box<[f32]>,
     right: Box<[f32]>,
     len: usize,
@@ -201,9 +204,18 @@ pub struct PcmTap {
 }
 
 impl PcmTap {
-    pub fn new(ring: std::sync::Arc<PcmRing>, channels: usize, sample_rate: u32) -> Self {
+    pub fn new(
+        ring: std::sync::Arc<PcmRing>,
+        channels: usize,
+        sample_rate: u32,
+        lufs_meter: Option<Arc<LufsMeter>>,
+    ) -> Self {
+        if let Some(meter) = &lufs_meter {
+            meter.configure_and_reset(channels, sample_rate);
+        }
         Self {
             ring,
+            lufs_meter,
             left: vec![0.0; FLUSH_FRAMES].into_boxed_slice(),
             right: vec![0.0; FLUSH_FRAMES].into_boxed_slice(),
             len: 0,
@@ -238,6 +250,9 @@ impl PcmTap {
     pub fn reset(&mut self) {
         self.len = 0;
         self.ring.reset();
+        if let Some(meter) = &self.lufs_meter {
+            meter.reset();
+        }
     }
 
     fn flush(&mut self) {
@@ -249,6 +264,9 @@ impl PcmTap {
             &self.right[..self.len],
             self.sample_rate,
         );
+        if let Some(meter) = &self.lufs_meter {
+            meter.push_batch(&self.left[..self.len], &self.right[..self.len]);
+        }
         self.len = 0;
     }
 }
@@ -312,7 +330,7 @@ mod tests {
     #[test]
     fn tap_splits_stereo_and_mirrors_mono() {
         let stereo = Arc::new(PcmRing::new());
-        let mut tap = PcmTap::new(Arc::clone(&stereo), 2, 48_000);
+        let mut tap = PcmTap::new(Arc::clone(&stereo), 2, 48_000, None);
         for (channel, sample) in [(0, 1.0), (1, 2.0), (0, 3.0), (1, 4.0)] {
             tap.push_sample(channel, sample);
         }
@@ -325,7 +343,7 @@ mod tests {
         assert_eq!(&snap.right[..2], &[2.0, 4.0]);
 
         let mono = Arc::new(PcmRing::new());
-        let mut tap = PcmTap::new(Arc::clone(&mono), 1, 48_000);
+        let mut tap = PcmTap::new(Arc::clone(&mono), 1, 48_000, None);
         tap.push_sample(0, 0.25);
         tap.flush();
 
@@ -338,7 +356,7 @@ mod tests {
     #[test]
     fn tap_flushes_on_its_own_once_staging_fills() {
         let ring = Arc::new(PcmRing::new());
-        let mut tap = PcmTap::new(Arc::clone(&ring), 1, 48_000);
+        let mut tap = PcmTap::new(Arc::clone(&ring), 1, 48_000, None);
         for i in 0..FLUSH_FRAMES {
             tap.push_sample(0, i as f32);
         }

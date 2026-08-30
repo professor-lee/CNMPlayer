@@ -2,6 +2,7 @@ use crate::STORAGE;
 use crate::app::streaming::{StreamingReader, StreamingReaderHandle};
 use crate::data::config::{CacheCleanStrategy, Config};
 use crate::tmplayer::app::state::{EQ_BANDS, EQ_FREQS_HZ, EqSettings};
+use crate::tmplayer::audio::lufs_meter::LufsMeter;
 use crate::tmplayer::audio::pcm_tap::{PcmRing, PcmTap};
 use anyhow::{Context, Result};
 use rodio::cpal::Error;
@@ -41,6 +42,8 @@ pub struct AudioPlayer {
     /// PCM 时域抽头：`EqSource` 逐样本写入，全屏页示波器读取。
     /// 环的寿命长于单个 `EqSource`，故切歌与跳转时必须显式重置。
     pcm_ring: Arc<PcmRing>,
+    /// 400ms Momentary LUFS 计量器；`EqSource` 按批写入，小窗口窄窗读取。
+    lufs_meter: Arc<LufsMeter>,
     /// 切歌时若有未完成的跳转，下次 clear_and_play 需要用归零 seek 使其失效
     invalidate_seek_on_next_play: bool,
 }
@@ -134,6 +137,7 @@ impl AudioPlayer {
             seek_state: Arc::new(Mutex::new(SeekState::default())),
             stream_handle: None,
             pcm_ring: Arc::new(PcmRing::new()),
+            lufs_meter: Arc::new(LufsMeter::new()),
             invalidate_seek_on_next_play: false,
         };
 
@@ -151,12 +155,21 @@ impl AudioPlayer {
         self.pcm_ring.clone()
     }
 
+    pub fn lufs_meter(&self) -> Arc<LufsMeter> {
+        self.lufs_meter.clone()
+    }
+
     pub fn play_from_file(&mut self, file_path: &PathBuf) -> Result<()> {
         let file = File::open(file_path)?;
         let builder = DecoderBuilder::new().with_byte_len(file.metadata()?.len());
         let decoder = builder.with_data(BufReader::new(file)).build()?;
         let total_duration = decoder.total_duration();
-        let source = EqSource::new(decoder, self.eq_params.clone(), self.pcm_ring.clone());
+        let source = EqSource::new(
+            decoder,
+            self.eq_params.clone(),
+            self.pcm_ring.clone(),
+            self.lufs_meter.clone(),
+        );
         self.clear_and_play(source)?;
         self.stream_handle = None;
         self.total_duration = total_duration;
@@ -174,7 +187,12 @@ impl AudioPlayer {
         let f = move || builder.with_data(BufReader::new(reader)).build();
         let decoder = compio::runtime::spawn_blocking(f).await.unwrap()?;
         let total_duration = decoder.total_duration();
-        let source = EqSource::new(decoder, self.eq_params.clone(), self.pcm_ring.clone());
+        let source = EqSource::new(
+            decoder,
+            self.eq_params.clone(),
+            self.pcm_ring.clone(),
+            self.lufs_meter.clone(),
+        );
         self.clear_and_play(source)?;
         self.stream_handle = Some(stream_handle);
         self.total_duration = total_duration;
@@ -399,7 +417,12 @@ impl<S> EqSource<S>
 where
     S: Source<Item = f32>,
 {
-    fn new(inner: S, params: Arc<EqParams>, pcm_ring: Arc<PcmRing>) -> Self {
+    fn new(
+        inner: S,
+        params: Arc<EqParams>,
+        pcm_ring: Arc<PcmRing>,
+        lufs_meter: Arc<LufsMeter>,
+    ) -> Self {
         let channels = inner.channels();
         let sample_rate = inner.sample_rate().get();
         let fs = sample_rate as f32;
@@ -417,7 +440,12 @@ where
             last_db_x10,
             coeffs,
             states,
-            tap: PcmTap::new(pcm_ring, channels.get() as usize, sample_rate),
+            tap: PcmTap::new(
+                pcm_ring,
+                channels.get() as usize,
+                sample_rate,
+                Some(lufs_meter),
+            ),
         }
     }
 

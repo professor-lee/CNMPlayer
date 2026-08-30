@@ -26,6 +26,7 @@ page_lyrics = false
 audio_quality = "exhigh"
 playback_memory = false
 show_hints = true
+small_window_display = true
 home_more_recommend = false
 
 [cache]
@@ -61,3 +62,4 @@ keybind_fullscreen_toggle_play_pause = "Space"
 keybind_fullscreen_toggle_mode = "M"
 keybind_toggle_like_fullscreen = "L"
 keybind_toggle_like_collapsed = "Alt+L"
+keybind_small_window_toggle = "Alt+X"

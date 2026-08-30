@@ -125,6 +125,9 @@ pub struct Config {
     #[serde(default = "default_show_hints")]
     pub show_hints: bool,
 
+    #[serde(default = "default_small_window_display")]
+    pub small_window_display: bool,
+
     #[serde(default)]
     pub home_more_recommend: bool,
 
@@ -187,6 +190,9 @@ pub struct Config {
 
     #[serde(default = "default_keybind_toggle_like_collapsed")]
     pub keybind_toggle_like_collapsed: String,
+
+    #[serde(default = "default_keybind_small_window_toggle")]
+    pub keybind_small_window_toggle: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,6 +520,14 @@ fn default_keybind_toggle_like_collapsed() -> String {
     "Alt+L".to_string()
 }
 
+fn default_small_window_display() -> bool {
+    true
+}
+
+fn default_keybind_small_window_toggle() -> String {
+    "Alt+X".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -543,6 +557,7 @@ impl Default for Config {
             audio_quality: default_audio_quality(),
             playback_memory: false,
             show_hints: default_show_hints(),
+            small_window_display: default_small_window_display(),
             home_more_recommend: false,
             cache: CacheConfig::default(),
             keybind_search_box: default_keybind_search_box(),
@@ -564,6 +579,7 @@ impl Default for Config {
             keybind_fullscreen_eq_reset: default_keybind_fullscreen_eq_reset(),
             keybind_toggle_like_fullscreen: default_keybind_toggle_like_fullscreen(),
             keybind_toggle_like_collapsed: default_keybind_toggle_like_collapsed(),
+            keybind_small_window_toggle: default_keybind_small_window_toggle(),
         }
     }
 }
@@ -637,6 +653,8 @@ impl Config {
             || !raw.contains("keybind_fullscreen_eq_reset")
             || !raw.contains("keybind_toggle_like_fullscreen")
             || !raw.contains("keybind_toggle_like_collapsed")
+            || !raw.contains("small_window_display")
+            || !raw.contains("keybind_small_window_toggle")
             || legacy_startup_folder_key_present
             || migrated_legacy_sidebar
         {
