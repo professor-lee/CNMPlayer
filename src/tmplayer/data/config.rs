@@ -1,4 +1,5 @@
 use crate::data::config::GraphicsProtocol;
+pub use crate::data::config::VisualizeMode;
 use crate::tmplayer::data::assets;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -133,43 +134,6 @@ pub struct Config {
 
     #[serde(default = "default_keybind_toggle_like_fullscreen")]
     pub keybind_toggle_like_fullscreen: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum VisualizeMode {
-    Off,
-    Bars,
-    Oscilloscope,
-}
-
-impl VisualizeMode {
-    /// 该模式是否依赖 cava 的频谱数据。示波器读播放链路上的 PCM 抽头，不需要。
-    pub fn needs_cava(self) -> bool {
-        matches!(self, VisualizeMode::Bars)
-    }
-
-    /// 数据源就绪，可供用户选中。
-    pub fn is_available(self) -> bool {
-        !self.needs_cava() || crate::tmplayer::audio::cava::is_available()
-    }
-
-    /// 切到下一个**可用**模式：数据源缺失的模式被跳过，而不是让整项无法调整。
-    pub fn cycle(self, delta: i32) -> Self {
-        const MODES: [VisualizeMode; 3] = [
-            VisualizeMode::Off,
-            VisualizeMode::Bars,
-            VisualizeMode::Oscilloscope,
-        ];
-
-        let len = MODES.len() as i32;
-        let step = if delta < 0 { -1 } else { 1 };
-        let start = MODES.iter().position(|mode| *mode == self).unwrap_or(1) as i32;
-        (1..=len)
-            .map(|offset| MODES[(start + step * offset).rem_euclid(len) as usize])
-            .find(|mode| mode.is_available())
-            .unwrap_or(self)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

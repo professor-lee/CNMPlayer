@@ -85,11 +85,7 @@ fn host_config_sync_from_app(app: &AppState) -> HostConfigSync {
         vip_audio_unlocked: app.vip_audio_unlocked,
         show_hints: app.config.show_hints,
         home_more_recommend: app.config.home_more_recommend,
-        visualize: match app.config.visualize {
-            VisualizeMode::Off => crate::data::config::VisualizeMode::Off,
-            VisualizeMode::Bars => crate::data::config::VisualizeMode::Bars,
-            VisualizeMode::Oscilloscope => crate::data::config::VisualizeMode::Oscilloscope,
-        },
+        visualize: app.config.visualize,
         super_smooth_bar: app.config.super_smooth_bar,
         bars_gap: app.config.bars_gap,
         bar_number: match app.config.bar_number {
@@ -139,11 +135,7 @@ fn apply_host_config_sync(app: &mut AppState, config: HostConfigSync) {
     app.config.playback_memory = config.playback_memory;
     app.config.show_hints = config.show_hints;
     app.config.home_more_recommend = config.home_more_recommend;
-    app.config.visualize = match config.visualize {
-        crate::data::config::VisualizeMode::Off => VisualizeMode::Off,
-        crate::data::config::VisualizeMode::Bars => VisualizeMode::Bars,
-        crate::data::config::VisualizeMode::Oscilloscope => VisualizeMode::Oscilloscope,
-    };
+    app.config.visualize = config.visualize;
     app.config.super_smooth_bar = config.super_smooth_bar;
     app.config.bars_gap = config.bars_gap;
     app.config.bar_number = match config.bar_number {

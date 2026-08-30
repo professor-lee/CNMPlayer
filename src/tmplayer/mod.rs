@@ -16,8 +16,7 @@ use std::time::Duration;
 
 use crate::data::config::{
     AudioQuality as HostAudioQuality, BarChannels as HostBarChannels, BarNumber as HostBarNumber,
-    Config as HostConfig, GraphicsProtocol, Language as HostLanguage,
-    VisualizeMode as HostVisualizeMode,
+    Config as HostConfig, GraphicsProtocol, Language as HostLanguage, VisualizeMode,
 };
 
 #[derive(Debug, Clone)]
@@ -108,7 +107,7 @@ pub struct HostConfigSync {
     pub vip_audio_unlocked: bool,
     pub show_hints: bool,
     pub home_more_recommend: bool,
-    pub visualize: HostVisualizeMode,
+    pub visualize: VisualizeMode,
     pub super_smooth_bar: bool,
     pub bars_gap: bool,
     pub bar_number: HostBarNumber,
@@ -163,11 +162,7 @@ fn tm_config_from_host(host: &HostConfig) -> data::config::Config {
         ui_fps: host.ui_fps,
         spectrum_hz: host.spectrum_hz,
         mpris_poll_ms: host.mpris_poll_ms,
-        visualize: match host.visualize {
-            HostVisualizeMode::Off => data::config::VisualizeMode::Off,
-            HostVisualizeMode::Bars => data::config::VisualizeMode::Bars,
-            HostVisualizeMode::Oscilloscope => data::config::VisualizeMode::Oscilloscope,
-        },
+        visualize: host.visualize,
         eq_bands_db: host.eq_bands_db,
         transparent_background: host.transparent_background,
         page_lyrics: host.page_lyrics,
