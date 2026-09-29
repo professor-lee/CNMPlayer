@@ -18,8 +18,9 @@
 //!   飞向可视化区域内的一个**随机落点**（恒定大减速度，0.25~0.55 s 先后
 //!   停稳），停稳后不保留原图形的剪影。粒子数有上限 [`MAX_PARTICLES`]，
 //!   超出的点亮点直接消失。
-//! - 停稳后 → **自刷新**：各点错峰淡出，再在随机位置重新淡入（终端没有
-//!   透明度，单点是二值的，渐隐/渐入由全体粒子的错峰时刻铺出来）。
+//! - 停稳后 → **自刷新**：各点错峰进入「可见 1.6~4.5 s → 0.5 s 淡出 →
+//!   隐藏并换随机位置 → 0.5 s 淡入」的循环。淡变的「透明度」由颜色向
+//!   面板底色的平滑插值模拟（终端没有真透明度）。
 //! - 恢复播放（或声音回来）→ **聚集回归**：粒子先有一个小小的点火延迟
 //!   （0~0.12 s，读作陆续启程），再就近锚定当前图形指数逼近
 //!   （τ = [`HOMING_TAU`]，全程约 0.5 s，肉眼可见的汇聚流），贴上即吸收。
@@ -29,9 +30,11 @@
 
 use crate::tmplayer::app::state::AppState;
 use crate::tmplayer::audio::pcm_tap::PcmSnapshot;
-use crate::tmplayer::render::oscilloscope_renderer::{braille_bit, paint, set_pixel};
+use crate::tmplayer::render::oscilloscope_renderer::{braille_bit, set_pixel};
+use crate::tmplayer::ui::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 use std::time::Duration;
 
 /// 显示窗口时长。短窗即可：20 ms 内 40 Hz 仍有大半个周期，高频则由密集
@@ -78,13 +81,15 @@ const BURST_MIN_TIME: f32 = 0.25;
 const BURST_MAX_TIME: f32 = 0.55;
 
 /// 停稳尘埃自刷新的可见期与隐藏期（秒）：各点错峰轮换，整体读作
-///「渐隐后在随机位置渐入」。终端没有透明度，单个点是二值的，
-/// 渐隐/渐入由全体粒子的错峰时刻铺出来；周期要足够长，轮换才
-/// 读作缓慢的淡出/淡入而不是闪烁。
-const TWINKLE_VISIBLE_MIN: f32 = 5.0;
-const TWINKLE_VISIBLE_MAX: f32 = 14.0;
-const TWINKLE_HIDDEN_MIN: f32 = 1.5;
-const TWINKLE_HIDDEN_MAX: f32 = 4.0;
+///「渐隐后在随机位置渐入」。
+const TWINKLE_VISIBLE_MIN: f32 = 1.6;
+const TWINKLE_VISIBLE_MAX: f32 = 4.5;
+const TWINKLE_HIDDEN_MIN: f32 = 0.4;
+const TWINKLE_HIDDEN_MAX: f32 = 1.2;
+
+/// 淡入/淡出时长（秒）：粒子颜色（模拟透明度）在波形色与面板底色之间
+/// 平滑插值 —— 单点是二值的，透明感完全由这段颜色渐变承担。
+const TWINKLE_FADE_S: f32 = 0.5;
 
 /// 聚集回归的点火延迟上限（秒）：粒子陆续启程，汇聚流更可读。
 const GATHER_IGNITION_S: f32 = 0.12;
@@ -118,6 +123,46 @@ enum Phase {
     Recovering,
 }
 
+/// 停稳尘埃的自刷新相位。`left` 为该相位剩余秒数。
+#[derive(Debug, Clone, Copy)]
+enum Twinkle {
+    Visible { left: f32 },
+    FadingOut { left: f32 },
+    Hidden { left: f32 },
+    FadingIn { left: f32 },
+}
+
+impl Twinkle {
+    /// 当前透明度（1 = 波形色，0 = 与底色同）。
+    fn alpha(&self) -> f32 {
+        match *self {
+            Twinkle::Visible { .. } => 1.0,
+            Twinkle::Hidden { .. } => 0.0,
+            Twinkle::FadingOut { left } => (left / TWINKLE_FADE_S).clamp(0.0, 1.0),
+            Twinkle::FadingIn { left } => (1.0 - left / TWINKLE_FADE_S).clamp(0.0, 1.0),
+        }
+    }
+
+    /// 剩余秒数（供推进）。
+    fn left(&self) -> f32 {
+        match *self {
+            Twinkle::Visible { left }
+            | Twinkle::FadingOut { left }
+            | Twinkle::Hidden { left }
+            | Twinkle::FadingIn { left } => left,
+        }
+    }
+
+    fn left_mut(&mut self) -> &mut f32 {
+        match self {
+            Twinkle::Visible { left }
+            | Twinkle::FadingOut { left }
+            | Twinkle::Hidden { left }
+            | Twinkle::FadingIn { left } => left,
+        }
+    }
+}
+
 /// 一个被打断的盲文点。位置与速度都在子像素（点阵）坐标系，单位为点。
 #[derive(Debug, Clone, Copy)]
 struct Particle {
@@ -127,10 +172,8 @@ struct Particle {
     vy: f32,
     /// 恒定减速度（点/s²）：`v0 / 飞行时长`，速度线性衰减到 0。
     decel: f32,
-    /// 自刷新可见性：false 为淡出后的隐藏期（隐藏期内换好随机位置）。
-    visible: bool,
-    /// 距下一次可见性翻转的剩余时间（秒）。
-    timer: f32,
+    /// 自刷新相位（可见 / 淡出 / 隐藏 / 淡入），只在 Floating 相位生效。
+    twinkle: Twinkle,
     /// 聚集点火剩余延迟：归零前原地不动，读作「陆续启程」。
     ignition: f32,
 }
@@ -143,6 +186,8 @@ pub struct VectorState {
     pub(crate) snapshot: PcmSnapshot,
     /// 复合光栅（轨迹 + 粒子）：`paint` 直写帧缓冲的就是它。
     grid: Vec<u8>,
+    /// 每单元格的粒子透明度（同格多粒子取最大）：淡入淡出的颜色插值依据。
+    cell_alpha: Vec<f32>,
     /// 仅轨迹的光栅：聚集锚定的搜索目标，避免粒子互相吸附。
     trace_grid: Vec<u8>,
     /// 最后一幅**画出来了的**轨迹：打断往往发生在图形已收缩消失之后
@@ -217,6 +262,7 @@ impl VectorState {
         self.scale_peak = 0.0;
         self.observed_level = None;
         self.grid.clear();
+        self.cell_alpha.clear();
         self.trace_grid.clear();
         self.last_trace_grid.clear();
         self.particles.clear();
@@ -325,7 +371,8 @@ impl VectorState {
         }
         if all_stopped && !self.particles.is_empty() {
             // 停稳：进入自刷新。首次淡出时刻在可见期内错峰铺开（整体读作
-            // 渐隐），此后各点独立轮换「可见 → 淡出并换随机位置 → 重新可见」。
+            // 渐隐），此后各点独立轮换「可见 → 0.5 s 淡出 → 隐藏并换随机
+            // 位置 → 0.5 s 淡入 → 可见」。
             let seed = self.disperse_seed;
             for i in 0..self.particles.len() {
                 let s = dot_seed(
@@ -335,8 +382,9 @@ impl VectorState {
                     ),
                     seed,
                 );
-                self.particles[i].visible = true;
-                self.particles[i].timer = visible_span(s);
+                self.particles[i].twinkle = Twinkle::Visible {
+                    left: visible_span(s),
+                };
             }
             self.phase = Phase::Floating;
             self.float_elapsed = Duration::ZERO;
@@ -350,28 +398,38 @@ impl VectorState {
         }
         self.float_elapsed += dt;
 
-        // 自刷新：可见期到点 → 淡出并换随机位置；隐藏期到点 → 重新可见。
+        // 自刷新状态机：可见 → 淡出(0.5s) → 隐藏并换随机位置 → 淡入(0.5s)。
         // 各点时刻独立错峰，整体读作「渐隐后在随机位置渐入」。
         let seed = self.disperse_seed;
         let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
         let dt_s = dt.as_secs_f32();
         for i in 0..self.particles.len() {
             let p = &mut self.particles[i];
-            p.timer -= dt_s;
-            if p.timer > 0.0 {
+            if p.twinkle.left() > dt_s {
+                *p.twinkle.left_mut() -= dt_s;
                 continue;
             }
             let s = dot_seed((p.x.max(0.0) as usize, p.y.max(0.0) as usize), seed);
-            if p.visible {
-                p.visible = false;
-                let (tx, ty) = random_spot(s.rotate_left(29) ^ 11, w_px, h_px);
-                p.x = tx;
-                p.y = ty;
-                p.timer = hidden_span(s);
-            } else {
-                p.visible = true;
-                p.timer = visible_span(s);
-            }
+            p.twinkle = match p.twinkle {
+                Twinkle::Visible { .. } => Twinkle::FadingOut {
+                    left: TWINKLE_FADE_S,
+                },
+                Twinkle::FadingOut { .. } => {
+                    // 淡出完成：换随机位置，进入隐藏期。
+                    let (tx, ty) = random_spot(s.rotate_left(29) ^ 11, w_px, h_px);
+                    p.x = tx;
+                    p.y = ty;
+                    Twinkle::Hidden {
+                        left: hidden_span(s),
+                    }
+                }
+                Twinkle::Hidden { .. } => Twinkle::FadingIn {
+                    left: TWINKLE_FADE_S,
+                },
+                Twinkle::FadingIn { .. } => Twinkle::Visible {
+                    left: visible_span(s),
+                },
+            };
         }
     }
 
@@ -516,8 +574,8 @@ impl VectorState {
             p.ignition = jitter(s.rotate_left(9) ^ 8) * GATHER_IGNITION_S;
             p.vx = 0.0;
             p.vy = 0.0;
-            // 自刷新隐藏中的粒子一并回到可见，全体参与回归。
-            p.visible = true;
+            // 自刷新淡变中的粒子一并回到全可见，全体参与回归。
+            p.twinkle = Twinkle::Visible { left: f32::MAX };
         }
         self.phase = Phase::Recovering;
         self.gather_elapsed = Duration::ZERO;
@@ -532,8 +590,7 @@ fn new_scatter_particle(dot: (usize, usize), seed: u32, w_px: f32, h_px: f32) ->
         vx: 0.0,
         vy: 0.0,
         decel: 0.0,
-        visible: true,
-        timer: 0.0,
+        twinkle: Twinkle::Visible { left: f32::MAX },
         ignition: 0.0,
     };
     retarget_scatter_particle(p, seed, w_px, h_px)
@@ -589,14 +646,76 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
     let level = window_level(&app.vector.snapshot);
     app.vector.observe(level, w_cells, h_cells);
     app.vector.rasterize();
-    paint(
+    paint_with_alpha(
         f.buffer_mut(),
         area,
         &app.vector.grid,
+        &app.vector.cell_alpha,
         &app.theme,
         w_cells,
         h_cells,
     );
+}
+
+/// [`paint`] 的带透明度版本：单元格前景 = 波形行渐变色向面板底色按
+/// `cell_alpha` 插值，透明度 1 时与示波器同色。一个格子只有一个前景色，
+/// 同格多个淡变中的粒子取最大透明度。
+fn paint_with_alpha(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    grid: &[u8],
+    cell_alpha: &[f32],
+    theme: &Theme,
+    w_cells: usize,
+    h_cells: usize,
+) {
+    let clip = area.intersection(buf.area);
+    let bg = theme.color_base();
+    for row in 0..clip.height as usize {
+        let t = if h_cells <= 1 {
+            1.0
+        } else {
+            row as f32 / (h_cells - 1) as f32
+        };
+        let wave_fg = vertical_gradient_color(theme, t);
+
+        for col in 0..clip.width as usize {
+            let bits = grid[row * w_cells + col];
+            if bits == 0 {
+                continue;
+            }
+            let a = cell_alpha.get(row * w_cells + col).copied().unwrap_or(1.0);
+            let fg = if a >= 1.0 {
+                wave_fg
+            } else {
+                mix_colors(wave_fg, bg, a)
+            };
+            if let Some(cell) = buf.cell_mut((clip.x + col as u16, clip.y + row as u16)) {
+                cell.set_char(char::from_u32(0x2800 + bits as u32).unwrap_or(' '));
+                cell.set_fg(fg);
+            }
+        }
+    }
+}
+
+/// 行渐变波形色（与示波器同一配色逻辑）。
+fn vertical_gradient_color(theme: &Theme, t: f32) -> Color {
+    mix_colors(theme.color_accent2(), theme.color_accent3(), t)
+}
+
+/// 颜色插值：`t = 0` 取 `a`（波形色），`t = 1` 取 `b`（底色）。
+/// 非 truecolor 终端退化为返回 `a`，与示波器的降级一致。
+fn mix_colors(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    match (a, b) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            let r = (ar as f32 + (br as f32 - ar as f32) * t) as u8;
+            let g = (ag as f32 + (bg as f32 - ag as f32) * t) as u8;
+            let bl = (ab as f32 + (bb as f32 - ab as f32) * t) as u8;
+            Color::Rgb(r, g, bl)
+        }
+        _ => a,
+    }
 }
 
 impl VectorState {
@@ -608,6 +727,8 @@ impl VectorState {
                 self.grid.clear();
                 self.grid.resize(self.trace_grid.len(), 0);
                 self.grid.copy_from_slice(&self.trace_grid);
+                // 轨迹恒为全可见；清空后 paint 按“缺失即 1”取全透明度。
+                self.cell_alpha.clear();
                 if self.phase == Phase::Recovering {
                     self.stamp_particles();
                 }
@@ -683,15 +804,34 @@ impl VectorState {
         last_trace_grid.copy_from_slice(trace_grid);
     }
 
-    /// 把粒子盖进复合光栅。自刷新隐藏期（淡出后）的点不画。
+    /// 把粒子盖进复合光栅，并记录每格的最大透明度（供颜色插值）。
+    /// 淡入淡出中的点半亮（颜色向底色靠），隐藏期的点不画。
     fn stamp_particles(&mut self) {
-        let (w, h) = (self.w_cells, self.h_cells);
-        let grid = &mut self.grid;
-        for p in &self.particles {
-            if !p.visible {
+        let (w, h, phase) = (self.w_cells, self.h_cells, self.phase);
+        let VectorState {
+            grid,
+            cell_alpha,
+            particles,
+            ..
+        } = self;
+        cell_alpha.clear();
+        cell_alpha.resize(w * h, 0.0);
+        let (w_px, h_px) = ((w * 2) as i32, (h * 4) as i32);
+        for p in particles {
+            let a = if phase == Phase::Floating {
+                p.twinkle.alpha()
+            } else {
+                1.0
+            };
+            if a <= 0.02 {
                 continue;
             }
-            set_pixel(grid, w, h, p.x.round() as i32, p.y.round() as i32);
+            let (x, y) = (p.x.round() as i32, p.y.round() as i32);
+            set_pixel(grid, w, h, x, y);
+            if x >= 0 && y >= 0 && x < w_px && y < h_px {
+                let idx = (y as usize / 4) * w + x as usize / 2;
+                cell_alpha[idx] = cell_alpha[idx].max(a);
+            }
         }
     }
 }
@@ -1026,18 +1166,30 @@ mod tests {
         let settled_dots: std::collections::HashSet<(i32, i32)> =
             lit_dots(&st).into_iter().collect();
         let mut hidden_seen = false;
+        let mut mid_fade_seen = false;
         for _ in 0..240 {
             st.tick(true, false, Duration::from_millis(50)); // 共 12 s
             st.rasterize();
-            hidden_seen |= st.particles.iter().any(|p| !p.visible);
+            hidden_seen |= st.particles.iter().any(|p| p.twinkle.alpha() == 0.0);
+            // 0.5 s 的淡入淡出：50 ms 步进必然采到中间透明度。
+            mid_fade_seen |= st
+                .particles
+                .iter()
+                .any(|p| (0.05..0.95).contains(&p.twinkle.alpha()));
             for p in &st.particles {
                 // 位置（含换过的随机落点）都在面板内。
                 assert!((0.0..=79.0).contains(&p.x), "粒子越界 x={}", p.x);
                 assert!((0.0..=79.0).contains(&p.y), "粒子越界 y={}", p.y);
+                assert!(
+                    (0.0..=1.0).contains(&p.twinkle.alpha()),
+                    "透明度越界：{}",
+                    p.twinkle.alpha()
+                );
             }
         }
         assert_eq!(st.particles.len(), settled_count, "自刷新不增减粒子");
         assert!(hidden_seen, "12 s 内应观测到淡出（隐藏期）");
+        assert!(mid_fade_seen, "应观测到 0.5 s 淡变中的中间透明度");
         let later: std::collections::HashSet<(i32, i32)> = lit_dots(&st).into_iter().collect();
         let relocated = settled_dots.symmetric_difference(&later).count();
         assert!(
@@ -1183,5 +1335,67 @@ mod tests {
         st.tick(true, false, FRAME);
         assert_eq!(st.phase, Phase::Active);
         assert!(st.particles.is_empty());
+    }
+
+    /// 淡入淡出的颜色（透明度）渐变：半透明粒子的前景色恰为波形色与
+    /// 面板底色的中点插值，全可见粒子与示波器同色。
+    #[test]
+    fn fading_particles_blend_colors_toward_background() {
+        use crate::tmplayer::ui::theme::{ColorCapability, Theme, ThemeName, ThemePalette};
+        use ratatui::buffer::Buffer;
+
+        let theme = Theme {
+            name: ThemeName::System,
+            capability: ColorCapability::TrueColor,
+            palette: ThemePalette {
+                text: (200, 200, 200),
+                subtext: (170, 170, 170),
+                base: (36, 36, 48),
+                surface: (48, 48, 64),
+                buff: (60, 60, 80),
+                accent: (140, 170, 220),
+                accent2: (160, 200, 240),
+                accent3: (130, 220, 200),
+            },
+        };
+
+        let mut st = VectorState {
+            phase: Phase::Floating,
+            w_cells: 40,
+            h_cells: 20,
+            ..Default::default()
+        };
+        // 两颗隔离的粒子：一颗半透明（淡出到一半），一颗全可见。
+        st.particles = vec![
+            Particle {
+                x: 20.0,
+                y: 40.0,
+                twinkle: Twinkle::FadingOut {
+                    left: TWINKLE_FADE_S * 0.5,
+                },
+                ..new_scatter_particle((10, 10), 1, 80.0, 80.0)
+            },
+            Particle {
+                x: 30.0,
+                y: 40.0,
+                twinkle: Twinkle::Visible { left: 9.0 },
+                ..new_scatter_particle((11, 10), 1, 80.0, 80.0)
+            },
+        ];
+        st.rasterize();
+
+        let area = Rect::new(0, 0, 40, 20);
+        let mut buf = Buffer::empty(area);
+        paint_with_alpha(&mut buf, area, &st.grid, &st.cell_alpha, &theme, 40, 20);
+
+        // 半透明粒子：y=40 子像素 → 第 10 行；期望色 = 行渐变色与底色按 0.5 插值。
+        let row = 10usize;
+        let t = row as f32 / 19.0;
+        let wave = vertical_gradient_color(&theme, t);
+        let expect_half = mix_colors(wave, theme.color_base(), 0.5);
+        assert_eq!(buf.cell((10, 10)).unwrap().fg, expect_half);
+
+        // 全可见粒子：与示波器同色（纯行渐变）。
+        assert_eq!(buf.cell((15, 10)).unwrap().fg, wave);
     }
 }
