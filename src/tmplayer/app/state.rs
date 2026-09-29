@@ -659,8 +659,7 @@ impl AppState {
             .tick(self.player.playback == PlaybackState::Playing, dt);
 
         self.vector.tick(
-            self.config.visualize
-                == crate::tmplayer::data::config::VisualizeMode::Vector,
+            self.config.visualize == crate::tmplayer::data::config::VisualizeMode::Vector,
             self.player.playback == PlaybackState::Playing,
             dt,
         );
@@ -794,7 +793,7 @@ impl AppState {
             && self.vector.is_animating()
     }
 
-    /// 矢量模式停稳后的极慢悬浮仍在动，暂停状态下也要维持基础帧率重绘。
+    /// 矢量模式停稳后的尘埃自刷新仍在动，暂停状态下也要维持基础帧率重绘。
     fn vector_is_floating(&self) -> bool {
         self.config.visualize == crate::tmplayer::data::config::VisualizeMode::Vector
             && self.vector.is_floating()

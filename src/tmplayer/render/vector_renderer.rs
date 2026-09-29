@@ -18,7 +18,8 @@
 //!   飞向可视化区域内的一个**随机落点**（恒定大减速度，0.25~0.55 s 先后
 //!   停稳），停稳后不保留原图形的剪影。粒子数有上限 [`MAX_PARTICLES`]，
 //!   超出的点亮点直接消失。
-//! - 停稳后 → 极慢悬浮：终点周围 3×3 点邻域内正弦漂移（周期约 12 s）。
+//! - 停稳后 → **自刷新**：各点错峰淡出，再在随机位置重新淡入（终端没有
+//!   透明度，单点是二值的，渐隐/渐入由全体粒子的错峰时刻铺出来）。
 //! - 恢复播放（或声音回来）→ **聚集回归**：粒子先有一个小小的点火延迟
 //!   （0~0.12 s，读作陆续启程），再就近锚定当前图形指数逼近
 //!   （τ = [`HOMING_TAU`]，全程约 0.5 s，肉眼可见的汇聚流），贴上即吸收。
@@ -31,7 +32,6 @@ use crate::tmplayer::audio::pcm_tap::PcmSnapshot;
 use crate::tmplayer::render::oscilloscope_renderer::{braille_bit, paint, set_pixel};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use std::f32::consts::TAU;
 use std::time::Duration;
 
 /// 显示窗口时长。短窗即可：20 ms 内 40 Hz 仍有大半个周期，高频则由密集
@@ -77,11 +77,14 @@ const SCATTER_MARGIN: f32 = 2.0;
 const BURST_MIN_TIME: f32 = 0.25;
 const BURST_MAX_TIME: f32 = 0.55;
 
-/// 悬浮幅度（点）：0.9 保证取整后落在终点周围 3×3 区域内。
-const FLOAT_AMPLITUDE: f32 = 0.9;
-
-/// 悬浮周期（秒）：极慢 —— 半个周期也要数秒才滑过 1 点。
-const FLOAT_PERIOD_S: f32 = 12.0;
+/// 停稳尘埃自刷新的可见期与隐藏期（秒）：各点错峰轮换，整体读作
+///「渐隐后在随机位置渐入」。终端没有透明度，单个点是二值的，
+/// 渐隐/渐入由全体粒子的错峰时刻铺出来；周期要足够长，轮换才
+/// 读作缓慢的淡出/淡入而不是闪烁。
+const TWINKLE_VISIBLE_MIN: f32 = 5.0;
+const TWINKLE_VISIBLE_MAX: f32 = 14.0;
+const TWINKLE_HIDDEN_MIN: f32 = 1.5;
+const TWINKLE_HIDDEN_MAX: f32 = 4.0;
 
 /// 聚集回归的点火延迟上限（秒）：粒子陆续启程，汇聚流更可读。
 const GATHER_IGNITION_S: f32 = 0.12;
@@ -109,7 +112,7 @@ enum Phase {
     Active,
     /// 粒子飞向随机落点，减速中。
     Dispersing,
-    /// 全部停稳，极慢悬浮。
+    /// 全部停稳，尘埃自刷新（错峰淡出 / 随机位置淡入）。
     Floating,
     /// 聚集回归：粒子锚定当前图形，指数逼近归位。
     Recovering,
@@ -124,12 +127,10 @@ struct Particle {
     vy: f32,
     /// 恒定减速度（点/s²）：`v0 / 飞行时长`，速度线性衰减到 0。
     decel: f32,
-    /// 悬浮中心（停稳位置）。
-    anchor_x: f32,
-    anchor_y: f32,
-    /// 悬浮漂移相位（随机，两轴独立）。
-    drift_x: f32,
-    drift_y: f32,
+    /// 自刷新可见性：false 为淡出后的隐藏期（隐藏期内换好随机位置）。
+    visible: bool,
+    /// 距下一次可见性翻转的剩余时间（秒）。
+    timer: f32,
     /// 聚集点火剩余延迟：归零前原地不动，读作「陆续启程」。
     ignition: f32,
 }
@@ -164,7 +165,7 @@ pub struct VectorState {
     dispersed_by_silence: bool,
     /// 分散代数：给确定性抖动换种子，两次打断的散开形态不同。
     disperse_seed: u32,
-    /// 悬浮与聚集各自已经过的时间。
+    /// 自刷新与聚集各自已经过的时间。
     float_elapsed: Duration,
     gather_elapsed: Duration,
     /// 突断判定用的近期电平（快衰减峰值保持）。
@@ -207,7 +208,7 @@ impl VectorState {
         matches!(self.phase, Phase::Dispersing | Phase::Recovering)
     }
 
-    /// 停稳后的极慢悬浮：图形静止但仍在动，需要基础帧率持续重绘。
+    /// 停稳后的尘埃自刷新仍在动，需要基础帧率持续重绘。
     pub(crate) fn is_floating(&self) -> bool {
         self.phase == Phase::Floating
     }
@@ -323,9 +324,19 @@ impl VectorState {
             }
         }
         if all_stopped && !self.particles.is_empty() {
-            for p in &mut self.particles {
-                p.anchor_x = p.x;
-                p.anchor_y = p.y;
+            // 停稳：进入自刷新。首次淡出时刻在可见期内错峰铺开（整体读作
+            // 渐隐），此后各点独立轮换「可见 → 淡出并换随机位置 → 重新可见」。
+            let seed = self.disperse_seed;
+            for i in 0..self.particles.len() {
+                let s = dot_seed(
+                    (
+                        self.particles[i].x.max(0.0) as usize,
+                        self.particles[i].y.max(0.0) as usize,
+                    ),
+                    seed,
+                );
+                self.particles[i].visible = true;
+                self.particles[i].timer = visible_span(s);
             }
             self.phase = Phase::Floating;
             self.float_elapsed = Duration::ZERO;
@@ -335,8 +346,32 @@ impl VectorState {
     fn tick_floating(&mut self, playing: bool, level: f32, dt: Duration) {
         if self.resume_signal(playing, level) {
             self.begin_gather();
-        } else {
-            self.float_elapsed += dt;
+            return;
+        }
+        self.float_elapsed += dt;
+
+        // 自刷新：可见期到点 → 淡出并换随机位置；隐藏期到点 → 重新可见。
+        // 各点时刻独立错峰，整体读作「渐隐后在随机位置渐入」。
+        let seed = self.disperse_seed;
+        let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
+        let dt_s = dt.as_secs_f32();
+        for i in 0..self.particles.len() {
+            let p = &mut self.particles[i];
+            p.timer -= dt_s;
+            if p.timer > 0.0 {
+                continue;
+            }
+            let s = dot_seed((p.x.max(0.0) as usize, p.y.max(0.0) as usize), seed);
+            if p.visible {
+                p.visible = false;
+                let (tx, ty) = random_spot(s.rotate_left(29) ^ 11, w_px, h_px);
+                p.x = tx;
+                p.y = ty;
+                p.timer = hidden_span(s);
+            } else {
+                p.visible = true;
+                p.timer = visible_span(s);
+            }
         }
     }
 
@@ -481,36 +516,53 @@ impl VectorState {
             p.ignition = jitter(s.rotate_left(9) ^ 8) * GATHER_IGNITION_S;
             p.vx = 0.0;
             p.vy = 0.0;
+            // 自刷新隐藏中的粒子一并回到可见，全体参与回归。
+            p.visible = true;
         }
         self.phase = Phase::Recovering;
         self.gather_elapsed = Duration::ZERO;
     }
 }
 
-/// 孵化一个粒子：漂移相位随机；再指派随机落点与初速。
+/// 孵化一个粒子：再指派随机落点与初速。
 fn new_scatter_particle(dot: (usize, usize), seed: u32, w_px: f32, h_px: f32) -> Particle {
-    let s = dot_seed(dot, seed);
     let p = Particle {
         x: dot.0 as f32,
         y: dot.1 as f32,
         vx: 0.0,
         vy: 0.0,
         decel: 0.0,
-        anchor_x: dot.0 as f32,
-        anchor_y: dot.1 as f32,
-        drift_x: jitter(s.rotate_left(5) ^ 3) * TAU,
-        drift_y: jitter(s.rotate_left(17) ^ 4) * TAU,
+        visible: true,
+        timer: 0.0,
         ignition: 0.0,
     };
     retarget_scatter_particle(p, seed, w_px, h_px)
+}
+
+/// 自刷新的可见期时长（秒）：由粒子种子错峰。
+fn visible_span(s: u32) -> f32 {
+    TWINKLE_VISIBLE_MIN
+        + (TWINKLE_VISIBLE_MAX - TWINKLE_VISIBLE_MIN) * jitter(s.rotate_left(23) ^ 9)
+}
+
+/// 自刷新的隐藏期时长（秒）。
+fn hidden_span(s: u32) -> f32 {
+    TWINKLE_HIDDEN_MIN + (TWINKLE_HIDDEN_MAX - TWINKLE_HIDDEN_MIN) * jitter(s.rotate_left(31) ^ 12)
+}
+
+/// 区域内均匀随机落点（留 [`SCATTER_MARGIN`] 边距）。
+fn random_spot(seed: u32, w_px: f32, h_px: f32) -> (f32, f32) {
+    (
+        SCATTER_MARGIN + jitter(seed.rotate_left(3) ^ 7) * (w_px - 2.0 * SCATTER_MARGIN),
+        SCATTER_MARGIN + jitter(seed.rotate_left(11) ^ 6) * (h_px - 2.0 * SCATTER_MARGIN),
+    )
 }
 
 /// 为粒子指派一个随机落点并按飞行时长解出初速与减速度：
 /// 朝落点直线飞行，恒定减速度恰好在到达时把速度减到零。
 fn retarget_scatter_particle(mut p: Particle, seed: u32, w_px: f32, h_px: f32) -> Particle {
     let s = dot_seed((p.x.max(0.0) as usize, p.y.max(0.0) as usize), seed);
-    let tx = SCATTER_MARGIN + jitter(s.rotate_left(3) ^ 7) * (w_px - 2.0 * SCATTER_MARGIN);
-    let ty = SCATTER_MARGIN + jitter(s.rotate_left(11) ^ 6) * (h_px - 2.0 * SCATTER_MARGIN);
+    let (tx, ty) = random_spot(s, w_px, h_px);
     let burst_time =
         BURST_MIN_TIME + (BURST_MAX_TIME - BURST_MIN_TIME) * jitter(s.rotate_left(13) ^ 1);
     let (dx, dy) = (tx - p.x, ty - p.y);
@@ -631,32 +683,16 @@ impl VectorState {
         last_trace_grid.copy_from_slice(trace_grid);
     }
 
-    /// 把粒子盖进复合光栅。悬浮期位置 = 停稳点 + 极慢正弦漂移。
+    /// 把粒子盖进复合光栅。自刷新隐藏期（淡出后）的点不画。
     fn stamp_particles(&mut self) {
-        let (w, h, phase, t) = (
-            self.w_cells,
-            self.h_cells,
-            self.phase,
-            self.float_elapsed.as_secs_f32(),
-        );
+        let (w, h) = (self.w_cells, self.h_cells);
         let grid = &mut self.grid;
         for p in &self.particles {
-            let (x, y) = particle_pos(phase, t, p);
-            set_pixel(grid, w, h, x.round() as i32, y.round() as i32);
+            if !p.visible {
+                continue;
+            }
+            set_pixel(grid, w, h, p.x.round() as i32, p.y.round() as i32);
         }
-    }
-}
-
-/// 粒子当前显示位置：悬浮期在停稳点周围 3×3 区域内极慢漂移，其余相位
-/// 即积分位置。
-fn particle_pos(phase: Phase, float_elapsed_s: f32, p: &Particle) -> (f32, f32) {
-    if phase == Phase::Floating {
-        let ox = FLOAT_AMPLITUDE * (TAU * float_elapsed_s / FLOAT_PERIOD_S + p.drift_x).sin();
-        let oy =
-            FLOAT_AMPLITUDE * (TAU * float_elapsed_s / (FLOAT_PERIOD_S * 1.13) + p.drift_y).sin();
-        (p.anchor_x + ox, p.anchor_y + oy)
-    } else {
-        (p.x, p.y)
     }
 }
 
@@ -944,7 +980,7 @@ mod tests {
     }
 
     /// 暂停打断：点亮点化为粒子（有上限，超出按步长抽样直接消失），
-    /// 飞向随机落点并在限时内停稳；停稳后悬浮在终点 3×3 邻域内极慢漂移。
+    /// 飞向随机落点并在限时内停稳；停稳后自刷新（错峰淡出、随机位置淡入）。
     #[test]
     fn pause_disperses_settles_and_floats() {
         let mut st = circle_state(0.8);
@@ -985,42 +1021,28 @@ mod tests {
             "平均位移 {moved_avg:.1} 过小：仍能看出原图形"
         );
 
-        // 悬浮：任意时刻都在停稳点 3×3 邻域内，且不同时刻位置确在极慢变化。
-        let mut seen: Vec<(i32, i32)> = Vec::new();
-        for _ in 0..30 {
-            st.tick(true, false, Duration::from_millis(500));
+        // 停稳后：自刷新 —— 各点错峰淡出，并在随机位置重新出现。
+        let settled_count = st.particles.len();
+        let settled_dots: std::collections::HashSet<(i32, i32)> =
+            lit_dots(&st).into_iter().collect();
+        let mut hidden_seen = false;
+        for _ in 0..240 {
+            st.tick(true, false, Duration::from_millis(50)); // 共 12 s
             st.rasterize();
+            hidden_seen |= st.particles.iter().any(|p| !p.visible);
             for p in &st.particles {
-                let (x, y) = particle_pos(st.phase, st.float_elapsed.as_secs_f32(), p);
-                let (ox, oy) = (x - p.anchor_x, y - p.anchor_y);
-                assert!(
-                    ox.abs() <= 1.0 && oy.abs() <= 1.0,
-                    "悬浮越出 3×3 区域：({ox:.2},{oy:.2})"
-                );
-            }
-            if seen.is_empty() {
-                seen = st
-                    .particles
-                    .iter()
-                    .map(|p| {
-                        let (x, y) = particle_pos(st.phase, st.float_elapsed.as_secs_f32(), p);
-                        (x as i32, y as i32)
-                    })
-                    .collect();
+                // 位置（含换过的随机落点）都在面板内。
+                assert!((0.0..=79.0).contains(&p.x), "粒子越界 x={}", p.x);
+                assert!((0.0..=79.0).contains(&p.y), "粒子越界 y={}", p.y);
             }
         }
-        let now: Vec<(i32, i32)> = st
-            .particles
-            .iter()
-            .map(|p| {
-                let (x, y) = particle_pos(st.phase, st.float_elapsed.as_secs_f32(), p);
-                (x as i32, y as i32)
-            })
-            .collect();
-        // 15 s 的极慢漂移（周期 12 s）必然至少移动一个粒子一格。
+        assert_eq!(st.particles.len(), settled_count, "自刷新不增减粒子");
+        assert!(hidden_seen, "12 s 内应观测到淡出（隐藏期）");
+        let later: std::collections::HashSet<(i32, i32)> = lit_dots(&st).into_iter().collect();
+        let relocated = settled_dots.symmetric_difference(&later).count();
         assert!(
-            now.iter().zip(&seen).any(|(a, b)| a != b),
-            "悬浮应随时间极慢改变取整位置"
+            relocated > 0,
+            "自刷新应在随机位置重新出现（点集应发生变化）"
         );
     }
 
