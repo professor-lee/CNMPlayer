@@ -718,11 +718,11 @@ impl VectorState {
                 self.grid.clear();
                 self.grid.resize(self.trace_grid.len(), 0);
                 self.grid.copy_from_slice(&self.trace_grid);
-                // 轨迹恒为全可见；清空后 paint 按“缺失即 1”取全透明度。
+                // 轨迹恒为全可见；逐点绘制也必须拥有全亮 alpha。
                 self.cell_alpha.clear();
                 self.pixel_alpha.clear();
                 self.pixel_alpha
-                    .resize(self.w_cells * self.h_cells * 8, 0.0);
+                    .resize(self.w_cells * self.h_cells * 8, 1.0);
                 if self.phase == Phase::Recovering {
                     self.stamp_particles();
                 }
@@ -1316,6 +1316,14 @@ mod tests {
             }
         }
         assert!(found_different, "同一盲文格的两个像素应有不同亮灭曲线");
+    }
+
+    #[test]
+    fn active_trace_populates_pixel_alpha_for_rendering() {
+        let st = circle_state(0.8);
+        assert_eq!(st.phase, Phase::Active);
+        assert!(st.grid.iter().any(|&bits| bits != 0));
+        assert!(st.pixel_alpha.iter().any(|&alpha| alpha == 1.0));
     }
 
     /// 粒子上限：高密度图形孵化时按步长抽样，粒子数不超过上限。
