@@ -30,7 +30,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - **主程序界面**：登录、首页推荐、歌单 / 作者 / 搜索页、可滑出的侧边栏，以及底部 5 行的折叠播放栏；
 - **内置全屏播放页**（TMPlayer）：封面、歌词、歌单浮层和 10 段均衡器。按全屏快捷键（默认 `Ctrl+F`）交给它，页内再按 `Ctrl+F` 或 `Esc` 返回主程序。
 
-播放本身由主程序负责：带本地缓存的流式播放、播放记忆、私人漫游、按 VIP 权限裁剪的音质，以及由其它界面绘制的可视化（cava 频谱、真 PCM 示波器、LUFS 音量条）。
+播放本身由主程序负责：带本地缓存的流式播放、播放记忆、私人漫游、按 VIP 权限裁剪的音质，以及由其它界面绘制的可视化（cava 频谱、真 PCM 示波器、李萨如矢量模式、LUFS 音量条）。
 
 ## 主要功能
 
@@ -84,7 +84,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - `hidden`（设置弹窗里显示「关闭」）——全屏页右侧整块收起：可视化与歌词都不画，歌曲信息区撑满整个终端宽度（边框铺满整宽，内容宽度上限为窗口的 1/3 并居中）
 - `lyrics`（显示「仅歌词」）——右侧只显示歌词，不画可视化；旧配置里的 `off` 仍按这一档读取
 - `bars`——cava 频谱条，需要外部 `cava` 可执行文件
-- `oscilloscope`——从播放链路抽头得到的真 PCM 波形：上升沿触发、逐子列 min/max 峰值抽取、绝对幅度映射，安静段贴中线、高潮段撑满。**不需要** cava
+- `vector`——李萨如图（音频矢量示波器）：左声道作 X、右声道作 Y，用与示波器相同的盲文点阵逐点绘制，以面板中心为原点、不画坐标轴。缩放在每首歌开头几秒校准一次后锁定（仅切歌重新校准）；单声道退化为如实的 45° 对角线。暂停或突断静音时图形化作一次微小爆炸——每个盲文点从图形质心沿径向飞出、急剧减速停稳，随后在其终点周围 3×3 点邻域内极慢悬浮；恢复播放（或声音回来）就近迅速归位贴合图形。渐弱不爆炸：图形随电平缩小直至消失。**不需要** cava
 - 没有 cava 时默认改为 `oscilloscope`，切换设置时会跳过 `bars`，而不是让整项无法调整
 - 折叠播放栏绘制 10 格盲文迷你频谱，数据来自 cava；`lyrics` 与 `hidden` 两档不启动 cava，那里因此是空白。窄窗则用 400 ms Momentary LUFS 计量驱动双声道音量条（显示范围 −60…0 LUFS）
 
@@ -202,7 +202,7 @@ CNMPlayer 会查找外部 `cava` 可执行文件来生成实时频谱可视化�
 | --- | --- | --- |
 | `theme` | `frappe` | `system`、`latte`、`frappe`、`macchiato`、`mocha` |
 | `language` | `zh` | `zh`、`en` |
-| `visualize` | 有 cava 时为 `bars`，否则 `oscilloscope` | `hidden`（设置里显示「关闭」）、`lyrics`（「仅歌词」，旧的 `off` 同义）、`bars`、`oscilloscope`；只有 `bars` 依赖 cava |
+| `visualize` | 有 cava 时为 `bars`，否则 `oscilloscope` | `hidden`（设置里显示「关闭」）、`lyrics`（「仅歌词」，旧的 `off` 同义）、`bars`、`oscilloscope`、`vector`；只有 `bars` 依赖 cava |
 | `graphics_protocol` | `halfblocks` | `off`、`halfblocks`；`off` 时封面用 ASCII 字符绘制 |
 | `transparent_background` | `true` | 使用终端背景 |
 | `album_border` | `true` | 全屏封面边框 |
@@ -333,7 +333,7 @@ CNMPlayer 会查找外部 `cava` 可执行文件来生成实时频谱可视化�
 - 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire
 - 元数据与封面：image + qrcode
 - 图像渲染：ratatui-image + chafa
-- 可视化：外部 `cava`，以及内部 PCM 抽头驱动的示波器与 LUFS 计量
+- 可视化：外部 `cava`，以及内部 PCM 抽头驱动的示波器、李萨如矢量模式与 LUFS 计量
 - Linux 媒体控制：mpris-server
 - 全屏播放整合：TMPlayer
 
