@@ -109,10 +109,8 @@ const ABSORB_DIST: f32 = 1.0;
 const GATHER_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// 星点亮度的峰值系数（codex 上游原值）：脉冲顶点也只到 55% 透明度。
+/// 停稳粒子不设硬熄灭门禁；透明度可以连续趋近 0，但盲文位始终保留。
 const SPARKLE_PEAK: f32 = 0.55;
-
-/// 低于此亮度的帧不画星点（熄灭；codex 上游原值 0.04）。
-const SPARKLE_VISIBLE_MIN: f32 = 0.04;
 
 /// 打断动画的相位机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -784,7 +782,9 @@ impl VectorState {
 
     /// 把粒子盖进复合光栅，并记录每格透明度（供颜色插值）。
     /// 飞行/聚集期粒子按自身 twinkle 透明度渲染；**停稳后**在此之上
-    /// 叠加 Astra Sparkle 明灭（坐标哈希确定性地脉动，熄灭帧不画点）。
+    /// 叠加 Astra Sparkle 的连续亮度曲线（坐标哈希确定性地脉动）。
+    /// 亮度趋近零时仍保留盲文位，只让前景色趋近背景色，避免硬门禁造成
+    /// 粒子突然出现或消失。
     ///
     /// 透明度语义：粒子格取该格粒子的最大 alpha；**含轨迹点的格恒为
     /// 全亮**（轨迹不被粒子压暗，聚集期图形不再隐形）。仅 Recovering
@@ -805,17 +805,13 @@ impl VectorState {
         cell_alpha.clear();
         cell_alpha.resize(w * h, 0.0);
         let (w_px, h_px) = ((w * 2) as i32, (h * 4) as i32);
-        let min_visible = if twinkling { SPARKLE_VISIBLE_MIN } else { 0.02 };
         for p in particles {
             let (x, y) = (p.x.round() as i32, p.y.round() as i32);
             let mut a = p.twinkle.alpha();
             if twinkling {
                 a *= sparkle_brightness(star_hash(x, y), sparkle_t);
             }
-            // 停稳后的熄灭阈值即 codex 的 0.04：星点熄灭帧整点不画。
-            if a <= min_visible {
-                continue;
-            }
+            // 停稳后的亮度连续趋近 0，不删除盲文位。
             set_pixel(grid, w, h, x, y);
             if x >= 0 && y >= 0 && x < w_px && y < h_px {
                 let idx = (y as usize / 4) * w + x as usize / 2;
@@ -1237,17 +1233,15 @@ mod tests {
             for (cell, hash, factor) in [solid, dying] {
                 let expect = sparkle_brightness(hash, t) * factor;
                 let got = st.cell_alpha[cell];
-                if expect <= SPARKLE_VISIBLE_MIN {
-                    assert_eq!(got, 0.0, "t={t} cell={cell}：熄灭帧不得记透明度");
-                    assert_eq!(st.grid[cell], 0, "t={t} cell={cell}：熄灭帧不得设盲文位");
-                    saw_extinguished = true;
-                } else {
-                    assert!(
-                        (got - expect).abs() < 1e-5,
-                        "t={t} cell={cell}：透明度 {got} 应等于公式值 {expect}"
-                    );
-                    assert_ne!(st.grid[cell], 0, "t={t} cell={cell}：可见帧必须画出盲文点");
+                assert!(
+                    (got - expect).abs() < 1e-5,
+                    "t={t} cell={cell}：透明度 {got} 应等于公式值 {expect}"
+                );
+                assert_ne!(st.grid[cell], 0, "t={t} cell={cell}：粒子位必须持续保留");
+                if expect > 0.04 {
                     saw_visible = true;
+                } else {
+                    saw_extinguished = true;
                 }
             }
         }
