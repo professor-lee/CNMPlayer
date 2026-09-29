@@ -17,8 +17,9 @@
 //! **打断动画**：暂停（或播放中突然静音）时，图形化作一次**微小爆炸** ——
 //! 每个盲文点飞向可视化区域内的一个随机落点（恒定大减速度减速，先后停稳），
 //! 停稳后不再保留原图形的剪影，而是散布成随机尘埃，并在各自终点周围的
-//! 3×3 点邻域内极慢悬浮。恢复播放（或声音回来）的一瞬，全部粒子立刻
-//! 吸附回图形（数量超出的先归位再释放），图形当即恢复。
+//! 3×3 点邻域内极慢悬浮。恢复播放（或声音回来）则**迅速回归**：就近锚定
+//! 当前图形、指数逼近（约 0.1 s 收敛），贴上即吸收 —— 数量超出图形点数
+//! 的粒子落上后同样释放。
 //!
 //! 盲文光栅（2×4 点/格、逐点写位、行渐变配色）与示波器共用同一套
 //! [`paint`]。
@@ -61,9 +62,19 @@ const FLOAT_AMPLITUDE: f32 = 0.9;
 /// 悬浮周期（秒）：极慢 —— 半个周期也要数秒才滑过 1 点。
 const FLOAT_PERIOD_S: f32 = 12.0;
 
-/// 立刻归位时的吸附搜索半径（点）：图形周围的粒子就近落点，更远的原地释放
-///（与落在图形上视觉等价 —— 本帧图形已在绘制）。
-const LANDING_RADIUS: i32 = 32;
+/// 迅速回归的时间常数（秒）：一帧走掉大半残差，约 0.1 s 收敛。
+const HOMING_TAU: f32 = 0.04;
+
+/// 回归搜索的起始半径与扩张速率（点 / 点每秒）：随机散布的粒子离图形
+/// 可远可近，扩张保证全部粒子都能锚定到图形。
+const HOMING_START_RADIUS: i32 = 12;
+const HOMING_EXPAND_DPS: f32 = 400.0;
+
+/// 距锚点近到这一步即视为归位（吸收）。
+const ABSORB_DIST: f32 = 1.0;
+
+/// 回归期始终找不到锚点（图形不存在）的粒子最多滞留此时长。
+const RECOVER_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// 突断判定的近期电平衰减速率（dB/s）：比任何音乐渐弱都快，突断后它
 /// 还停留在断前电平约百毫秒，差值因此可分辨。
@@ -90,6 +101,8 @@ enum Phase {
     Dispersing,
     /// 全部停稳，极慢悬浮。
     Floating,
+    /// 迅速回归：粒子就近锚定当前图形，指数逼近归位。
+    Recovering,
 }
 
 /// 一个被打断的盲文点。位置与速度都在子像素（点阵）坐标系，单位为点。
@@ -141,6 +154,8 @@ pub struct VectorState {
     disperse_seed: u32,
     /// 悬浮已经过的时间。
     float_elapsed: Duration,
+    /// 迅速回归已经过的时间（决定锚定搜索半径的扩张）。
+    recover_elapsed: Duration,
     /// 突断判定用的近期电平（快衰减峰值保持）。
     recent_level: f32,
     /// 图形连续不可见的时长。
@@ -216,42 +231,103 @@ impl VectorState {
             }
             Phase::Dispersing => {
                 if self.resume_signal(playing, level) {
-                    self.snap_to_figure();
+                    self.phase = Phase::Recovering;
+                    self.recover_elapsed = Duration::ZERO;
                 } else {
                     self.integrate_disperse(dt);
                 }
             }
             Phase::Floating => {
                 if self.resume_signal(playing, level) {
-                    self.snap_to_figure();
+                    self.phase = Phase::Recovering;
+                    self.recover_elapsed = Duration::ZERO;
                 } else {
                     self.float_elapsed += dt;
+                }
+            }
+            Phase::Recovering => {
+                if !playing {
+                    // 回归途中再次暂停：从当下位置重新散开（随机落点）。
+                    self.re_scatter();
+                } else {
+                    self.integrate_homing(dt);
+                    if self.particles.is_empty() {
+                        self.phase = Phase::Active;
+                    }
                 }
             }
         }
     }
 
-    /// 立刻归位：全部粒子直接吸附回图形上（就近落点；数量超出图形点数的
-    /// 粒子落在既有落点上），随后全部释放 —— 图形本帧就在绘制，落上去的
-    /// 粒子与它重合，视觉即「散开的点瞬间回到图形」。找不到图形（恢复进
-    /// 静音段）则原地释放，图形本就不存在。
-    fn snap_to_figure(&mut self) {
+    /// 迅速回归：每个粒子就近锚定当前轨迹点，指数逼近（时间常数 40 ms，
+    /// 约 0.1 s 收敛）；贴上即吸收。搜索半径随回归时间扩张 —— 随机散布的
+    /// 粒子离图形可远可近，扩张保证**全部**粒子都能找到锚点、回到图形；
+    /// 数量超出图形点数的粒子落上后同样被吸收（视觉即「归位后释放」）。
+    /// 恢复进静音段（图形不存在）则最多滞留 `RECOVER_TIMEOUT` 后释放。
+    fn integrate_homing(&mut self, dt: Duration) {
+        self.recover_elapsed += dt;
+        let k = 1.0 - (-dt.as_secs_f32() / HOMING_TAU).exp();
+        let radius = (HOMING_START_RADIUS as f32
+            + self.recover_elapsed.as_secs_f32() * HOMING_EXPAND_DPS) as i32;
         let (w, h) = (self.w_cells, self.h_cells);
+
         let VectorState {
             particles,
             trace_grid,
             ..
         } = self;
-        for p in particles.iter_mut() {
-            if let Some((tx, ty)) =
-                nearest_lit_dot(trace_grid, w, h, p.x.round() as i32, p.y.round() as i32)
-            {
-                p.x = tx;
-                p.y = ty;
+
+        let mut i = 0;
+        while i < particles.len() {
+            let p = &mut particles[i];
+            if let Some((tx, ty)) = nearest_lit_dot(
+                trace_grid,
+                w,
+                h,
+                p.x.round() as i32,
+                p.y.round() as i32,
+                radius,
+            ) {
+                let (dx, dy) = (tx - p.x, ty - p.y);
+                let d = dx.hypot(dy);
+                if d <= ABSORB_DIST {
+                    particles.swap_remove(i);
+                    continue;
+                }
+                p.x += dx * k;
+                p.y += dy * k;
+            } else if self.recover_elapsed >= RECOVER_TIMEOUT {
+                particles.swap_remove(i);
+                continue;
             }
+            i += 1;
         }
-        particles.clear();
-        self.phase = Phase::Active;
+    }
+
+    /// 回归途中再次打断：粒子已在空中，从当下位置重新指派随机落点散开。
+    fn re_scatter(&mut self) {
+        let seed = self.disperse_seed.wrapping_add(1);
+        self.disperse_seed = seed;
+        self.dispersed_by_silence = false;
+        let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
+
+        for p in self.particles.iter_mut() {
+            let s = (p.x as u32).wrapping_mul(0x9E37_79B1)
+                ^ (p.y as u32).wrapping_mul(0x85EB_CA6B)
+                ^ seed;
+            let tx = SCATTER_MARGIN + jitter(s.rotate_left(3) ^ 7) * (w_px - 2.0 * SCATTER_MARGIN);
+            let ty = SCATTER_MARGIN + jitter(s.rotate_left(11) ^ 6) * (h_px - 2.0 * SCATTER_MARGIN);
+            let burst_time =
+                BURST_MIN_TIME + (BURST_MAX_TIME - BURST_MIN_TIME) * jitter(s.rotate_left(13) ^ 1);
+            let (dx, dy) = (tx - p.x, ty - p.y);
+            let dist = dx.hypot(dy).max(1.0);
+            let v0 = 2.0 * dist / burst_time;
+            p.vx = dx / dist * v0;
+            p.vy = dy / dist * v0;
+            p.decel = v0 / burst_time;
+        }
+        self.phase = Phase::Dispersing;
+        self.float_elapsed = Duration::ZERO;
     }
 
     /// 渲染线程每帧报告窗口原始峰值与面板尺寸。
@@ -261,9 +337,9 @@ impl VectorState {
         self.h_cells = h_cells;
     }
 
-    /// 分散动画进行中：需要 `spectrum_hz` 高帧率推完（恢复是瞬切，无相位）。
+    /// 快动画（分散 / 迅速回归）进行中：需要 `spectrum_hz` 高帧率推完。
     pub(crate) fn is_animating(&self) -> bool {
-        matches!(self.phase, Phase::Dispersing)
+        matches!(self.phase, Phase::Dispersing | Phase::Recovering)
     }
 
     /// 停稳后的极慢悬浮：图形静止但仍在动，需要基础帧率持续重绘。
@@ -282,6 +358,7 @@ impl VectorState {
         self.phase = Phase::Active;
         self.silent_for = Duration::ZERO;
         self.float_elapsed = Duration::ZERO;
+        self.recover_elapsed = Duration::ZERO;
         self.recent_level = 0.0;
         self.invisible_for = Duration::ZERO;
         self.last_drawn = false;
@@ -444,11 +521,14 @@ impl VectorState {
     /// 依相位机产出本帧复合光栅：轨迹、粒子或两者叠加。
     fn rasterize(&mut self) {
         match self.phase {
-            Phase::Active => {
+            Phase::Active | Phase::Recovering => {
                 self.rasterize_trace();
                 self.grid.clear();
                 self.grid.resize(self.trace_grid.len(), 0);
                 self.grid.copy_from_slice(&self.trace_grid);
+                if self.phase == Phase::Recovering {
+                    self.stamp_particles();
+                }
             }
             Phase::Dispersing | Phase::Floating => {
                 self.grid.clear();
@@ -505,12 +585,12 @@ impl VectorState {
 
         let mut prev: Option<(f32, f32)> = None;
         for i in 0..n {
-            // X=Side=(L−R)/2（水平）、Y=Mid=(L+R)/2（垂直，屏幕 y 向下故取负）
-            // —— 即把 L/R goniometer 旋转 45° 的 M/S 正交轴视图：单声道
-            // 退化为纵轴上的一条竖线，立体声宽度摊开到水平。
+            // X（横向）= Mid=(L+R)/2，Y（纵向，向上为正）= Side=(L−R)/2
+            // —— 屏幕正交轴的 M/S 视图（把 L/R goniometer 往另一侧转 45°）：
+            // 单声道退化为横轴上的一条水平线，立体声宽度摊开到纵向。
             let (x, y) = (
-                cx + (left[i] - right[i]) * 0.5 * scale,
-                cy - (left[i] + right[i]) * 0.5 * scale,
+                cx + (left[i] + right[i]) * 0.5 * scale,
+                cy - (left[i] - right[i]) * 0.5 * scale,
             );
             if let Some((x0, y0)) = prev {
                 draw_segment(trace_grid, w_cells, h_cells, (x0, y0), (x, y));
@@ -603,8 +683,9 @@ fn nearest_lit_dot(
     h_cells: usize,
     x0: i32,
     y0: i32,
+    max_radius: i32,
 ) -> Option<(f32, f32)> {
-    for r in 0..=LANDING_RADIUS {
+    for r in 0..=max_radius {
         for dy in -r..=r {
             for dx in -r..=r {
                 if dx.abs() != r && dy.abs() != r {
@@ -768,10 +849,10 @@ mod tests {
         );
     }
 
-    /// 单声道两声道相同：Side 恒零，全部点落在纵轴（Mid 轴）的竖线上
+    /// 单声道两声道相同：Side 恒零，全部点落在横轴（x=Mid 轴）的水平线上
     ///（如实呈现，不做特例）。
     #[test]
-    fn mono_source_renders_vertical_line() {
+    fn mono_source_renders_horizontal_line() {
         let snap = synth(882, |i| {
             let t = i as f32 / SR as f32;
             let v = (std::f32::consts::TAU * 70.0 * t).sin() * 0.6;
@@ -785,11 +866,11 @@ mod tests {
         st.tick(true, true, Duration::from_secs(1));
         st.rasterize();
 
-        let cx = 39.5f32;
-        for (x, _) in lit_dots(&st) {
+        let cy = 39.5f32;
+        for (_, y) in lit_dots(&st) {
             assert!(
-                (x as f32 - cx).abs() <= 1.5,
-                "点 x={x} 偏离 Mid 轴（连线步进与取整允差内）"
+                (y as f32 - cy).abs() <= 1.5,
+                "点 y={y} 偏离 Mid 轴（连线步进与取整允差内）"
             );
         }
     }
@@ -924,10 +1005,10 @@ mod tests {
         assert_eq!(st.phase, Phase::Dispersing, "80 ms 起判突然静音");
     }
 
-    /// 恢复播放：全部粒子**立刻**回到图形（就近吸附后释放，无回位动画相位），
-    /// 图形当即恢复。
+    /// 恢复播放：粒子**迅速回归** —— 就近锚定轨迹点指数逼近，0.5 s 内全部
+    /// 归位吸收，图形恢复。
     #[test]
-    fn resume_snaps_all_particles_onto_figure_instantly() {
+    fn resume_homes_all_particles_quickly() {
         let mut st = circle_state(0.8);
         st.tick(true, false, FRAME); // 暂停分散
         for _ in 0..40 {
@@ -936,14 +1017,21 @@ mod tests {
         assert_eq!(st.phase, Phase::Floating);
         assert!(!st.particles.is_empty());
 
-        // 恢复播放且有声：单帧瞬切 —— 粒子全部吸附回图形并释放。
+        // 恢复播放且有声：进入迅速回归（轨迹与粒子同画）。
         st.observe(Some(0.8), 40, 20);
-        st.rasterize(); // 先重建轨迹，吸附目标取自它
-        st.tick(true, true, FRAME);
-        assert_eq!(st.phase, Phase::Active, "无回位动画相位");
-        assert!(st.particles.is_empty(), "归位后全部释放");
         st.rasterize();
-        assert!(!lit_dots(&st).is_empty(), "图形当即恢复");
+        st.tick(true, true, FRAME);
+        assert_eq!(st.phase, Phase::Recovering, "回归是快动画而非瞬切");
+
+        // 模拟帧循环（rasterize 重建轨迹供锚定），0.5 s 内全部归位。
+        for _ in 0..15 {
+            st.rasterize();
+            st.tick(true, true, FRAME);
+        }
+        assert!(st.particles.is_empty(), "粒子应全部归位吸收");
+        assert_eq!(st.phase, Phase::Active);
+        st.rasterize();
+        assert!(!lit_dots(&st).is_empty(), "回归后图形恢复");
     }
 
     /// 渐弱不触发分散：−20 dB/s 的滑落（快于多数真实淡出）紧贴近期电平，
