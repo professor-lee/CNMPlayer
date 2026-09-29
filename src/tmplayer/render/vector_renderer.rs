@@ -18,9 +18,9 @@
 //!   飞向可视化区域内的一个**随机落点**（恒定大减速度，0.25~0.55 s 先后
 //!   停稳），停稳后不保留原图形的剪影。粒子数有上限 [`MAX_PARTICLES`]，
 //!   超出的点原地错峰淡出后退役（不参与轮换，也不瞬间消失）。
-//! - 停稳后 → **自刷新（连续呼吸）**：各点从全亮错峰进入「3 s 淡出 →
-//!   随机换位置 → 3 s 淡入 → 立即再淡出」的循环。淡变的「透明度」由
-//!   颜色向面板底色的平滑插值模拟（终端没有真透明度）。
+//! - 停稳后 → **原地呼吸**：各点从全亮错峰进入「3 s 淡出 → 3 s 淡入 →
+//!   立即再淡出」的循环，位置不再变化。淡变的「透明度」由颜色向
+//!   面板底色的平滑插值模拟（终端没有真透明度）。
 //! - 恢复播放（或声音回来）→ **聚集回归**：粒子先有一个小小的点火延迟
 //!   （0~0.12 s，读作陆续启程），再就近锚定当前图形指数逼近
 //!   （τ = [`HOMING_TAU`]，全程约 0.5 s，肉眼可见的汇聚流），贴上即吸收。
@@ -123,7 +123,7 @@ enum Phase {
     Active,
     /// 粒子飞向随机落点，减速中。
     Dispersing,
-    /// 全部停稳，尘埃自刷新（错峰淡出 / 随机位置淡入）。
+    /// 全部停稳，尘埃原地呼吸（错峰淡出 / 淡入循环）。
     Floating,
     /// 聚集回归：粒子锚定当前图形，指数逼近归位。
     Recovering,
@@ -133,8 +133,8 @@ enum Phase {
 /// 都不允许瞬跳亮度——这是淡入淡出子系统的唯一不变式。
 ///
 /// - [`Twinkle::Solid`]：恒亮（飞行、聚集途中、刚孵化）。
-/// - 呼吸循环（Floating）：`FadingOut` → 换随机位置 → `FadingIn` → 立即
-///   再 `FadingOut`。`FadingOut` 的 `left` 允许大于 [`TWINKLE_FADE_S`]，
+/// - 呼吸循环（Floating）：`FadingOut` → `FadingIn`（原地）→ 立即再
+///   `FadingOut`。`FadingOut` 的 `left` 允许大于 [`TWINKLE_FADE_S`]，
 ///   超出部分是全亮错峰（alpha 钳在 1）。
 /// - [`Twinkle::Dying`]：一次性淡出后退役（超出粒子上限的多余点）。
 #[derive(Debug, Clone, Copy)]
@@ -437,11 +437,10 @@ impl VectorState {
         }
         self.float_elapsed += dt;
 
-        // 连续呼吸：淡出(3s，含初始全亮错峰) → 随机换位置 → 淡入(3s) →
-        // 立即再淡出 → …… 每个粒子在自己的透明度状态里推进，任何转移
-        // 都从当前亮度出发，无瞬跳。
+        // 原地呼吸：淡出(3s，含初始全亮错峰) → 淡入(3s) → 立即再淡出 → ……
+        // 粒子位置不再变化，只有亮度循环；每个粒子在自己的透明度状态里
+        // 推进，任何转移都从当前亮度出发，无瞬跳。
         let seed = self.disperse_seed;
-        let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
         let dt_s = dt.as_secs_f32();
         let mut i = 0;
         while i < self.particles.len() {
@@ -460,21 +459,14 @@ impl VectorState {
                 Twinkle::Solid => Twinkle::FadingOut {
                     left: TWINKLE_FADE_S + stagger_span(s),
                 },
-                Twinkle::FadingOut { .. } => {
-                    // 淡出完成：随机换位置，立即开始淡入。
-                    let (tx, ty) = random_spot(s.rotate_left(29) ^ 11, w_px, h_px);
-                    p.x = tx;
-                    p.y = ty;
-                    Twinkle::FadingIn {
-                        left: TWINKLE_FADE_S,
-                    }
-                }
-                Twinkle::FadingIn { .. } => {
-                    // 淡入到 1：立即开始下一轮淡出（无全亮驻留期）。
-                    Twinkle::FadingOut {
-                        left: TWINKLE_FADE_S,
-                    }
-                }
+                // 淡出完成：原地立即开始淡入。
+                Twinkle::FadingOut { .. } => Twinkle::FadingIn {
+                    left: TWINKLE_FADE_S,
+                },
+                // 淡入到 1：立即开始下一轮淡出（无全亮驻留期）。
+                Twinkle::FadingIn { .. } => Twinkle::FadingOut {
+                    left: TWINKLE_FADE_S,
+                },
                 Twinkle::Dying { .. } => unreachable!("上面已跳过"),
             };
             i += 1;
@@ -1233,10 +1225,9 @@ mod tests {
             "平均位移 {moved_avg:.1} 过小：仍能看出原图形"
         );
 
-        // 停稳后：自刷新 —— 各点错峰淡出，并在随机位置重新出现。
+        // 停稳后：原地呼吸 —— 各点错峰淡出又淡入，位置保持不变。
         let settled_count = st.particles.len();
-        let settled_dots: std::collections::HashSet<(i32, i32)> =
-            lit_dots(&st).into_iter().collect();
+        let settled_pos: Vec<(f32, f32)> = st.particles.iter().map(|p| (p.x, p.y)).collect();
         let mut fade_bottom_seen = false;
         let mut mid_fade_seen = false;
         for _ in 0..240 {
@@ -1249,9 +1240,6 @@ mod tests {
                 .iter()
                 .any(|p| (0.05..0.95).contains(&p.twinkle.alpha()));
             for p in &st.particles {
-                // 位置（含换过的随机落点）都在面板内。
-                assert!((0.0..=79.0).contains(&p.x), "粒子越界 x={}", p.x);
-                assert!((0.0..=79.0).contains(&p.y), "粒子越界 y={}", p.y);
                 assert!(
                     (0.0..=1.0).contains(&p.twinkle.alpha()),
                     "透明度越界：{}",
@@ -1259,15 +1247,16 @@ mod tests {
                 );
             }
         }
-        assert_eq!(st.particles.len(), settled_count, "自刷新不增减粒子");
+        assert_eq!(st.particles.len(), settled_count, "呼吸不增减粒子");
         assert!(fade_bottom_seen, "12 s 内应观测到淡出完成（透明度到 0）");
         assert!(mid_fade_seen, "应观测到 3 s 淡变中的中间透明度");
-        let later: std::collections::HashSet<(i32, i32)> = lit_dots(&st).into_iter().collect();
-        let relocated = settled_dots.symmetric_difference(&later).count();
-        assert!(
-            relocated > 0,
-            "自刷新应在随机位置重新出现（点集应发生变化）"
-        );
+        for (i, p) in st.particles.iter().enumerate() {
+            assert_eq!(
+                (p.x, p.y),
+                settled_pos[i],
+                "粒子 {i} 不得改变位置（原地呼吸）"
+            );
+        }
     }
 
     /// 粒子上限：高密度图形孵化时按步长抽样，粒子数不超过上限。
