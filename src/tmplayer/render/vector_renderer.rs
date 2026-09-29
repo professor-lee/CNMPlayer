@@ -9,15 +9,16 @@
 //!
 //! - **无触发、无峰值抽取**：李萨如看的是相位关系而非周期计数，取最近一段
 //!   短窗逐段连线即可，相位图天然稳态。
-//! - **自动缩放（峰值保持）**：图形始终撑满可用区域 —— 攻击即时（当前帧
-//!   峰值直接参与分母），释放缓慢（`PEAK_RELEASE_DB_S`）。渐弱时图形随实际
-//!   电平相对保持峰值缓慢收缩，低于 [`SCALE_FLOOR`] 后按实际幅度继续缩小，
-//!   最终消失；不会归一化出满幅噪点。
+//! - **缩放只在歌首校准一次**：每首歌开始时取一段校准窗内的峰值锁定缩放，
+//!   播放中不再自适应（响度动态如实反映为图形大小，无 AGC 抽动）；仅在
+//!   切歌（PCM 环重置）时重新校准。渐弱时图形随实际电平相对锁定峰值
+//!   缩小，最终消失。
 //!
-//! **打断动画**：暂停（或播放中突然静音）时，图形的每个盲文点化作粒子，
-//! 沿被打断瞬间的轨迹运动方向飞出，受恒定大减速度减速，先后停稳；停稳后
-//! 以极慢的正弦漂移悬浮在终点周围的 3×3 点区域内。恢复播放（或声音回来）
-//! 则就近锚定当前图形，指数逼近迅速归位，贴上即吸收。
+//! **打断动画**：暂停（或播放中突然静音）时，图形化作一次**微小爆炸** ——
+//! 每个盲文点沿从图形质心向外的径向飞出（外圈飞得更远，剪影按比例绽开），
+//! 受恒定大减速度减速，先后停稳；停稳后以极慢的正弦漂移悬浮在终点周围的
+//! 3×3 点区域内。恢复播放（或声音回来）则就近锚定当前图形，指数逼近
+//! 迅速归位，贴上即吸收。
 //!
 //! 盲文光栅（2×4 点/格、逐点写位、行渐变配色）与示波器共用同一套
 //! [`paint`]。
@@ -44,20 +45,27 @@ const SILENCE_FLOOR: f32 = SCALE_FLOOR;
 /// 静音需持续到此时长才判打断：一个 20 ms 窗全空只是正常乐句间隙。
 const SILENCE_SUSTAIN: Duration = Duration::from_millis(80);
 
-/// 峰值保持的释放速率（dB/s）。渐弱在数秒尺度上发生，释放必须更慢，
-/// 图形才会随之平滑缩小而非瞬间塌缩。
-const PEAK_RELEASE_DB_S: f32 = -12.0;
+/// 缩放校准窗：歌首出现可闻内容后取这么长时间的峰值，随后锁定。
+const CALIBRATION_WINDOW: Duration = Duration::from_secs(2);
+
+/// 校准硬上限：整首歌前奏都极轻时，最多等这么久就锁定（分母钳在
+/// [`SCALE_FLOOR`]，避免静音校准定出疯狂比例）。
+const CALIBRATION_HARD_CAP: Duration = Duration::from_secs(10);
+
+/// 校准认为「可闻」的电平（≈ −34 dBFS）：纯静音不计入校准窗。
+const CALIBRATION_AUDIBLE: f32 = 0.02;
 
 /// 低于此电平不再画任何点：避免收缩末段在原点残留一个孤点。
 const VISIBILITY_MIN: f32 = SCALE_FLOOR * 0.1;
 
-/// 粒子爆发停距（点）：飞行 2~10 点后停稳，构成可见的散开。
-const BURST_MIN_DIST: f32 = 2.0;
-const BURST_MAX_DIST: f32 = 10.0;
+/// 粒子爆发停距（点）：飞行 6~28 点（3~14 个字符格）后停稳 —— 太短的停距
+/// 在宽终端上读作原地抖动而非「分散」，实测 2~10 点不可见。
+const BURST_MIN_DIST: f32 = 6.0;
+const BURST_MAX_DIST: f32 = 28.0;
 
-/// 粒子爆发时长（秒）：各点先后停稳，读作「浮动后停留」。
-const BURST_MIN_TIME: f32 = 0.22;
-const BURST_MAX_TIME: f32 = 0.5;
+/// 粒子爆发时长（秒）：各点先后停稳，读作「飞散后停留」。
+const BURST_MIN_TIME: f32 = 0.25;
+const BURST_MAX_TIME: f32 = 0.55;
 
 /// 悬浮幅度（点）：0.9 保证取整后落在终点周围 3×3 区域内。
 const FLOAT_AMPLITUDE: f32 = 0.9;
@@ -138,16 +146,20 @@ pub struct VectorState {
     grid: Vec<u8>,
     /// 仅轨迹的光栅：回位锚定的搜索目标，避免粒子互相吸附。
     trace_grid: Vec<u8>,
-    /// 最后一幅**画出来了的**轨迹与其速度场：打断往往发生在图形已收缩消失
-    /// 之后（静音先于 80 ms 持续阈值把轨迹画没），孵化粒子必须用它。
+    /// 最后一幅**画出来了的**轨迹：打断往往发生在图形已收缩消失之后
+    /// （静音先于 80 ms 持续阈值把轨迹画没），孵化粒子必须用它。
     last_trace_grid: Vec<u8>,
-    last_vel_field: Vec<[f32; 2]>,
-    /// 每点一份的单位速度方向（打断瞬间的轨迹运动方向），随轨迹一起写入。
-    vel_field: Vec<[f32; 2]>,
     particles: Vec<Particle>,
     phase: Phase,
-    /// 峰值保持的当前值（自动缩放的分母记忆）。
+    /// 锁定的缩放分母（歌首校准窗内的峰值）。
     scale_peak: f32,
+    /// 缩放已锁定：播放中不再自适应，直到切歌重校准。
+    scale_locked: bool,
+    /// 观测到「无样本」（PCM 环重置）后，下次样本出现即重校准。
+    need_recalib: bool,
+    /// 校准已进行的总时长与其中可闻的时长。
+    calib_total: Duration,
+    calib_audible: Duration,
     /// 渲染线程观测到的窗口原始峰值，`tick` 消费。`None` 表示环里没有样本。
     observed_level: Option<f32>,
     /// 面板尺寸（单元格数），`render` 时刷新；缩放与光栅都以此为坐标系。
@@ -170,23 +182,43 @@ pub struct VectorState {
 }
 
 impl VectorState {
-    /// 时间推进：峰值保持的释放与打断动画状态机。
+    /// 时间推进：缩放校准/锁定与打断动画状态机。
     pub(crate) fn tick(&mut self, enabled: bool, playing: bool, dt: Duration) {
         if !enabled {
             self.reset();
             return;
         }
 
-        // 释放按时间取幂，掉帧时缩放轨迹不变（与 ScopeGain 同一纪律）。
-        let release = 10.0_f32
-            .powf(PEAK_RELEASE_DB_S / 20.0)
-            .powf(dt.as_secs_f32());
-        self.scale_peak = self
-            .observed_level
-            .unwrap_or(0.0)
-            .max(self.scale_peak * release);
-
         let level = self.observed_level.unwrap_or(0.0);
+
+        // 切歌重校准：PCM 环在 clear_and_play/seek 时重置，渲染侧观测到
+        // 「无样本」（None）即记一次；下次样本出现就是新一节的开始。
+        if self.observed_level.is_none() {
+            self.need_recalib = true;
+        }
+        if self.need_recalib && self.observed_level.is_some() {
+            self.need_recalib = false;
+            self.scale_locked = false;
+            self.scale_peak = 0.0;
+            self.calib_total = Duration::ZERO;
+            self.calib_audible = Duration::ZERO;
+        }
+
+        // 校准：窗口内只取峰值（攻击），锁定后缩放完全不动 —— 播放中的
+        // 响度动态如实反映为图形大小，不做一个持续抽动的 AGC。
+        if !self.scale_locked {
+            self.scale_peak = self.scale_peak.max(level);
+            self.calib_total += dt;
+            if level > CALIBRATION_AUDIBLE {
+                self.calib_audible += dt;
+            }
+            if self.calib_audible >= CALIBRATION_WINDOW || self.calib_total >= CALIBRATION_HARD_CAP
+            {
+                self.scale_peak = self.scale_peak.max(SCALE_FLOOR);
+                self.scale_locked = true;
+            }
+        }
+
         // 突断判定的近期电平（快衰减峰值保持）：渐弱时紧贴当前电平，
         // 突断时停在断前电平约百毫秒，两者的差值即「突断」与「渐弱」的判据。
         let recent_decay = 10.0_f32
@@ -202,7 +234,6 @@ impl VectorState {
             self.invisible_for += dt;
             if self.invisible_for >= GHOST_GRACE {
                 self.last_trace_grid.clear();
-                self.last_vel_field.clear();
             }
         }
 
@@ -279,9 +310,11 @@ impl VectorState {
         self.grid.clear();
         self.trace_grid.clear();
         self.last_trace_grid.clear();
-        self.last_vel_field.clear();
-        self.vel_field.clear();
         self.particles.clear();
+        self.scale_locked = false;
+        self.need_recalib = true;
+        self.calib_total = Duration::ZERO;
+        self.calib_audible = Duration::ZERO;
         self.phase = Phase::Active;
         self.silent_for = Duration::ZERO;
         self.float_elapsed = Duration::ZERO;
@@ -296,8 +329,10 @@ impl VectorState {
         playing && (level > SILENCE_FLOOR || !self.dispersed_by_silence)
     }
 
-    /// 从当前轨迹光栅孵化粒子：位置 = 点亮点，方向 = 该点记录的轨迹运动方向，
-    /// 幅度策展（原始速度每毫秒横扫整个面板，不可直接用）为 2~10 点停距。
+    /// 从最后一幅可见轨迹孵化粒子：方向 = 从图形质心向外的径向 —— 密集图形
+    /// 里逐点的轨迹方向互相抵消（读作原地抖动），径向外爆则轮廓整体绽开，
+    /// 即「微小爆炸」。停距与该点到质心的距离成正比（自相似膨胀），
+    /// 带坐标哈希抖动；质心附近的点方向不定，退化为随机方向。
     fn disperse(&mut self, by_silence: bool) {
         self.dispersed_by_silence = by_silence;
         self.disperse_seed = self.disperse_seed.wrapping_add(1);
@@ -311,19 +346,19 @@ impl VectorState {
     }
 
     fn spawn_particles(&mut self) {
-        let (w, h) = (self.w_cells, self.h_cells);
-        let (w_px, h_px) = (w * 2, h * 4);
-        let (cx, cy) = ((w_px as f32 - 1.0) * 0.5, (h_px as f32 - 1.0) * 0.5);
+        let w = self.w_cells;
         let seed = self.disperse_seed;
 
         let VectorState {
             last_trace_grid: grid,
-            last_vel_field: vel_field,
             particles,
             ..
         } = self;
         particles.clear();
 
+        // 第一遍：收集点亮点并求质心（爆炸中心）。
+        let mut lit = Vec::new();
+        let (mut sx, mut sy) = (0.0f32, 0.0f32);
         for (cell, &bits) in grid.iter().enumerate() {
             if bits == 0 {
                 continue;
@@ -331,54 +366,64 @@ impl VectorState {
             let (cell_x, cell_y) = (cell % w, cell / w);
             for dy in 0..4 {
                 for dx in 0..2 {
-                    if bits & braille_bit(dx, dy) == 0 {
-                        continue;
+                    if bits & braille_bit(dx, dy) != 0 {
+                        let p = (cell_x * 2 + dx, cell_y * 4 + dy);
+                        sx += p.0 as f32;
+                        sy += p.1 as f32;
+                        lit.push(p);
                     }
-                    let (x, y) = (cell_x * 2 + dx, cell_y * 4 + dy);
-
-                    // 方向：该点记录的轨迹运动方向；没有记录（理论不发生）
-                    // 则取从中心向外的方向。
-                    let v = vel_field.get(y * w_px + x).copied().unwrap_or([0.0, 0.0]);
-                    let len = v[0].hypot(v[1]);
-                    let (mut dir_x, mut dir_y) = if len > 1.0e-6 {
-                        (v[0] / len, v[1] / len)
-                    } else {
-                        let (ox, oy) = (x as f32 - cx, y as f32 - cy);
-                        let ol = ox.hypot(oy).max(1.0);
-                        (ox / ol, oy / ol)
-                    };
-
-                    // 抖动：停距、时长取自坐标哈希（确定性，无需随机数依赖）。
-                    let jx = (x as u32).wrapping_mul(0x9E37_79B1);
-                    let jy = (y as u32).wrapping_mul(0x85EB_CA6B);
-                    let s = jx ^ jy ^ seed;
-                    let stop_dist = BURST_MIN_DIST + (BURST_MAX_DIST - BURST_MIN_DIST) * jitter(s);
-                    let burst_time = BURST_MIN_TIME
-                        + (BURST_MAX_TIME - BURST_MIN_TIME) * jitter(s.rotate_left(13) ^ 1);
-                    // 方向微扰 ±0.4 rad，散开更有机。
-                    let a = (jitter(s.rotate_left(7) ^ 2) - 0.5) * 0.8;
-                    let (sa, ca) = a.sin_cos();
-                    let (ndx, ndy) = (dir_x * ca - dir_y * sa, dir_x * sa + dir_y * ca);
-                    dir_x = ndx;
-                    dir_y = ndy;
-
-                    let v0 = 2.0 * stop_dist / burst_time;
-                    particles.push(Particle {
-                        x: x as f32,
-                        y: y as f32,
-                        vx: dir_x * v0,
-                        vy: dir_y * v0,
-                        decel: v0 / burst_time,
-                        anchor_x: x as f32,
-                        anchor_y: y as f32,
-                        drift_x: jitter(s.rotate_left(5) ^ 3) * TAU,
-                        drift_y: jitter(s.rotate_left(17) ^ 4) * TAU,
-                        hx: 0.0,
-                        hy: 0.0,
-                        lost_for: Duration::ZERO,
-                    });
                 }
             }
+        }
+        if lit.is_empty() {
+            return;
+        }
+        let (gx, gy) = (sx / lit.len() as f32, sy / lit.len() as f32);
+
+        // 第二遍：径向外爆。停距 ∝ 到质心距离（系数带抖动），越外圈的点
+        // 飞得越远，剪影按比例绽开后停住。
+        for &(x, y) in &lit {
+            let (rx, ry) = (x as f32 - gx, y as f32 - gy);
+            let radius = rx.hypot(ry);
+
+            let jx = (x as u32).wrapping_mul(0x9E37_79B1);
+            let jy = (y as u32).wrapping_mul(0x85EB_CA6B);
+            let s = jx ^ jy ^ seed;
+
+            // 方向：径向外爆；质心 1 点内的点方向无定义，退化为抖动角。
+            let (dir_x, dir_y) = if radius > 1.0 {
+                // 方向微扰 ±0.25 rad，炸开后剪影略破不呆板。
+                let a = (jitter(s.rotate_left(7) ^ 2) - 0.5) * 0.5;
+                let (sa, ca) = a.sin_cos();
+                (
+                    (rx / radius) * ca - (ry / radius) * sa,
+                    (rx / radius) * sa + (ry / radius) * ca,
+                )
+            } else {
+                let a = jitter(s.rotate_left(11) ^ 6) * TAU;
+                (a.cos(), a.sin())
+            };
+
+            let expand = 0.35 + 0.55 * jitter(s.rotate_left(3) ^ 7);
+            let stop_dist = (radius * expand).clamp(BURST_MIN_DIST, BURST_MAX_DIST);
+            let burst_time =
+                BURST_MIN_TIME + (BURST_MAX_TIME - BURST_MIN_TIME) * jitter(s.rotate_left(13) ^ 1);
+
+            let v0 = 2.0 * stop_dist / burst_time;
+            particles.push(Particle {
+                x: x as f32,
+                y: y as f32,
+                vx: dir_x * v0,
+                vy: dir_y * v0,
+                decel: v0 / burst_time,
+                anchor_x: x as f32,
+                anchor_y: y as f32,
+                drift_x: jitter(s.rotate_left(5) ^ 3) * TAU,
+                drift_y: jitter(s.rotate_left(17) ^ 4) * TAU,
+                hx: 0.0,
+                hy: 0.0,
+                lost_for: Duration::ZERO,
+            });
         }
     }
 
@@ -542,15 +587,13 @@ impl VectorState {
         }
     }
 
-    /// 依当前缩放把窗口样本画成李萨如轨迹（同时维护速度场）。
+    /// 依锁定缩放把窗口样本画成李萨如轨迹。
     fn rasterize_trace(&mut self) {
         let (w_cells, h_cells) = (self.w_cells, self.h_cells);
         let VectorState {
             snapshot,
             trace_grid,
-            vel_field,
             last_trace_grid,
-            last_vel_field,
             last_drawn,
             scale_peak,
             observed_level,
@@ -559,8 +602,6 @@ impl VectorState {
 
         trace_grid.clear();
         trace_grid.resize(w_cells * h_cells, 0);
-        vel_field.clear();
-        vel_field.resize(w_cells * 2 * h_cells * 4, [0.0, 0.0]);
 
         *last_drawn = false;
         let Some(level) = observed_level else { return };
@@ -576,9 +617,9 @@ impl VectorState {
             return;
         }
 
-        // 攻击即时（当前峰值直接进分母），记忆只负责慢释放。
-        let eff_peak = scale_peak.max(*level).max(SCALE_FLOOR);
-        let scale = half / eff_peak;
+        // 分母 = 锁定的校准峰值（下限防疯狂比例）。缩放播放中不动，
+        // 响度动态直接反映为图形大小；超出部分由 set_pixel 钳在面板内。
+        let scale = half / scale_peak.max(SCALE_FLOOR);
         let (cx, cy) = ((w_px as f32 - 1.0) * 0.5, (h_px as f32 - 1.0) * 0.5);
 
         let n = window_frames(snapshot);
@@ -592,25 +633,11 @@ impl VectorState {
         );
 
         let mut prev: Option<(f32, f32)> = None;
-        let mut last_dir = [1.0f32, 0.0f32];
         for i in 0..n {
             // X=左声道、Y=右声道（屏幕 y 向下，故取负）。
             let (x, y) = (cx + left[i] * scale, cy - right[i] * scale);
             if let Some((x0, y0)) = prev {
-                let (dx, dy) = (x - x0, y - y0);
-                let len = dx.hypot(dy);
-                if len > 1.0e-6 {
-                    last_dir = [dx / len, dy / len];
-                }
-                draw_segment(
-                    trace_grid,
-                    vel_field,
-                    w_cells,
-                    h_cells,
-                    (x0, y0),
-                    (x, y),
-                    last_dir,
-                );
+                draw_segment(trace_grid, w_cells, h_cells, (x0, y0), (x, y));
             }
             prev = Some((x, y));
         }
@@ -618,13 +645,9 @@ impl VectorState {
         *last_drawn = true;
         // 画出来了：留存「最后一幅可见轨迹」。打断往往发生在图形已因静音
         // 收缩消失之后（80 ms 持续阈值慢于可见下限），孵化粒子必须用它。
-        // 拷贝量在百 KB 量级、每帧一次，相对光栅化为噪声。
         last_trace_grid.clear();
         last_trace_grid.resize(trace_grid.len(), 0);
         last_trace_grid.copy_from_slice(trace_grid);
-        last_vel_field.clear();
-        last_vel_field.resize(vel_field.len(), [0.0, 0.0]);
-        last_vel_field.copy_from_slice(vel_field);
     }
 
     /// 把粒子盖进复合光栅。悬浮期位置 = 停稳点 + 极慢正弦漂移。
@@ -681,28 +704,20 @@ fn window_level(snapshot: &PcmSnapshot) -> Option<f32> {
     Some(peak)
 }
 
-/// 相邻样本连线：沿较长轴步进保证不断点；每点亮起时记录轨迹运动方向，
-/// 打断瞬间它就是粒子的「瞬时运动方向」（后写覆盖 = 最新一段的方向）。
-fn draw_segment(
-    grid: &mut [u8],
-    vel_field: &mut [[f32; 2]],
-    w_cells: usize,
-    h_cells: usize,
-    from: (f32, f32),
-    to: (f32, f32),
-    dir: [f32; 2],
-) {
+/// 相邻样本连线：沿较长轴步进保证不断点。
+fn draw_segment(grid: &mut [u8], w_cells: usize, h_cells: usize, from: (f32, f32), to: (f32, f32)) {
     let ((x0, y0), (x1, y1)) = (from, to);
     let (dx, dy) = (x1 - x0, y1 - y0);
     let steps = dx.abs().max(dy.abs()).ceil().max(1.0) as usize;
     for s in 0..=steps {
         let t = s as f32 / steps as f32;
-        let x = (x0 + dx * t).round() as i32;
-        let y = (y0 + dy * t).round() as i32;
-        set_pixel(grid, w_cells, h_cells, x, y);
-        if let Some(v) = vel_field.get_mut(y.max(0) as usize * w_cells * 2 + x.max(0) as usize) {
-            *v = dir;
-        }
+        set_pixel(
+            grid,
+            w_cells,
+            h_cells,
+            (x0 + dx * t).round() as i32,
+            (y0 + dy * t).round() as i32,
+        );
     }
 }
 
@@ -904,44 +919,38 @@ mod tests {
         }
     }
 
-    /// 峰值保持：攻击即时（观测值直接进位）、释放按时间取幂、掉帧不变轨迹；
-    /// 关档复位。
+    /// 缩放锁定：歌首校准窗内只取峰值；可闻累计满 2 s 即锁，锁定后更响的
+    /// 段落不再抬升缩放（无 AGC 抽动）；环重置→样本重现（切歌）重校准。
     #[test]
-    fn peak_hold_release_is_time_based() {
-        let one_sec = 10.0_f32.powf(PEAK_RELEASE_DB_S / 20.0);
-
+    fn scale_locks_after_calibration_and_recalibrates_on_track_change() {
         let mut st = VectorState::default();
-        st.observe(Some(1.0), 40, 20);
-        st.tick(true, true, Duration::from_millis(16));
-        assert!((st.scale_peak - 1.0).abs() < 1e-5, "攻击即时");
 
-        // 响度落回后，保持值沿释放曲线下行（观测值不再托住它）。
+        // 校准窗内：峰值取最大（0.5 起步，0.8 抬升）。
+        st.observe(Some(0.5), 40, 20);
+        st.tick(true, true, Duration::from_secs(1));
+        assert!((st.scale_peak - 0.5).abs() < 1e-6, "校准窗内跟踪峰值");
+        assert!(!st.scale_locked);
+
+        st.observe(Some(0.8), 40, 20);
+        st.tick(true, true, Duration::from_secs(1));
+        assert!((st.scale_peak - 0.8).abs() < 1e-6, "可闻累计满 2 s 锁定");
+        assert!(st.scale_locked);
+
+        // 锁定后：更响的段落与静音都不再改缩放。
+        st.observe(Some(2.0), 40, 20);
+        st.tick(true, true, Duration::from_secs(1));
+        assert_eq!(st.scale_peak, 0.8, "锁定后缩放不动");
         st.observe(Some(0.0), 40, 20);
         st.tick(true, true, Duration::from_secs(1));
-        assert!(
-            (st.scale_peak - one_sec).abs() < 1e-4,
-            "释放一档：{}",
-            st.scale_peak
-        );
+        assert_eq!(st.scale_peak, 0.8, "静音也不动（环未重置，非切歌）");
 
-        // 更高的观测值仍然即时进位（自动缩放的攻击端）。
-        st.observe(Some(2.0), 40, 20);
+        // 切歌：环重置（None）→ 样本重现后从零重新校准。
+        st.observe(None, 40, 20);
         st.tick(true, true, Duration::from_millis(16));
-        assert!((st.scale_peak - 2.0).abs() < 1e-5, "更高观测即时进位");
-
-        // 帧率无关：静音后 4×250ms 与 1×1s 同一落点。
-        let mut small = VectorState::default();
-        small.observe(Some(1.0), 40, 20);
-        small.tick(true, true, Duration::from_millis(16));
-        small.observe(Some(0.0), 40, 20);
-        for _ in 0..4 {
-            small.tick(true, true, Duration::from_millis(250));
-        }
-        assert!(
-            (small.scale_peak - one_sec).abs() < 1e-4,
-            "小步与大步等价：{}",
-            small.scale_peak
-        );
+        st.observe(Some(0.3), 40, 20);
+        st.tick(true, true, Duration::from_millis(16));
+        assert!((st.scale_peak - 0.3).abs() < 1e-6, "切歌后重新校准");
+        assert!(!st.scale_locked);
 
         st.tick(false, true, Duration::from_secs(1));
         assert_eq!(st.scale_peak, 0.0, "关档复位");
