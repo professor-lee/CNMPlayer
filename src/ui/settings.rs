@@ -211,6 +211,7 @@ fn draw_playback_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
                 VisualizeMode::Hidden => l(app, "关闭", "Off"),
                 VisualizeMode::Bars => l(app, "频谱", "Bars"),
                 VisualizeMode::Oscilloscope => l(app, "示波器", "Oscilloscope"),
+                VisualizeMode::Vector => l(app, "矢量", "Vector"),
             }
         ),
         format!(

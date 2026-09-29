@@ -4,3 +4,4 @@ pub mod dominant_color;
 pub mod graphics_overlay;
 pub mod oscilloscope_renderer;
 pub mod spectrum_renderer;
+pub mod vector_renderer;

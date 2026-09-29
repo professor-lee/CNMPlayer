@@ -1,6 +1,6 @@
 use crate::tmplayer::app::state::{AppState, LyricLine};
 use crate::tmplayer::data::config::VisualizeMode;
-use crate::tmplayer::render::{oscilloscope_renderer, spectrum_renderer};
+use crate::tmplayer::render::{oscilloscope_renderer, spectrum_renderer, vector_renderer};
 use crate::tmplayer::ui::borders::SOLID_BORDER;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -87,6 +87,7 @@ pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut Ap
         VisualizeMode::Lyrics => {}
         VisualizeMode::Bars => spectrum_renderer::render(f, spectrum_inner, app),
         VisualizeMode::Oscilloscope => oscilloscope_renderer::render(f, spectrum_inner, app),
+        VisualizeMode::Vector => vector_renderer::render(f, spectrum_inner, app),
     }
 }
 

@@ -260,6 +260,8 @@ pub enum VisualizeMode {
     Hidden,
     Bars,
     Oscilloscope,
+    /// 左右声道作 X/Y 的李萨如图（矢量模式）。与示波器同样读 PCM 抽头，不需要 cava。
+    Vector,
 }
 
 impl VisualizeMode {
@@ -278,11 +280,12 @@ impl VisualizeMode {
     /// 数组按「显示内容由少到多」排列；`unwrap_or(1)` 兜到 `Lyrics`，
     /// 免得理论上找不到自身时把右侧区整个收掉。
     pub fn cycle(self, delta: i32) -> Self {
-        const MODES: [VisualizeMode; 4] = [
+        const MODES: [VisualizeMode; 5] = [
             VisualizeMode::Hidden,
             VisualizeMode::Lyrics,
             VisualizeMode::Bars,
             VisualizeMode::Oscilloscope,
+            VisualizeMode::Vector,
         ];
 
         let len = MODES.len() as i32;
@@ -789,6 +792,7 @@ mod tests {
             ("hidden", VisualizeMode::Hidden),
             ("bars", VisualizeMode::Bars),
             ("oscilloscope", VisualizeMode::Oscilloscope),
+            ("vector", VisualizeMode::Vector),
         ];
 
         for (raw, expected) in cases {

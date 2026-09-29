@@ -723,6 +723,9 @@ fn render_bar_settings_modal(
                 crate::tmplayer::data::config::VisualizeMode::Oscilloscope => {
                     lang_text(app, "示波器", "Oscilloscope")
                 }
+                crate::tmplayer::data::config::VisualizeMode::Vector => {
+                    lang_text(app, "矢量", "Vector")
+                }
             }
         ),
         format!(
