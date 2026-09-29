@@ -77,6 +77,21 @@ const ABSORB_DIST: f32 = 0.6;
 /// 回位期找不到锚点的粒子最多滞留此时长，随后淡出（图形里已无它的位置）。
 const RECOVER_TIMEOUT: Duration = Duration::from_millis(400);
 
+/// 突断判定的近期电平衰减速率（dB/s）：比任何音乐渐弱都快，突断后它
+/// 还停留在断前电平约百毫秒，差值因此可分辨。
+const RECENT_DECAY_DB_S: f32 = -50.0;
+
+/// 突断差值阈值：当前电平相对近期电平跌掉 1/32（≈ −30 dB）才算「突然的无声」。
+const SUDDEN_DROP_RATIO: f32 = 1.0 / 32.0;
+
+/// 判突断还要求断前电平可闻（≈ −40 dBFS）：安静段的停止不散开，
+/// 图形本就按幅度缩到没了。
+const SUDDEN_MIN_LEVEL: f32 = 1.0e-2;
+
+/// 图形连续不可见超过此时长即退役最后一幅可见轨迹：渐弱消失许久后的
+/// 暂停不得凭空散出「幽灵」粒子。
+const GHOST_GRACE: Duration = Duration::from_secs(1);
+
 /// 打断动画的相位机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Phase {
@@ -146,6 +161,12 @@ pub struct VectorState {
     disperse_seed: u32,
     /// 悬浮已经过的时间。
     float_elapsed: Duration,
+    /// 突断判定用的近期电平（快衰减峰值保持）。
+    recent_level: f32,
+    /// 图形连续不可见的时长。
+    invisible_for: Duration,
+    /// 最近一次光栅是否真的画出了轨迹（电平高于可见下限）。
+    last_drawn: bool,
 }
 
 impl VectorState {
@@ -166,6 +187,25 @@ impl VectorState {
             .max(self.scale_peak * release);
 
         let level = self.observed_level.unwrap_or(0.0);
+        // 突断判定的近期电平（快衰减峰值保持）：渐弱时紧贴当前电平，
+        // 突断时停在断前电平约百毫秒，两者的差值即「突断」与「渐弱」的判据。
+        let recent_decay = 10.0_f32
+            .powf(RECENT_DECAY_DB_S / 20.0)
+            .powf(dt.as_secs_f32());
+        self.recent_level = level.max(self.recent_level * recent_decay);
+
+        // 图形不可见的时长：超过宽限期就退役最后一幅可见轨迹，免得渐弱
+        // 消失许久后的暂停凭空散出「幽灵」粒子。
+        if self.last_drawn {
+            self.invisible_for = Duration::ZERO;
+        } else {
+            self.invisible_for += dt;
+            if self.invisible_for >= GHOST_GRACE {
+                self.last_trace_grid.clear();
+                self.last_vel_field.clear();
+            }
+        }
+
         match self.phase {
             Phase::Active => {
                 if !playing {
@@ -177,7 +217,14 @@ impl VectorState {
                         self.silent_for = Duration::ZERO;
                     }
                     if self.silent_for >= SILENCE_SUSTAIN {
-                        self.disperse(true);
+                        // 只认「突断」：断前电平可闻，且当前电平相对它跌掉
+                        // SUDDEN_DROP_RATIO 以上。渐弱到达静音时近期电平已
+                        // 随之衰减，两个条件都不满足 —— 图形按幅度消失即可。
+                        let sudden = self.recent_level >= SUDDEN_MIN_LEVEL
+                            && self.recent_level * SUDDEN_DROP_RATIO > level;
+                        if sudden {
+                            self.disperse(true);
+                        }
                     }
                 }
             }
@@ -238,6 +285,9 @@ impl VectorState {
         self.phase = Phase::Active;
         self.silent_for = Duration::ZERO;
         self.float_elapsed = Duration::ZERO;
+        self.recent_level = 0.0;
+        self.invisible_for = Duration::ZERO;
+        self.last_drawn = false;
     }
 
     /// 分散的恢复条件：静音打断要等声音回来；暂停打断恢复播放即回位
@@ -501,6 +551,7 @@ impl VectorState {
             vel_field,
             last_trace_grid,
             last_vel_field,
+            last_drawn,
             scale_peak,
             observed_level,
             ..
@@ -511,6 +562,7 @@ impl VectorState {
         vel_field.clear();
         vel_field.resize(w_cells * 2 * h_cells * 4, [0.0, 0.0]);
 
+        *last_drawn = false;
         let Some(level) = observed_level else { return };
         if *level <= VISIBILITY_MIN {
             return;
@@ -563,6 +615,7 @@ impl VectorState {
             prev = Some((x, y));
         }
 
+        *last_drawn = true;
         // 画出来了：留存「最后一幅可见轨迹」。打断往往发生在图形已因静音
         // 收缩消失之后（80 ms 持续阈值慢于可见下限），孵化粒子必须用它。
         // 拷贝量在百 KB 量级、每帧一次，相对光栅化为噪声。
@@ -767,6 +820,9 @@ mod tests {
             ..Default::default()
         };
         st.observe(window_level(&st.snapshot), 40, 20);
+        // 完整走一帧（先画后 tick）：ghost 计时器要看到「画出来了」才复位，
+        // 与事件循环每帧 observe→tick→draw 的顺序一致。
+        st.rasterize();
         st.tick(true, true, Duration::from_secs(1));
         st.rasterize();
         st
@@ -972,8 +1028,67 @@ mod tests {
         st.rasterize(); // 静音帧的轨迹已不可见
         st.tick(true, true, Duration::from_millis(40));
         assert_eq!(st.phase, Phase::Active, "40 ms 低于持续阈值不打断");
+        eprintln!(
+            "DBG after40 recent={} lastlit={}",
+            st.recent_level,
+            st.last_trace_grid.iter().filter(|&&b| b != 0).count()
+        );
         st.tick(true, true, Duration::from_millis(60));
+        eprintln!(
+            "DBG after60 recent={} silent={:?} lastlit={}",
+            st.recent_level,
+            st.silent_for,
+            st.last_trace_grid.iter().filter(|&&b| b != 0).count()
+        );
         assert_eq!(st.phase, Phase::Dispersing, "80 ms 起判突然静音");
+    }
+
+    /// 渐弱不触发分散：−20 dB/s 的滑落（快于多数真实淡出）紧贴近期电平，
+    /// 差值判据永不满足；图形按幅度缩到消失。
+    #[test]
+    fn gradual_fade_disappears_without_dispersing() {
+        let mut st = circle_state(0.8);
+        // 3 s、共 −60 dB 的指数渐弱，尾接静音并远超持续阈值。
+        for f in 0..90 {
+            let level = (0.8 * 10.0_f32.powf(-3.0 * f as f32 / 90.0)).max(1.0e-5);
+            st.observe(Some(level), 40, 20);
+            st.rasterize();
+            st.tick(true, true, Duration::from_millis(33));
+            assert_eq!(st.phase, Phase::Active, "渐弱帧 {f} 不得分散");
+        }
+        for _ in 0..10 {
+            st.observe(Some(1.0e-5), 40, 20);
+            st.rasterize();
+            st.tick(true, true, Duration::from_millis(33));
+        }
+        assert_eq!(st.phase, Phase::Active, "静音持续后仍不分散（差值判据）");
+        assert!(st.particles.is_empty());
+        assert!(lit_dots(&st).is_empty(), "渐弱的最终是图形消失");
+    }
+
+    /// 渐弱消失超过宽限期后的暂停：最后一幅可见轨迹已退役，不得散出幽灵。
+    #[test]
+    fn pause_long_after_fade_scatters_nothing() {
+        let mut st = circle_state(0.8);
+        // 3 s 渐弱到不可见（差值判据不触发），随后 2 s 完全静音。
+        for f in 0..90 {
+            let level = (0.8 * 10.0_f32.powf(-3.0 * f as f32 / 90.0)).max(1.0e-6);
+            st.observe(Some(level), 40, 20);
+            st.rasterize();
+            st.tick(true, true, Duration::from_millis(33));
+            assert_eq!(st.phase, Phase::Active, "渐弱帧 {f} 不得分散");
+        }
+        for _ in 0..60 {
+            st.observe(Some(1.0e-6), 40, 20);
+            st.rasterize();
+            st.tick(true, true, Duration::from_millis(33));
+        }
+        assert_eq!(st.phase, Phase::Active);
+        assert!(st.last_trace_grid.is_empty(), "宽限期后幽灵轨迹应退役");
+
+        st.tick(true, false, Duration::from_millis(33));
+        assert_eq!(st.phase, Phase::Active, "无可散开的图形");
+        assert!(st.particles.is_empty());
     }
 
     /// 恢复播放：粒子就近锚定轨迹点，指数逼近迅速归位并吸收。
