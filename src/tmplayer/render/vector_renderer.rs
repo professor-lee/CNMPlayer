@@ -17,7 +17,7 @@
 //! - 暂停或**突断**静音（差值判据，渐弱不触发）→ 图形炸开：每个盲文点
 //!   飞向可视化区域内的一个**随机落点**（恒定大减速度，0.25~0.55 s 先后
 //!   停稳），停稳后不保留原图形的剪影。粒子数有上限 [`MAX_PARTICLES`]，
-//!   超出的点亮点直接消失。
+//!   超出的点原地错峰淡出后退役（不参与轮换，也不瞬间消失）。
 //! - 停稳后 → **自刷新**：各点错峰循环「可见 1.6~4.5 s → 3 s 淡出 →
 //!   随机换位置 → 3 s 淡入」。淡变的「透明度」由颜色向面板底色的
 //!   平滑插值模拟（终端没有真透明度）。
@@ -69,9 +69,14 @@ const SUDDEN_MIN_LEVEL: f32 = 1.0e-2;
 /// 暂停不得凭空散出「幽灵」粒子。
 const GHOST_GRACE: Duration = Duration::from_secs(1);
 
-/// 分散粒子数上限：高密度图形（200 列终端可达数千点）全部化作粒子既
-/// 看不清也浪费；超出部分按步长抽样丢弃（直接消失，不参与动画）。
+/// 分散粒子数上限：高密度图形（200 列终端可达数千点）全部参与轮换既
+/// 看不清也浪费；按步长抽样保留这么多粒子，其余以 Dying 相位原地
+/// 错峰淡出后退役（不参与后续轮换）。
 const MAX_PARTICLES: usize = 1200;
+
+/// 多余点的原地淡出时长（秒）：错峰铺开，剪影随飞行同步消解。
+const SURPLUS_FADE_MIN: f32 = 0.5;
+const SURPLUS_FADE_MAX: f32 = 2.5;
 
 /// 分散落点距可视化区域边缘的最小距离（点）：尘埃不贴边框。
 const SCATTER_MARGIN: f32 = 2.0;
@@ -124,9 +129,21 @@ enum Phase {
 /// 停稳尘埃的自刷新相位。`left` 为该相位剩余秒数。
 #[derive(Debug, Clone, Copy)]
 enum Twinkle {
-    Visible { left: f32 },
-    FadingOut { left: f32 },
-    FadingIn { left: f32 },
+    Visible {
+        left: f32,
+    },
+    FadingOut {
+        left: f32,
+    },
+    FadingIn {
+        left: f32,
+    },
+    /// 超出 [`MAX_PARTICLES`] 的多余点：原地错峰淡出，到点即退役
+    ///（不再参与轮换）。`total` 记初始时长用于算透明度。
+    Dying {
+        left: f32,
+        total: f32,
+    },
 }
 
 impl Twinkle {
@@ -136,6 +153,7 @@ impl Twinkle {
             Twinkle::Visible { .. } => 1.0,
             Twinkle::FadingOut { left } => (left / TWINKLE_FADE_S).clamp(0.0, 1.0),
             Twinkle::FadingIn { left } => (1.0 - left / TWINKLE_FADE_S).clamp(0.0, 1.0),
+            Twinkle::Dying { left, total } => (left / total.max(1.0e-3)).clamp(0.0, 1.0),
         }
     }
 
@@ -144,7 +162,8 @@ impl Twinkle {
         match *self {
             Twinkle::Visible { left }
             | Twinkle::FadingOut { left }
-            | Twinkle::FadingIn { left } => left,
+            | Twinkle::FadingIn { left }
+            | Twinkle::Dying { left, .. } => left,
         }
     }
 
@@ -152,7 +171,8 @@ impl Twinkle {
         match self {
             Twinkle::Visible { left }
             | Twinkle::FadingOut { left }
-            | Twinkle::FadingIn { left } => left,
+            | Twinkle::FadingIn { left }
+            | Twinkle::Dying { left, .. } => left,
         }
     }
 }
@@ -363,12 +383,18 @@ impl VectorState {
                 p.vy = 0.0;
             }
         }
+        // 多余点在飞行期间就开始原地淡出（剪影随之消解，而不是等停稳）；
+        // 到期的在此移除，未到期的进入 Floating 后继续淡。
+        self.advance_dying(dt);
         if all_stopped && !self.particles.is_empty() {
             // 停稳：进入自刷新。首次淡出时刻在可见期内错峰铺开（整体读作
             // 渐隐），此后各点独立循环「可见 → 3 s 淡出 → 随机换位置
-            // → 3 s 淡入 → 可见」。
+            // → 3 s 淡入 → 可见」；Dying 粒子保持退役进程，不重新加入。
             let seed = self.disperse_seed;
             for i in 0..self.particles.len() {
+                if matches!(self.particles[i].twinkle, Twinkle::Dying { .. }) {
+                    continue;
+                }
                 let s = dot_seed(
                     (
                         self.particles[i].x.max(0.0) as usize,
@@ -385,6 +411,29 @@ impl VectorState {
         }
     }
 
+    /// 推进 Dying 粒子并移除到期的。返回是否有粒子仍在淡出（未全部停稳）。
+    fn advance_dying(&mut self, dt: Duration) -> bool {
+        let dt_s = dt.as_secs_f32();
+        let mut i = 0;
+        let mut any_alive = false;
+        while i < self.particles.len() {
+            let p = &mut self.particles[i];
+            if !matches!(p.twinkle, Twinkle::Dying { .. }) {
+                i += 1;
+                continue;
+            }
+            if p.twinkle.left() > dt_s {
+                *p.twinkle.left_mut() -= dt_s;
+                any_alive = true;
+                i += 1;
+            } else {
+                // 淡出完成：退役（移除）。
+                self.particles.swap_remove(i);
+            }
+        }
+        any_alive
+    }
+
     fn tick_floating(&mut self, playing: bool, level: f32, dt: Duration) {
         if self.resume_signal(playing, level) {
             self.begin_gather();
@@ -397,10 +446,17 @@ impl VectorState {
         let seed = self.disperse_seed;
         let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
         let dt_s = dt.as_secs_f32();
-        for i in 0..self.particles.len() {
+        let mut i = 0;
+        while i < self.particles.len() {
             let p = &mut self.particles[i];
+            if matches!(p.twinkle, Twinkle::Dying { .. }) {
+                // Dying 的推进与退役统一走 advance_dying（本函数末尾）。
+                i += 1;
+                continue;
+            }
             if p.twinkle.left() > dt_s {
                 *p.twinkle.left_mut() -= dt_s;
+                i += 1;
                 continue;
             }
             let s = dot_seed((p.x.max(0.0) as usize, p.y.max(0.0) as usize), seed);
@@ -420,8 +476,11 @@ impl VectorState {
                 Twinkle::FadingIn { .. } => Twinkle::Visible {
                     left: visible_span(s),
                 },
+                Twinkle::Dying { .. } => unreachable!("上面已跳过"),
             };
+            i += 1;
         }
+        self.advance_dying(dt);
     }
 
     fn tick_recovering(&mut self, playing: bool, dt: Duration) {
@@ -531,14 +590,31 @@ impl VectorState {
                 }
             }
         }
+        // 超上限时按步长抽样保留（空间覆盖均匀、确定性）；其余点也化作
+        // 粒子，但以 Dying 相位原地错峰淡出后退役 —— 不允许任何点瞬间消失。
         let step = if lit.len() <= MAX_PARTICLES {
             1
         } else {
             lit.len().div_ceil(MAX_PARTICLES)
         };
 
-        for &dot in lit.iter().step_by(step) {
-            particles.push(new_scatter_particle(dot, seed, w_px, h_px));
+        for (idx, &dot) in lit.iter().enumerate() {
+            if step == 1 || idx % step == 0 {
+                particles.push(new_scatter_particle(dot, seed, w_px, h_px));
+            } else {
+                let s = dot_seed(dot, seed);
+                let total = SURPLUS_FADE_MIN
+                    + (SURPLUS_FADE_MAX - SURPLUS_FADE_MIN) * jitter(s.rotate_left(27) ^ 13);
+                particles.push(Particle {
+                    x: dot.0 as f32,
+                    y: dot.1 as f32,
+                    vx: 0.0,
+                    vy: 0.0,
+                    decel: 0.0,
+                    twinkle: Twinkle::Dying { left: total, total },
+                    ignition: 0.0,
+                });
+            }
         }
     }
 
@@ -1202,16 +1278,41 @@ mod tests {
             dots > MAX_PARTICLES,
             "前置条件：密集图形点数 {dots} 应超过上限"
         );
+        // 全部点都化作粒子：没有一个点瞬间消失（多余的以 Dying 淡出）。
+        assert_eq!(
+            st.particles.len(),
+            dots,
+            "每个点亮点都应有粒子（多余者走淡出退役）"
+        );
+        let kept = st
+            .particles
+            .iter()
+            .filter(|p| !matches!(p.twinkle, Twinkle::Dying { .. }))
+            .count();
+        assert!(
+            kept <= MAX_PARTICLES && kept >= MAX_PARTICLES * 9 / 10,
+            "抽样保留 {kept} 应接近且不超过上限"
+        );
+        assert_eq!(
+            st.particles.len() - kept,
+            dots - kept,
+            "多余点应处于 Dying 相位"
+        );
+        // 淡出全部完成后，参与轮换的粒子数收敛到上限以内。
+        for _ in 0..80 {
+            st.tick(true, false, FRAME);
+        }
         assert!(
             st.particles.len() <= MAX_PARTICLES,
-            "粒子数 {} 超过上限 {}",
+            "退役后粒子数 {} 超过上限 {}",
             st.particles.len(),
             MAX_PARTICLES
         );
         assert!(
-            !st.particles.is_empty() && st.particles.len() >= MAX_PARTICLES * 9 / 10,
-            "抽样应接近上限而非过度丢弃：{}",
-            st.particles.len()
+            st.particles
+                .iter()
+                .all(|p| !matches!(p.twinkle, Twinkle::Dying { .. })),
+            "不应再有 Dying 粒子"
         );
     }
 
