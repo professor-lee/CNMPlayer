@@ -18,9 +18,9 @@
 //!   飞向可视化区域内的一个**随机落点**（恒定大减速度，0.25~0.55 s 先后
 //!   停稳），停稳后不保留原图形的剪影。粒子数有上限 [`MAX_PARTICLES`]，
 //!   超出的点亮点直接消失。
-//! - 停稳后 → **自刷新**：各点错峰进入「可见 1.6~4.5 s → 3 s 淡出 →
-//!   隐藏并换随机位置 → 3 s 淡入」的循环。淡变的「透明度」由颜色向
-//!   面板底色的平滑插值模拟（终端没有真透明度）。
+//! - 停稳后 → **自刷新**：各点错峰循环「可见 1.6~4.5 s → 3 s 淡出 →
+//!   随机换位置 → 3 s 淡入」。淡变的「透明度」由颜色向面板底色的
+//!   平滑插值模拟（终端没有真透明度）。
 //! - 恢复播放（或声音回来）→ **聚集回归**：粒子先有一个小小的点火延迟
 //!   （0~0.12 s，读作陆续启程），再就近锚定当前图形指数逼近
 //!   （τ = [`HOMING_TAU`]，全程约 0.5 s，肉眼可见的汇聚流），贴上即吸收。
@@ -80,12 +80,10 @@ const SCATTER_MARGIN: f32 = 2.0;
 const BURST_MIN_TIME: f32 = 0.25;
 const BURST_MAX_TIME: f32 = 0.55;
 
-/// 停稳尘埃自刷新的可见期与隐藏期（秒）：各点错峰轮换，整体读作
+/// 停稳尘埃自刷新的可见期（秒）：各点错峰轮换，整体读作
 ///「渐隐后在随机位置渐入」。
 const TWINKLE_VISIBLE_MIN: f32 = 1.6;
 const TWINKLE_VISIBLE_MAX: f32 = 4.5;
-const TWINKLE_HIDDEN_MIN: f32 = 0.4;
-const TWINKLE_HIDDEN_MAX: f32 = 1.2;
 
 /// 淡入/淡出时长（秒）：粒子颜色（模拟透明度）在波形色与面板底色之间
 /// 平滑插值 —— 单点是二值的，透明感完全由这段颜色渐变承担。
@@ -128,7 +126,6 @@ enum Phase {
 enum Twinkle {
     Visible { left: f32 },
     FadingOut { left: f32 },
-    Hidden { left: f32 },
     FadingIn { left: f32 },
 }
 
@@ -137,7 +134,6 @@ impl Twinkle {
     fn alpha(&self) -> f32 {
         match *self {
             Twinkle::Visible { .. } => 1.0,
-            Twinkle::Hidden { .. } => 0.0,
             Twinkle::FadingOut { left } => (left / TWINKLE_FADE_S).clamp(0.0, 1.0),
             Twinkle::FadingIn { left } => (1.0 - left / TWINKLE_FADE_S).clamp(0.0, 1.0),
         }
@@ -148,7 +144,6 @@ impl Twinkle {
         match *self {
             Twinkle::Visible { left }
             | Twinkle::FadingOut { left }
-            | Twinkle::Hidden { left }
             | Twinkle::FadingIn { left } => left,
         }
     }
@@ -157,7 +152,6 @@ impl Twinkle {
         match self {
             Twinkle::Visible { left }
             | Twinkle::FadingOut { left }
-            | Twinkle::Hidden { left }
             | Twinkle::FadingIn { left } => left,
         }
     }
@@ -172,7 +166,7 @@ struct Particle {
     vy: f32,
     /// 恒定减速度（点/s²）：`v0 / 飞行时长`，速度线性衰减到 0。
     decel: f32,
-    /// 自刷新相位（可见 / 淡出 / 隐藏 / 淡入），只在 Floating 相位生效。
+    /// 自刷新相位（可见 / 淡出 / 淡入），只在 Floating 相位生效。
     twinkle: Twinkle,
     /// 聚集点火剩余延迟：归零前原地不动，读作「陆续启程」。
     ignition: f32,
@@ -371,8 +365,8 @@ impl VectorState {
         }
         if all_stopped && !self.particles.is_empty() {
             // 停稳：进入自刷新。首次淡出时刻在可见期内错峰铺开（整体读作
-            // 渐隐），此后各点独立轮换「可见 → 3 s 淡出 → 隐藏并换随机
-            // 位置 → 3 s 淡入 → 可见」。
+            // 渐隐），此后各点独立循环「可见 → 3 s 淡出 → 随机换位置
+            // → 3 s 淡入 → 可见」。
             let seed = self.disperse_seed;
             for i in 0..self.particles.len() {
                 let s = dot_seed(
@@ -398,7 +392,7 @@ impl VectorState {
         }
         self.float_elapsed += dt;
 
-        // 自刷新状态机：可见 → 淡出(3s) → 隐藏并换随机位置 → 淡入(3s)。
+        // 自刷新状态机：可见 → 淡出(3s) → 随机换位置 → 淡入(3s) → 循环。
         // 各点时刻独立错峰，整体读作「渐隐后在随机位置渐入」。
         let seed = self.disperse_seed;
         let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
@@ -415,17 +409,14 @@ impl VectorState {
                     left: TWINKLE_FADE_S,
                 },
                 Twinkle::FadingOut { .. } => {
-                    // 淡出完成：换随机位置，进入隐藏期。
+                    // 淡出完成：随机换位置，立即开始淡入。
                     let (tx, ty) = random_spot(s.rotate_left(29) ^ 11, w_px, h_px);
                     p.x = tx;
                     p.y = ty;
-                    Twinkle::Hidden {
-                        left: hidden_span(s),
+                    Twinkle::FadingIn {
+                        left: TWINKLE_FADE_S,
                     }
                 }
-                Twinkle::Hidden { .. } => Twinkle::FadingIn {
-                    left: TWINKLE_FADE_S,
-                },
                 Twinkle::FadingIn { .. } => Twinkle::Visible {
                     left: visible_span(s),
                 },
@@ -600,11 +591,6 @@ fn new_scatter_particle(dot: (usize, usize), seed: u32, w_px: f32, h_px: f32) ->
 fn visible_span(s: u32) -> f32 {
     TWINKLE_VISIBLE_MIN
         + (TWINKLE_VISIBLE_MAX - TWINKLE_VISIBLE_MIN) * jitter(s.rotate_left(23) ^ 9)
-}
-
-/// 自刷新的隐藏期时长（秒）。
-fn hidden_span(s: u32) -> f32 {
-    TWINKLE_HIDDEN_MIN + (TWINKLE_HIDDEN_MAX - TWINKLE_HIDDEN_MIN) * jitter(s.rotate_left(31) ^ 12)
 }
 
 /// 区域内均匀随机落点（留 [`SCATTER_MARGIN`] 边距）。
@@ -805,7 +791,7 @@ impl VectorState {
     }
 
     /// 把粒子盖进复合光栅，并记录每格的最大透明度（供颜色插值）。
-    /// 淡入淡出中的点半亮（颜色向底色靠），隐藏期的点不画。
+    /// 淡入淡出中的点半亮（颜色向底色靠）。
     fn stamp_particles(&mut self) {
         let (w, h, phase) = (self.w_cells, self.h_cells, self.phase);
         let VectorState {
@@ -1165,12 +1151,12 @@ mod tests {
         let settled_count = st.particles.len();
         let settled_dots: std::collections::HashSet<(i32, i32)> =
             lit_dots(&st).into_iter().collect();
-        let mut hidden_seen = false;
+        let mut fade_bottom_seen = false;
         let mut mid_fade_seen = false;
         for _ in 0..240 {
             st.tick(true, false, Duration::from_millis(50)); // 共 12 s
             st.rasterize();
-            hidden_seen |= st.particles.iter().any(|p| p.twinkle.alpha() == 0.0);
+            fade_bottom_seen |= st.particles.iter().any(|p| p.twinkle.alpha() == 0.0);
             // 3 s 的淡入淡出：50 ms 步进必然采到中间透明度。
             mid_fade_seen |= st
                 .particles
@@ -1188,7 +1174,7 @@ mod tests {
             }
         }
         assert_eq!(st.particles.len(), settled_count, "自刷新不增减粒子");
-        assert!(hidden_seen, "12 s 内应观测到淡出（隐藏期）");
+        assert!(fade_bottom_seen, "12 s 内应观测到淡出完成（透明度到 0）");
         assert!(mid_fade_seen, "应观测到 3 s 淡变中的中间透明度");
         let later: std::collections::HashSet<(i32, i32)> = lit_dots(&st).into_iter().collect();
         let relocated = settled_dots.symmetric_difference(&later).count();
