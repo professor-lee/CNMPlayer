@@ -18,9 +18,9 @@
 //!   飞向可视化区域内的一个**随机落点**（恒定大减速度，0.25~0.55 s 先后
 //!   停稳），停稳后不保留原图形的剪影。粒子数有上限 [`MAX_PARTICLES`]，
 //!   超出的点原地错峰淡出后退役（不参与轮换，也不瞬间消失）。
-//! - 停稳后 → **自刷新**：各点错峰循环「可见 1.6~4.5 s → 3 s 淡出 →
-//!   随机换位置 → 3 s 淡入」。淡变的「透明度」由颜色向面板底色的
-//!   平滑插值模拟（终端没有真透明度）。
+//! - 停稳后 → **自刷新（连续呼吸）**：各点从全亮错峰进入「3 s 淡出 →
+//!   随机换位置 → 3 s 淡入 → 立即再淡出」的循环。淡变的「透明度」由
+//!   颜色向面板底色的平滑插值模拟（终端没有真透明度）。
 //! - 恢复播放（或声音回来）→ **聚集回归**：粒子先有一个小小的点火延迟
 //!   （0~0.12 s，读作陆续启程），再就近锚定当前图形指数逼近
 //!   （τ = [`HOMING_TAU`]，全程约 0.5 s，肉眼可见的汇聚流），贴上即吸收。
@@ -78,17 +78,17 @@ const MAX_PARTICLES: usize = 1200;
 const SURPLUS_FADE_MIN: f32 = 0.5;
 const SURPLUS_FADE_MAX: f32 = 2.5;
 
+/// 动画时钟的单 tick 最大推进量：帧间隔偶发到秒级（单线程运行时被
+/// 宿主桥/下载任务阻塞）时，相位机仍按 ≤100 ms 步进，淡变不会被
+/// 整段跳过。正常 30 fps 下永不触及。
+const ANIM_MAX_STEP: Duration = Duration::from_millis(100);
+
 /// 分散落点距可视化区域边缘的最小距离（点）：尘埃不贴边框。
 const SCATTER_MARGIN: f32 = 2.0;
 
 /// 粒子飞行时长（秒）：各点先后停稳，读作「炸开后停留」。
 const BURST_MIN_TIME: f32 = 0.25;
 const BURST_MAX_TIME: f32 = 0.55;
-
-/// 停稳尘埃自刷新的可见期（秒）：各点错峰轮换，整体读作
-///「渐隐后在随机位置渐入」。
-const TWINKLE_VISIBLE_MIN: f32 = 1.6;
-const TWINKLE_VISIBLE_MAX: f32 = 4.5;
 
 /// 淡入/淡出时长（秒）：粒子颜色（模拟透明度）在波形色与面板底色之间
 /// 平滑插值 —— 单点是二值的，透明感完全由这段颜色渐变承担。
@@ -247,11 +247,17 @@ impl VectorState {
         self.update_scale_reference(level);
         self.update_silence_context(level, dt);
 
+        // 动画时钟钳步：本应用跑在单线程运行时上，宿主桥与后台下载
+        // 可能让帧间隔偶发到秒级；若直接用大 dt 推进相位机，3 s 的淡出
+        // 会被一帧整段跳过（实测症状「1→瞬0→淡入→突0」）。每 tick 最多
+        // 推进 100 ms，任何淡变相位都必然经历完整的渲染帧序列；
+        // 静音判定与缩放基准仍用真实 dt（时间语义）。
+        let anim_dt = dt.min(ANIM_MAX_STEP);
         match self.phase {
             Phase::Active => self.tick_active(playing, level, dt),
-            Phase::Dispersing => self.tick_dispersing(playing, level, dt),
-            Phase::Floating => self.tick_floating(playing, level, dt),
-            Phase::Recovering => self.tick_recovering(playing, dt),
+            Phase::Dispersing => self.tick_dispersing(playing, level, anim_dt),
+            Phase::Floating => self.tick_floating(playing, level, anim_dt),
+            Phase::Recovering => self.tick_recovering(playing, anim_dt),
         }
     }
 
@@ -387,9 +393,9 @@ impl VectorState {
         // 到期的在此移除，未到期的进入 Floating 后继续淡。
         self.advance_dying(dt);
         if all_stopped && !self.particles.is_empty() {
-            // 停稳：进入自刷新。首次淡出时刻在可见期内错峰铺开（整体读作
-            // 渐隐），此后各点独立循环「可见 → 3 s 淡出 → 随机换位置
-            // → 3 s 淡入 → 可见」；Dying 粒子保持退役进程，不重新加入。
+            // 停稳：进入连续呼吸。各点先全亮停留一段错峰（铺满整个循环
+            // 周期），然后独立循环「3 s 淡出 → 随机换位置 → 3 s 淡入 →
+            // 立即再淡出」；Dying 粒子保持退役进程，不重新加入。
             let seed = self.disperse_seed;
             for i in 0..self.particles.len() {
                 if matches!(self.particles[i].twinkle, Twinkle::Dying { .. }) {
@@ -403,7 +409,7 @@ impl VectorState {
                     seed,
                 );
                 self.particles[i].twinkle = Twinkle::Visible {
-                    left: visible_span(s),
+                    left: stagger_span(s),
                 };
             }
             self.phase = Phase::Floating;
@@ -441,8 +447,8 @@ impl VectorState {
         }
         self.float_elapsed += dt;
 
-        // 自刷新状态机：可见 → 淡出(3s) → 随机换位置 → 淡入(3s) → 循环。
-        // 各点时刻独立错峰，整体读作「渐隐后在随机位置渐入」。
+        // 自刷新状态机（连续呼吸）：淡出(3s) → 随机换位置 → 淡入(3s) →
+        // 立即再淡出 → …… 各点错峰，整体读作「渐隐后在随机位置渐入」。
         let seed = self.disperse_seed;
         let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
         let dt_s = dt.as_secs_f32();
@@ -473,9 +479,12 @@ impl VectorState {
                         left: TWINKLE_FADE_S,
                     }
                 }
-                Twinkle::FadingIn { .. } => Twinkle::Visible {
-                    left: visible_span(s),
-                },
+                Twinkle::FadingIn { .. } => {
+                    // 淡入到 1：立即开始下一轮淡出（无全亮驻留期）。
+                    Twinkle::FadingOut {
+                        left: TWINKLE_FADE_S,
+                    }
+                }
                 Twinkle::Dying { .. } => unreachable!("上面已跳过"),
             };
             i += 1;
@@ -663,10 +672,10 @@ fn new_scatter_particle(dot: (usize, usize), seed: u32, w_px: f32, h_px: f32) ->
     retarget_scatter_particle(p, seed, w_px, h_px)
 }
 
-/// 自刷新的可见期时长（秒）：由粒子种子错峰。
-fn visible_span(s: u32) -> f32 {
-    TWINKLE_VISIBLE_MIN
-        + (TWINKLE_VISIBLE_MAX - TWINKLE_VISIBLE_MIN) * jitter(s.rotate_left(23) ^ 9)
+/// 进入呼吸循环前的全亮错峰（秒）：均匀铺满一个完整循环
+///（两段淡变），让各点相位均匀分布。
+fn stagger_span(s: u32) -> f32 {
+    jitter(s.rotate_left(23) ^ 9) * TWINKLE_FADE_S * 2.0
 }
 
 /// 区域内均匀随机落点（留 [`SCATTER_MARGIN`] 边距）。
@@ -1313,6 +1322,40 @@ mod tests {
                 .iter()
                 .all(|p| !matches!(p.twinkle, Twinkle::Dying { .. })),
             "不应再有 Dying 粒子"
+        );
+    }
+
+    /// 帧间隔尖峰（单线程运行时被宿主桥/下载阻塞数秒）不得跳过淡出：
+    /// 动画时钟钳步后，dt=10 s 的 tick 也只推进 100 ms，相位保持 FadingOut。
+    #[test]
+    fn dt_spike_does_not_skip_fadeout() {
+        let mut st = VectorState {
+            phase: Phase::Floating,
+            w_cells: 40,
+            h_cells: 20,
+            ..Default::default()
+        };
+        st.particles = vec![Particle {
+            x: 20.0,
+            y: 40.0,
+            twinkle: Twinkle::FadingOut {
+                left: TWINKLE_FADE_S,
+            },
+            ..new_scatter_particle((10, 10), 1, 80.0, 80.0)
+        }];
+        st.observe(Some(1.0e-6), 40, 20);
+
+        // 一个 10 s 的尖峰 tick：淡出只推进 100 ms，而不是整段跳过。
+        st.tick(true, false, Duration::from_secs(10));
+        assert!(
+            matches!(st.particles[0].twinkle, Twinkle::Dying { .. }) == false
+                && matches!(st.particles[0].twinkle, Twinkle::FadingOut { .. }),
+            "尖峰 dt 不应跳过淡出相位"
+        );
+        let a = st.particles[0].twinkle.alpha();
+        assert!(
+            (0.9..=1.0).contains(&a),
+            "尖峰后透明度应只下降约 100 ms 的量：{a}"
         );
     }
 
