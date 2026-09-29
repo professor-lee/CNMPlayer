@@ -182,6 +182,8 @@ pub struct VectorState {
     grid: Vec<u8>,
     /// 每单元格的粒子透明度（同格多粒子取最大）：淡入淡出的颜色插值依据。
     cell_alpha: Vec<f32>,
+    /// 每个盲文子像素的粒子透明度（每格 2×4 点）；停稳 Sparkle 逐点变化。
+    pixel_alpha: Vec<f32>,
     /// 仅轨迹的光栅：聚集锚定的搜索目标，避免粒子互相吸附。
     trace_grid: Vec<u8>,
     /// 最后一幅**画出来了的**轨迹：打断往往发生在图形已收缩消失之后
@@ -264,6 +266,7 @@ impl VectorState {
         self.observed_level = None;
         self.grid.clear();
         self.cell_alpha.clear();
+        self.pixel_alpha.clear();
         self.trace_grid.clear();
         self.last_trace_grid.clear();
         self.particles.clear();
@@ -626,21 +629,21 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
         f.buffer_mut(),
         area,
         &app.vector.grid,
-        &app.vector.cell_alpha,
+        &app.vector.pixel_alpha,
         &app.theme,
         w_cells,
         h_cells,
     );
 }
 
-/// [`paint`] 的带透明度版本：单元格前景 = 波形行渐变色向面板底色按
-/// `cell_alpha` 插值，透明度 1 时与示波器同色。一个格子只有一个前景色，
+/// [`paint`] 的逐盲文点透明度版本：每个子像素独立混合，字符集仍为当前
+/// 盲文光栅。`pixel_alpha` 控制粒子位与轨迹位。
 /// 同格多个淡变中的粒子取最大透明度。
 fn paint_with_alpha(
     buf: &mut ratatui::buffer::Buffer,
     area: Rect,
     grid: &[u8],
-    cell_alpha: &[f32],
+    pixel_alpha: &[f32],
     theme: &Theme,
     w_cells: usize,
     h_cells: usize,
@@ -656,15 +659,27 @@ fn paint_with_alpha(
         let wave_fg = vertical_gradient_color(theme, t);
 
         for col in 0..clip.width as usize {
-            let bits = grid[row * w_cells + col];
+            let pixel_base = (row * w_cells + col) * 8;
+            let mut bits = grid[row * w_cells + col];
+            let mut max_alpha: f32 = 0.0;
+            for dot in 0..8 {
+                if bits & (1 << dot) == 0 {
+                    continue;
+                }
+                let alpha = pixel_alpha.get(pixel_base + dot).copied().unwrap_or(1.0);
+                if alpha <= 0.0 {
+                    bits &= !(1 << dot);
+                } else {
+                    max_alpha = max_alpha.max(alpha);
+                }
+            }
             if bits == 0 {
                 continue;
             }
-            let a = cell_alpha.get(row * w_cells + col).copied().unwrap_or(1.0);
-            let fg = if a >= 1.0 {
+            let fg = if max_alpha >= 1.0 {
                 wave_fg
             } else {
-                mix_colors(wave_fg, bg, a)
+                mix_colors(wave_fg, bg, max_alpha)
             };
             if let Some(cell) = buf.cell_mut((clip.x + col as u16, clip.y + row as u16)) {
                 cell.set_char(char::from_u32(0x2800 + bits as u32).unwrap_or(' '));
@@ -705,6 +720,9 @@ impl VectorState {
                 self.grid.copy_from_slice(&self.trace_grid);
                 // 轨迹恒为全可见；清空后 paint 按“缺失即 1”取全透明度。
                 self.cell_alpha.clear();
+                self.pixel_alpha.clear();
+                self.pixel_alpha
+                    .resize(self.w_cells * self.h_cells * 8, 0.0);
                 if self.phase == Phase::Recovering {
                     self.stamp_particles();
                 }
@@ -712,6 +730,9 @@ impl VectorState {
             Phase::Dispersing | Phase::Floating => {
                 self.grid.clear();
                 self.grid.resize(self.w_cells * self.h_cells, 0);
+                self.pixel_alpha.clear();
+                self.pixel_alpha
+                    .resize(self.w_cells * self.h_cells * 8, 0.0);
                 self.stamp_particles();
             }
         }
@@ -792,18 +813,23 @@ impl VectorState {
     fn stamp_particles(&mut self) {
         let (w, h) = (self.w_cells, self.h_cells);
         let with_trace = self.phase == Phase::Recovering;
-        // 停稳后才明灭；闪烁时钟 = 进入 Floating 以来的时间（tick 已钳步）。
         let twinkling = self.phase == Phase::Floating;
         let sparkle_t = self.float_elapsed.as_secs_f32();
         let VectorState {
             grid,
             trace_grid,
             cell_alpha,
+            pixel_alpha,
             particles,
             ..
         } = self;
         cell_alpha.clear();
         cell_alpha.resize(w * h, 0.0);
+        if pixel_alpha.len() != w * h * 8 {
+            pixel_alpha.resize(w * h * 8, 0.0);
+        } else {
+            pixel_alpha.fill(0.0);
+        }
         let (w_px, h_px) = ((w * 2) as i32, (h * 4) as i32);
         for p in particles {
             let (x, y) = (p.x.round() as i32, p.y.round() as i32);
@@ -811,17 +837,21 @@ impl VectorState {
             if twinkling {
                 a *= sparkle_brightness(star_hash(x, y), sparkle_t);
             }
-            // 停稳后的亮度连续趋近 0，不删除盲文位。
             set_pixel(grid, w, h, x, y);
             if x >= 0 && y >= 0 && x < w_px && y < h_px {
-                let idx = (y as usize / 4) * w + x as usize / 2;
-                cell_alpha[idx] = cell_alpha[idx].max(a);
+                let cell_idx = (y as usize / 4) * w + x as usize / 2;
+                let dot_idx = (y as usize % 4) * 2 + x as usize % 2;
+                let pixel_idx = cell_idx * 8 + dot_idx;
+                pixel_alpha[pixel_idx] = pixel_alpha[pixel_idx].max(a);
+                cell_alpha[cell_idx] = cell_alpha[cell_idx].max(a);
             }
         }
         if with_trace {
             for idx in 0..w * h {
                 if trace_grid[idx] != 0 {
                     cell_alpha[idx] = 1.0;
+                    let pixel_base = idx * 8;
+                    pixel_alpha[pixel_base..pixel_base + 8].fill(1.0);
                 }
             }
         }
@@ -1249,6 +1279,45 @@ mod tests {
         assert!(saw_extinguished, "70 s 内应观测到熄灭相位");
     }
 
+    #[test]
+    fn settled_particles_in_one_braille_cell_keep_independent_alpha() {
+        let mut st = VectorState {
+            phase: Phase::Floating,
+            w_cells: 1,
+            h_cells: 1,
+            ..Default::default()
+        };
+        st.particles = vec![
+            Particle {
+                x: 0.0,
+                y: 0.0,
+                twinkle: Twinkle::Solid,
+                ..new_scatter_particle((0, 0), 1, 2.0, 4.0)
+            },
+            Particle {
+                x: 1.0,
+                y: 0.0,
+                twinkle: Twinkle::Solid,
+                ..new_scatter_particle((1, 0), 1, 2.0, 4.0)
+            },
+        ];
+        let mut found_different = false;
+        for frame in 0..2000 {
+            let time = frame as f32 * 0.01;
+            st.float_elapsed = Duration::from_secs_f32(time);
+            st.rasterize();
+            let left = st.pixel_alpha[0];
+            let right = st.pixel_alpha[1];
+            if (left - right).abs() > 1.0e-4 {
+                found_different = true;
+                assert_ne!(st.grid[0] & braille_bit(0, 0), 0);
+                assert_ne!(st.grid[0] & braille_bit(1, 0), 0);
+                break;
+            }
+        }
+        assert!(found_different, "同一盲文格的两个像素应有不同亮灭曲线");
+    }
+
     /// 粒子上限：高密度图形孵化时按步长抽样，粒子数不超过上限。
     #[test]
     fn scatter_caps_particle_count() {
@@ -1499,7 +1568,7 @@ mod tests {
 
         let area = Rect::new(0, 0, 40, 20);
         let mut buf = Buffer::empty(area);
-        paint_with_alpha(&mut buf, area, &st.grid, &st.cell_alpha, &theme, 40, 20);
+        paint_with_alpha(&mut buf, area, &st.grid, &st.pixel_alpha, &theme, 40, 20);
 
         // 半透明粒子：y=40 子像素 → 第 10 行；期望色 = 行渐变色与底色按 0.5 插值。
         let row = 10usize;
@@ -1568,7 +1637,7 @@ mod tests {
 
         let area = Rect::new(0, 0, 40, 20);
         let mut buf = Buffer::empty(area);
-        paint_with_alpha(&mut buf, area, &st.grid, &st.cell_alpha, &theme, 40, 20);
+        paint_with_alpha(&mut buf, area, &st.grid, &st.pixel_alpha, &theme, 40, 20);
 
         let row = 10usize;
         let t = row as f32 / 19.0;
