@@ -19,7 +19,9 @@
 //!   先后停稳），停稳后不保留原图形的剪影。粒子数有上限
 //!   [`MAX_PARTICLES`]，超出的点原地错峰淡出后退役（防整帧瞬灭的一次性
 //!   渐隐，非闪烁）。
-//! - 停稳后 → **常亮静止**：粒子停在哪就亮在哪，无任何亮度或位置变化。
+//! - 停稳后 → **Astra Sparkle 星点闪烁**（移植 codex CLI 输入框星空的
+//!   确定性公式，见 [`sparkle_brightness`]）：位置与数量静止，每颗粒子
+//!   按停稳点坐标哈希以 4~7 s 周期、sin¹² 尖峰脉冲明灭。
 //! - 恢复播放（或声音回来）→ **聚集回归**：粒子先有一个小小的点火延迟
 //!   （0~0.12 s，读作陆续启程），再就近锚定当前图形指数逼近
 //!   （τ = [`HOMING_TAU`]，全程约 0.5 s，肉眼可见的汇聚流），贴上即吸收。
@@ -106,6 +108,12 @@ const ABSORB_DIST: f32 = 1.0;
 /// 聚集期始终找不到锚点（图形不存在）的粒子最多滞留此时长。
 const GATHER_TIMEOUT: Duration = Duration::from_millis(800);
 
+/// 星点亮度的峰值系数（codex 上游原值）：脉冲顶点也只到 55% 透明度。
+const SPARKLE_PEAK: f32 = 0.55;
+
+/// 低于此亮度的帧不画星点（熄灭；codex 上游原值 0.04）。
+const SPARKLE_VISIBLE_MIN: f32 = 0.04;
+
 /// 打断动画的相位机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Phase {
@@ -114,15 +122,16 @@ enum Phase {
     Active,
     /// 粒子飞向随机落点，减速中。
     Dispersing,
-    /// 全部停稳，尘埃常亮静止。
+    /// 全部停稳，尘埃按 Astra Sparkle 星点闪烁。
     Floating,
     /// 聚集回归：粒子锚定当前图形，指数逼近归位。
     Recovering,
 }
 
-/// 单个粒子的亮度状态。粒子停稳后**常亮**（[`Twinkle::Solid`]），
-/// 唯一的渐变是 [`Twinkle::Dying`]——超出 [`MAX_PARTICLES`] 的多余点的
-/// 一次性淡出退役（防整帧瞬灭，非闪烁）。
+/// 单个粒子的亮度状态机：[`Twinkle::Solid`] 为未退役（飞行/聚集期恒亮，
+/// 停稳后在此之上叠加 Astra Sparkle 明灭，见 [`sparkle_brightness`]）；
+/// [`Twinkle::Dying`] 是超出 [`MAX_PARTICLES`] 的多余点的一次性淡出
+/// 退役（防整帧瞬灭）。
 #[derive(Debug, Clone, Copy)]
 enum Twinkle {
     Solid,
@@ -246,14 +255,10 @@ impl VectorState {
         matches!(self.phase, Phase::Dispersing | Phase::Recovering)
     }
 
-    /// 停稳后尘埃静止，但 Dying 粒子的收尾淡出仍需帧：全部退役完成后
-    /// 画面不再变化，可停持续重绘（省电）。
+    /// 停稳后的尘埃按 Astra Sparkle 持续明灭：画面一直变化，暂停状态下
+    /// 也要维持重绘，直到恢复播放聚集回归。
     pub(crate) fn is_floating(&self) -> bool {
         self.phase == Phase::Floating
-            && self
-                .particles
-                .iter()
-                .any(|p| matches!(p.twinkle, Twinkle::Dying { .. }))
     }
 
     fn reset(&mut self) {
@@ -371,7 +376,7 @@ impl VectorState {
         // 到期的在此移除，未到期的进入 Floating 后继续淡。
         self.advance_dying(dt.as_secs_f32());
         if all_stopped && !self.particles.is_empty() {
-            // 停稳：尘埃常亮静止，无任何亮度或位置变化。
+            // 停稳：进入星点闪烁（亮度由停稳点坐标哈希确定性脉动）。
             self.phase = Phase::Floating;
             self.float_elapsed = Duration::ZERO;
         }
@@ -397,7 +402,8 @@ impl VectorState {
             return;
         }
         self.float_elapsed += dt;
-        // 尘埃常亮静止：只剩 Dying 的收尾退役需要推进。
+        // 星点明灭由渲染公式驱动（无逐粒子状态）：tick 只推进闪烁时钟
+        // 与 Dying 的收尾退役。
         self.advance_dying(dt.as_secs_f32());
     }
 
@@ -558,7 +564,7 @@ impl VectorState {
             p.ignition = jitter(s.rotate_left(9) ^ 8) * GATHER_IGNITION_S;
             p.vx = 0.0;
             p.vy = 0.0;
-            // 粒子常亮，无需亮度转换；Dying 保持退役进程（继续淡出至移除）。
+            // 聚集期回到恒亮（明灭只在停稳后）；Dying 保持退役进程。
         }
         self.phase = Phase::Recovering;
         self.gather_elapsed = Duration::ZERO;
@@ -777,8 +783,8 @@ impl VectorState {
     }
 
     /// 把粒子盖进复合光栅，并记录每格透明度（供颜色插值）。
-    /// 粒子**永远**按自身 twinkle 透明度渲染——不存在按外层相位强制
-    /// 取值的分支，亮度只由各粒子自己的状态机连续变化。
+    /// 飞行/聚集期粒子按自身 twinkle 透明度渲染；**停稳后**在此之上
+    /// 叠加 Astra Sparkle 明灭（坐标哈希确定性地脉动，熄灭帧不画点）。
     ///
     /// 透明度语义：粒子格取该格粒子的最大 alpha；**含轨迹点的格恒为
     /// 全亮**（轨迹不被粒子压暗，聚集期图形不再隐形）。仅 Recovering
@@ -786,6 +792,9 @@ impl VectorState {
     fn stamp_particles(&mut self) {
         let (w, h) = (self.w_cells, self.h_cells);
         let with_trace = self.phase == Phase::Recovering;
+        // 停稳后才明灭；闪烁时钟 = 进入 Floating 以来的时间（tick 已钳步）。
+        let twinkling = self.phase == Phase::Floating;
+        let sparkle_t = self.float_elapsed.as_secs_f32();
         let VectorState {
             grid,
             trace_grid,
@@ -796,12 +805,17 @@ impl VectorState {
         cell_alpha.clear();
         cell_alpha.resize(w * h, 0.0);
         let (w_px, h_px) = ((w * 2) as i32, (h * 4) as i32);
+        let min_visible = if twinkling { SPARKLE_VISIBLE_MIN } else { 0.02 };
         for p in particles {
-            let a = p.twinkle.alpha();
-            if a <= 0.02 {
+            let (x, y) = (p.x.round() as i32, p.y.round() as i32);
+            let mut a = p.twinkle.alpha();
+            if twinkling {
+                a *= sparkle_brightness(star_hash(x, y), sparkle_t);
+            }
+            // 停稳后的熄灭阈值即 codex 的 0.04：星点熄灭帧整点不画。
+            if a <= min_visible {
                 continue;
             }
-            let (x, y) = (p.x.round() as i32, p.y.round() as i32);
             set_pixel(grid, w, h, x, y);
             if x >= 0 && y >= 0 && x < w_px && y < h_px {
                 let idx = (y as usize / 4) * w + x as usize / 2;
@@ -904,6 +918,22 @@ fn jitter(seed: u32) -> f32 {
     z = z.wrapping_mul(0xC2B2_AE35);
     z ^= z >> 16;
     (z >> 8) as f32 / 16_777_216.0
+}
+
+/// 星点哈希：codex sparkle_field.rs `render_stars` 同款（坐标 → 两轮
+/// 0x45d9f3b 乘法散列）。同一停稳点在任何一代分散里亮度曲线恒相同。
+fn star_hash(x: i32, y: i32) -> u64 {
+    let mut hash = (y as u32 as u64).wrapping_mul(65_537) + u64::from(x as u32);
+    hash = (hash ^ (hash >> 16)).wrapping_mul(0x45d9f3b);
+    hash = (hash ^ (hash >> 16)).wrapping_mul(0x45d9f3b);
+    hash ^ (hash >> 16)
+}
+
+/// 星点亮度脉冲（codex 上游公式）：周期 `4.0 + hash%31/10` 秒（4~7 s）、
+/// 相位偏移 `hash%997/997`，`sin¹²` 尖峰使星点大部分时间黯淡、短促变亮。
+fn sparkle_brightness(hash: u64, time: f32) -> f32 {
+    let phase = (time / (4.0 + (hash % 31) as f32 / 10.0) + (hash % 997) as f32 / 997.0).fract();
+    (phase * std::f32::consts::PI).sin().powi(12) * SPARKLE_PEAK
 }
 
 #[cfg(test)]
@@ -1102,7 +1132,7 @@ mod tests {
     }
 
     /// 暂停打断：点亮点化为粒子（有上限，超出按步长抽样直接消失），
-    /// 飞向随机落点并在限时内停稳；停稳后常亮静止。
+    /// 飞向随机落点并在限时内停稳；停稳后位置静止、亮度按 Sparkle 明灭。
     #[test]
     fn pause_disperses_settles_and_floats() {
         let mut st = circle_state(0.8);
@@ -1143,20 +1173,86 @@ mod tests {
             "平均位移 {moved_avg:.1} 过小：仍能看出原图形"
         );
 
-        // 停稳后：常亮静止 —— 位置、数量、亮度都不再有任何变化。
+        // 停稳后：位置与数量静止，亮度按 Astra Sparkle 公式明灭。
         let settled_count = st.particles.len();
         let settled_pos: Vec<(f32, f32)> = st.particles.iter().map(|p| (p.x, p.y)).collect();
-        for _ in 0..240 {
+        let mut alpha_snapshots = Vec::new();
+        for f in 0..240 {
             st.tick(true, false, Duration::from_millis(50)); // 共 12 s
+            if f % 24 == 0 {
+                st.rasterize();
+                alpha_snapshots.push(st.cell_alpha.clone());
+            }
         }
         st.rasterize();
         assert_eq!(st.particles.len(), settled_count, "静止不增减粒子");
         for (i, p) in st.particles.iter().enumerate() {
             assert_eq!((p.x, p.y), settled_pos[i], "粒子 {i} 不得改变位置");
-            if !matches!(p.twinkle, Twinkle::Dying { .. }) {
-                assert_eq!(p.twinkle.alpha(), 1.0, "常亮粒子透明度必须恒为 1");
+        }
+        assert!(st.is_floating(), "明灭持续，需要持续重绘");
+        assert!(
+            alpha_snapshots.windows(2).any(|w| w[0] != w[1]),
+            "12 s 内亮度分布必须变化（星点在明灭）"
+        );
+    }
+
+    /// 停稳后的明灭曲线与 codex Astra Sparkle（sparkle_field.rs）一致：
+    /// 同一停稳点在任何时刻的透明度恒等于公式值，熄灭帧整点不画；
+    /// Dying 的淡出在明灭之上继续收敛。
+    #[test]
+    fn settled_dust_twinkles_with_astra_sparkle_formula() {
+        let mut st = VectorState {
+            phase: Phase::Floating,
+            w_cells: 40,
+            h_cells: 20,
+            ..Default::default()
+        };
+        // 两颗隔离的粒子：一颗 Solid，一颗淡出到一半的 Dying（×0.5）。
+        st.particles = vec![
+            Particle {
+                x: 21.0,
+                y: 43.0,
+                twinkle: Twinkle::Solid,
+                ..new_scatter_particle((10, 10), 1, 80.0, 80.0)
+            },
+            Particle {
+                x: 31.0,
+                y: 43.0,
+                twinkle: Twinkle::Dying {
+                    left: 1.0,
+                    total: 2.0,
+                },
+                ..new_scatter_particle((11, 10), 1, 80.0, 80.0)
+            },
+        ];
+        let solid = ((21 / 2) + (43 / 4) * 40, star_hash(21, 43), 1.0);
+        let dying = ((31 / 2) + (43 / 4) * 40, star_hash(31, 43), 0.5);
+
+        let mut saw_visible = false;
+        let mut saw_extinguished = false;
+        for f in 0..=1400 {
+            let t = f as f32 * 0.05; // 0~70 s：覆盖最长周期十余轮
+            st.float_elapsed = Duration::from_secs_f32(t);
+            st.rasterize();
+            for (cell, hash, factor) in [solid, dying] {
+                let expect = sparkle_brightness(hash, t) * factor;
+                let got = st.cell_alpha[cell];
+                if expect <= SPARKLE_VISIBLE_MIN {
+                    assert_eq!(got, 0.0, "t={t} cell={cell}：熄灭帧不得记透明度");
+                    assert_eq!(st.grid[cell], 0, "t={t} cell={cell}：熄灭帧不得设盲文位");
+                    saw_extinguished = true;
+                } else {
+                    assert!(
+                        (got - expect).abs() < 1e-5,
+                        "t={t} cell={cell}：透明度 {got} 应等于公式值 {expect}"
+                    );
+                    assert_ne!(st.grid[cell], 0, "t={t} cell={cell}：可见帧必须画出盲文点");
+                    saw_visible = true;
+                }
             }
         }
+        assert!(saw_visible, "70 s 内应观测到可见相位");
+        assert!(saw_extinguished, "70 s 内应观测到熄灭相位");
     }
 
     /// 粒子上限：高密度图形孵化时按步长抽样，粒子数不超过上限。
@@ -1380,7 +1476,9 @@ mod tests {
         };
 
         let mut st = VectorState {
-            phase: Phase::Floating,
+            // Dispersing：粒子按自身状态机透明度渲染（Floating 会叠加
+            // Sparkle 明灭，颜色插值的基准就不纯了）。
+            phase: Phase::Dispersing,
             w_cells: 40,
             h_cells: 20,
             ..Default::default()

@@ -793,7 +793,7 @@ impl AppState {
             && self.vector.is_animating()
     }
 
-    /// 矢量模式停稳后的尘埃自刷新仍在动，暂停状态下也要维持基础帧率重绘。
+    /// 矢量模式停稳后的尘埃按 Astra Sparkle 持续明灭，暂停下也要维持基础帧率重绘。
     fn vector_is_floating(&self) -> bool {
         self.config.visualize == crate::tmplayer::data::config::VisualizeMode::Vector
             && self.vector.is_floating()
