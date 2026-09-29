@@ -871,13 +871,19 @@ impl VectorState {
         last_trace_grid.copy_from_slice(trace_grid);
     }
 
-    /// 把粒子盖进复合光栅，并记录每格的最大透明度（供颜色插值）。
+    /// 把粒子盖进复合光栅，并记录每格透明度（供颜色插值）。
     /// 粒子**永远**按自身 twinkle 透明度渲染——不存在按外层相位强制
     /// 取值的分支，亮度只由各粒子自己的状态机连续变化。
+    ///
+    /// 透明度语义：粒子格取该格粒子的最大 alpha；**含轨迹点的格恒为
+    /// 全亮**（轨迹不被粒子压暗，聚集期图形不再隐形）。仅 Recovering
+    /// 的复合光栅里同时有轨迹与粒子，其余相位的 grid 只含粒子。
     fn stamp_particles(&mut self) {
         let (w, h) = (self.w_cells, self.h_cells);
+        let with_trace = self.phase == Phase::Recovering;
         let VectorState {
             grid,
+            trace_grid,
             cell_alpha,
             particles,
             ..
@@ -895,6 +901,13 @@ impl VectorState {
             if x >= 0 && y >= 0 && x < w_px && y < h_px {
                 let idx = (y as usize / 4) * w + x as usize / 2;
                 cell_alpha[idx] = cell_alpha[idx].max(a);
+            }
+        }
+        if with_trace {
+            for idx in 0..w * h {
+                if trace_grid[idx] != 0 {
+                    cell_alpha[idx] = 1.0;
+                }
             }
         }
     }
@@ -1517,5 +1530,72 @@ mod tests {
 
         // 全可见粒子：与示波器同色（纯行渐变）。
         assert_eq!(buf.cell((15, 10)).unwrap().fg, wave);
+    }
+
+    /// 聚集（Recovering）时轨迹格恒全亮：不再被画成底色（曾导致整幅
+    /// 图形隐形、聚集完成一帧全亮瞬现），也不被暗粒子压暗；
+    /// 纯粒子格仍按自身透明度渐变。
+    #[test]
+    fn recovering_trace_cells_stay_full_bright() {
+        use crate::tmplayer::ui::theme::{ColorCapability, Theme, ThemeName, ThemePalette};
+        use ratatui::buffer::Buffer;
+
+        let theme = Theme {
+            name: ThemeName::System,
+            capability: ColorCapability::TrueColor,
+            palette: ThemePalette {
+                text: (200, 200, 200),
+                subtext: (170, 170, 170),
+                base: (36, 36, 48),
+                surface: (48, 48, 64),
+                buff: (60, 60, 80),
+                accent: (140, 170, 220),
+                accent2: (160, 200, 240),
+                accent3: (130, 220, 200),
+            },
+        };
+
+        let mut st = VectorState {
+            phase: Phase::Recovering,
+            w_cells: 40,
+            h_cells: 20,
+            ..Default::default()
+        };
+        // 轨迹点在单元格 (10, 10)；复合光栅 = 轨迹 | 粒子。
+        st.trace_grid = vec![0; 40 * 20];
+        st.trace_grid[10 * 40 + 10] = braille_bit(0, 0);
+        st.grid = st.trace_grid.clone();
+        // 一颗暗粒子（alpha=0.1）叠在轨迹格，另一颗落在空白格 (15, 10)。
+        let dim = Twinkle::FadingOut {
+            left: TWINKLE_FADE_S * 0.1,
+        };
+        st.particles = vec![
+            Particle {
+                x: 20.0,
+                y: 40.0,
+                twinkle: dim,
+                ..new_scatter_particle((10, 10), 1, 80.0, 80.0)
+            },
+            Particle {
+                x: 30.0,
+                y: 40.0,
+                twinkle: dim,
+                ..new_scatter_particle((11, 10), 1, 80.0, 80.0)
+            },
+        ];
+        st.stamp_particles();
+
+        let area = Rect::new(0, 0, 40, 20);
+        let mut buf = Buffer::empty(area);
+        paint_with_alpha(&mut buf, area, &st.grid, &st.cell_alpha, &theme, 40, 20);
+
+        let row = 10usize;
+        let t = row as f32 / 19.0;
+        let wave = vertical_gradient_color(&theme, t);
+        // 轨迹格（即便压着暗粒子）恒为波形色，不隐形也不被压暗。
+        assert_eq!(buf.cell((10, 10)).unwrap().fg, wave);
+        // 纯粒子格按自身透明度（0.1）向底色插值。
+        let expect_dim = mix_colors(wave, theme.color_base(), 0.1);
+        assert_eq!(buf.cell((15, 10)).unwrap().fg, expect_dim);
     }
 }
