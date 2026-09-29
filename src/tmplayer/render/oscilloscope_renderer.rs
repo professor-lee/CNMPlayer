@@ -208,7 +208,15 @@ fn sample_row(v: f32, h_px: i32) -> i32 {
 ///
 /// 只画 grid 里有的东西：静止时那条居中直线是 `rasterize` 画出来的波形，
 /// 这里没有任何中线的特例分支。取 `Buffer` 而非 `Frame`，因此可离屏验证。
-fn paint(buf: &mut Buffer, area: Rect, grid: &[u8], theme: &Theme, w_cells: usize, h_cells: usize) {
+/// 与矢量模式共用（盲文点阵直写 + 行渐变配色），故为 `pub(crate)`。
+pub(crate) fn paint(
+    buf: &mut Buffer,
+    area: Rect,
+    grid: &[u8],
+    theme: &Theme,
+    w_cells: usize,
+    h_cells: usize,
+) {
     let clip = area.intersection(buf.area);
     for row in 0..clip.height as usize {
         let t = if h_cells <= 1 {
@@ -232,7 +240,8 @@ fn paint(buf: &mut Buffer, area: Rect, grid: &[u8], theme: &Theme, w_cells: usiz
     }
 }
 
-fn set_pixel(bits: &mut [u8], w_cells: usize, h_cells: usize, x: i32, y: i32) {
+/// 与矢量模式共用的盲文点位写入：越界点直接丢弃。
+pub(crate) fn set_pixel(bits: &mut [u8], w_cells: usize, h_cells: usize, x: i32, y: i32) {
     if x < 0 || y < 0 {
         return;
     }
@@ -253,7 +262,8 @@ fn set_pixel(bits: &mut [u8], w_cells: usize, h_cells: usize, x: i32, y: i32) {
     bits[cell_y * w_cells + cell_x] |= braille_bit(dx, dy);
 }
 
-fn braille_bit(dx: usize, dy: usize) -> u8 {
+/// 与矢量模式共用（含测试侧的盲文点位解码）。
+pub(crate) fn braille_bit(dx: usize, dy: usize) -> u8 {
     // Braille dot mapping (dx: 0 left, 1 right; dy: 0..3 top..bottom)
     // (0,0)->1, (0,1)->2, (0,2)->3, (0,3)->7
     // (1,0)->4, (1,1)->5, (1,2)->6, (1,3)->8
