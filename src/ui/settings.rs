@@ -7,6 +7,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use unicode_width::UnicodeWidthChar;
 
 pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
@@ -28,6 +29,7 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
         Some(Overlay::SettingsPlayback) => l(app, " 播放设置 ", " Playback Settings "),
         Some(Overlay::SettingsKeybinds) => l(app, " 按键绑定 ", " Keybinds "),
         Some(Overlay::SettingsLyrics) => l(app, " 歌词浮窗 ", " Lyrics Overlay "),
+        Some(Overlay::SettingsDownload) => l(app, " 下载设置 ", " Download Settings "),
         Some(Overlay::SettingsAbout) => " about ",
         _ => l(app, " 设置 ", " Settings "),
     };
@@ -51,6 +53,7 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
         Some(Overlay::SettingsPlayback) => draw_playback_settings(frame, app, inner),
         Some(Overlay::SettingsKeybinds) => draw_keybind_settings(frame, app, inner),
         Some(Overlay::SettingsLyrics) => draw_lyrics_settings(frame, app, inner),
+        Some(Overlay::SettingsDownload) => draw_download_settings(frame, app, inner),
         _ => draw_root_settings(frame, app, inner),
     }
 }
@@ -107,6 +110,7 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             l(app, "主页更多推荐", "More Home Recommendations"),
             on_off(app, app.config.home_more_recommend)
         ),
+        format!("{}...", l(app, "下载设置", "Download Settings")),
         l(app, "退出登录", "Logout").to_string(),
         "about".to_string(),
     ];
@@ -366,6 +370,224 @@ fn draw_lyrics_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     }
 }
 
+/// 「下载设置」页：音质 / 下载路径（可进入行内编辑）/ 恢复默认（两段式确认）。
+///
+/// 下载目录不可用（系统里既没有音乐目录也没有家目录）时，除路径行以外全部灰置且不可选中；
+/// 路径行显示 `Null`，手动填一个可写的绝对路径即可恢复下载。
+fn draw_download_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(app.theme.color_surface())),
+        rows[0],
+    );
+
+    let text_color = app.theme.color_text();
+    let subtext = app.theme.color_subtext();
+    let accent2 = app.theme.color_accent2();
+    let warning = app.theme.color_accent3();
+    let buff = app.theme.color_buff();
+    let surface = app.theme.color_surface();
+
+    let selected = app.settings_download_selected;
+    let quality = audio_quality_label(app, app.config.download_audio_quality);
+    let path_prefix = format!("{}: ", l(app, "下载路径", "Download Path"));
+    let path_display = app.download_display_path();
+    let reset_label = if app.download_reset_armed {
+        l(app, "确认恢复", "Confirm Restore")
+    } else {
+        l(app, "恢复默认", "Restore Defaults")
+    };
+
+    // 三行的样式先算好（后面要可变借用 `download_path_edit`，不能再借 `app`）。
+    // 不可用时只灰置「音质」：路径行与「恢复默认」都留着当出口。
+    let row_styles: [Style; crate::app::SETTINGS_DOWNLOAD_ITEMS] = std::array::from_fn(|idx| {
+        let disabled = !app.download_settings_enabled() && idx == 0;
+        if idx == selected {
+            if disabled {
+                Style::default().fg(subtext)
+            } else {
+                Style::default().fg(accent2).add_modifier(Modifier::BOLD)
+            }
+        } else if disabled {
+            Style::default().fg(subtext)
+        } else {
+            Style::default().fg(text_color)
+        }
+    });
+
+    let mut lines: Vec<Line> = Vec::with_capacity(crate::app::SETTINGS_DOWNLOAD_ITEMS);
+    for idx in 0..crate::app::SETTINGS_DOWNLOAD_ITEMS {
+        let style = row_styles[idx];
+        let spans: Vec<Span> = match idx {
+            0 => vec![Span::styled(
+                format!("  {}: {}", l(app, "音质", "Audio Quality"), quality),
+                style,
+            )],
+            1 => {
+                let avail = usize::from(rows[1].width)
+                    .saturating_sub(display_width(&path_prefix) + 2)
+                    .max(1);
+                if let Some(edit) = app.download_path_edit.as_mut() {
+                    // 编辑态：只有**路径值**这一段的底色变 buff（标签保持行样式），
+                    // 光标所在字符反显；窗口只在光标撞到边界时才横向滚动。
+                    let caret_col = caret_display_col(&edit.buffer, edit.cursor);
+                    edit.window_col = adjust_path_window(edit.window_col, caret_col, avail);
+                    let (visible, caret) =
+                        path_window(&edit.buffer, edit.cursor, avail, edit.window_col);
+                    let value_style = Style::default().fg(text_color).bg(buff);
+                    let caret_style = value_style.add_modifier(Modifier::REVERSED);
+                    let head: String = visible.chars().take(caret).collect();
+                    let caret_char = visible
+                        .chars()
+                        .nth(caret)
+                        .map(|ch| ch.to_string())
+                        .unwrap_or_else(|| " ".to_string());
+                    let tail: String = visible.chars().skip(caret + 1).collect();
+                    vec![
+                        // 标签保持 modal 底色（只有路径值段落换成 buff）。
+                        Span::styled(format!("  {path_prefix}"), style.bg(surface)),
+                        Span::styled(head, value_style),
+                        Span::styled(caret_char, caret_style),
+                        Span::styled(tail, value_style),
+                    ]
+                } else {
+                    let clipped = clip_to_display_width(&path_display, avail);
+                    vec![Span::styled(format!("  {path_prefix}{clipped}"), style)]
+                }
+            }
+            _ => {
+                let style = if app.download_reset_armed {
+                    Style::default().fg(warning).add_modifier(Modifier::BOLD)
+                } else {
+                    style
+                };
+                vec![Span::styled(format!("  {reset_label}"), style)]
+            }
+        };
+        lines.push(Line::from(spans));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(app.theme.color_surface())),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(app.theme.color_surface())),
+        rows[2],
+    );
+
+    // 命中区：与渲染同源的逐行排布（放不下的行不登记）。
+    for idx in 0..crate::app::SETTINGS_DOWNLOAD_ITEMS {
+        if idx as u16 >= rows[1].height {
+            break;
+        }
+        app.push_settings_item_hit(
+            HitRect {
+                x: rows[1].x,
+                y: rows[1].y + idx as u16,
+                width: rows[1].width,
+                height: 1,
+            },
+            idx,
+        );
+    }
+}
+
+/// 光标所在的显示列（按字符宽度累计）。
+pub(crate) fn caret_display_col(text: &str, cursor: usize) -> usize {
+    text.chars()
+        .take(cursor)
+        .map(|ch| ch.width().unwrap_or(0))
+        .sum()
+}
+
+/// 编辑态窗口的左边界：**只在光标撞到边界时**挪动，且**一次只挪一个字符**。
+///
+/// 光标在窗口内 → 不动（文本不跟着每一次光标移动一起滑）；
+/// 撞右边界 → 窗口右移一格、光标贴回右端；撞左边界 → 窗口左移一格；
+/// 一次性跳很远（Home / End / 点击）时直接对齐，保证光标落在窗口内。
+pub(crate) fn adjust_path_window(window: usize, caret_col: usize, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+
+    if caret_col < window {
+        caret_col
+    } else if caret_col >= window + width {
+        (caret_col + 1).saturating_sub(width)
+    } else {
+        window
+    }
+}
+
+/// 路径行的可见窗口：`(窗口串, 光标在窗口内的字符下标)`；`start_col` 是窗口左边界的显示列。
+pub(crate) fn path_window(
+    text: &str,
+    cursor: usize,
+    width: usize,
+    start_col: usize,
+) -> (String, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let cursor = cursor.min(chars.len());
+    if width == 0 {
+        return (String::new(), 0);
+    }
+
+    let widths: Vec<usize> = chars.iter().map(|ch| ch.width().unwrap_or(0)).collect();
+    let mut out = String::new();
+    let mut col = 0usize;
+    let mut used = 0usize;
+    let mut caret = 0usize;
+    for (idx, ch) in chars.iter().enumerate() {
+        let w = widths[idx];
+        if col + w <= start_col {
+            col += w;
+            continue;
+        }
+        if used + w > width {
+            break;
+        }
+        if idx == cursor {
+            caret = out.chars().count();
+        }
+        out.push(*ch);
+        used += w;
+        col += w;
+    }
+    if cursor >= chars.len() {
+        caret = out.chars().count();
+    }
+    (out, caret)
+}
+
+pub(crate) fn display_width(text: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(text)
+}
+
+pub(crate) fn clip_to_display_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > max_width {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out
+}
 fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -1037,6 +1259,55 @@ fn l<'a>(app: &App, zh: &'a str, en: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 编辑态横向窗口：光标在窗口内不动；撞到边界时**一次只挪一个字符**。
+    #[test]
+    fn path_window_only_scrolls_at_the_edges() {
+        // 窗口内：不动（文本不跟着每一次光标移动一起滑）。
+        assert_eq!(adjust_path_window(10, 15, 20), 10);
+        assert_eq!(adjust_path_window(0, 19, 20), 0);
+
+        // 撞右边界：只挪一格，光标贴回右端。
+        assert_eq!(adjust_path_window(0, 20, 20), 1);
+        assert_eq!(adjust_path_window(5, 25, 20), 6);
+        assert!(agent_in_window(20, adjust_path_window(0, 20, 20), 20));
+
+        // 撞左边界：只挪一格。
+        assert_eq!(adjust_path_window(10, 9, 20), 9);
+        assert!(agent_in_window(9, adjust_path_window(10, 9, 20), 20));
+
+        // 一次性跳很远（Home / End / 点击）：对齐到光标那一端。
+        assert_eq!(adjust_path_window(100, 5, 20), 5);
+        assert_eq!(adjust_path_window(0, 200, 20), 181);
+        assert!(agent_in_window(200, adjust_path_window(0, 200, 20), 20));
+
+        // 宽度 0 时不滚动。
+        assert_eq!(adjust_path_window(7, 0, 0), 0);
+    }
+
+    fn agent_in_window(caret_col: usize, window: usize, width: usize) -> bool {
+        caret_col >= window && caret_col < window + width
+    }
+
+    #[test]
+    fn caret_column_counts_wide_chars() {
+        // "/tmp/" 5 列；再接 "音乐" 各占两列。
+        assert_eq!(caret_display_col("/tmp/音乐", 5), 5);
+        assert_eq!(caret_display_col("/tmp/音乐", 6), 7);
+        assert_eq!(caret_display_col("/tmp/音乐", 7), 9);
+        assert_eq!(caret_display_col("/tmp/音乐", 0), 0);
+    }
+
+    /// 窗口串：从 `start_col` 起截断，光标下标按窗口内字符位置给出。
+    #[test]
+    fn path_window_slices_from_the_start_column() {
+        let (visible, caret) = path_window("abcdef", 6, 3, 2);
+        assert_eq!(visible, "cde");
+        assert_eq!(caret, visible.chars().count(), "光标在串尾时跟在最后");
+
+        let (visible, caret) = path_window("abcdef", 3, 3, 2);
+        assert_eq!(visible, "cde");
+        assert_eq!(caret, 1);
+    }
 
     /// 焦点条目必须始终落在可视窗口内——否则键盘选中的那一行点不到，
     /// 鼠标点的行也不是看到的那一行。

@@ -352,6 +352,10 @@ pub enum Overlay {
     BarSettingsModal,
     LocalAudioSettingsModal,
     LyricsSettingsModal,
+    /// 「下载设置」页：音质 / 路径 / 恢复默认。
+    DownloadSettingsModal,
+    /// 下载路径的行内编辑（独立 overlay，字符按键因此直接进输入框）。
+    DownloadPathEditModal,
     AboutModal,
     AcoustIdModal,
     HelpModal,
@@ -407,6 +411,17 @@ pub struct AppState {
     pub lyrics_settings_selected: usize,
     pub help_keybind_selected: usize,
     pub vip_audio_unlocked: bool,
+
+    /// 信息区下载图标状态（宿主每帧同步）。
+    pub download_state: crate::tmplayer::DownloadIconState,
+    /// 下载图标旋转帧的相位基准（time-based）。
+    pub download_phase_start: Instant,
+    /// 「下载设置」页的选中行 / 待确认态 / 路径行编辑状态。
+    pub download_settings_selected: usize,
+    pub download_reset_armed: bool,
+    pub download_path_edit: Option<crate::app::DownloadPathEdit>,
+    /// 解析后的下载目录（`None` = 不可用，设置页除路径行外全部灰置）。
+    pub download_root: Option<PathBuf>,
 
     pub eq: EqSettings,
     pub eq_selected: usize,
@@ -538,6 +553,12 @@ impl AppState {
             lyrics_settings_selected: 0,
             help_keybind_selected: 0,
             vip_audio_unlocked: false,
+            download_state: crate::tmplayer::DownloadIconState::Hidden,
+            download_phase_start: Instant::now(),
+            download_settings_selected: 0,
+            download_reset_armed: false,
+            download_path_edit: None,
+            download_root: None,
 
             eq: EqSettings::default(),
             eq_selected: 0,
@@ -588,6 +609,30 @@ impl AppState {
 
     pub fn set_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    /// 下载图标旋转帧的相位（time-based）。
+    pub fn download_phase(&self) -> Duration {
+        self.download_phase_start.elapsed()
+    }
+
+    /// 下载是否整体可用（宿主解析出的下载目录存在）。
+    pub fn download_enabled(&self) -> bool {
+        self.download_root.is_some()
+    }
+
+    /// 设置弹窗里显示的下载路径（`Null` = 不可用）。
+    pub fn download_display_path(&self) -> String {
+        self.download_root
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| crate::app::download::DOWNLOAD_PATH_NULL.to_string())
+    }
+
+    /// 重新解析下载根目录（宿主同步回来、或本页改了路径后调用）。
+    pub fn refresh_download_root(&mut self) {
+        self.download_root =
+            crate::app::download::resolve_download_root(self.config.download_path.as_deref());
     }
 
     pub fn queue_cover_ascii_render(
@@ -731,6 +776,11 @@ impl AppState {
         }
 
         if self.toast.is_some() {
+            return true;
+        }
+
+        // 下载中：图标要一直转（time-based 帧）。
+        if self.download_state == crate::tmplayer::DownloadIconState::Downloading {
             return true;
         }
 

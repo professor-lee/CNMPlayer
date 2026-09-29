@@ -56,24 +56,61 @@ fn control_hit_rects(controls_rect: Rect, labels: [&str; 4]) -> PlayerBarHitTarg
         next: place(third, widths[2]),
         progress: None,
         like: None,
+        download: None,
         mode: place(fourth, widths[3]),
     }
 }
 
 /// 爱心命中区：爱心贴左列右端（与 `compose_left_right_line` 的右对齐同源），
 /// 宽度不足时不登记，避免留下点不动的隐形按钮。
+///
+/// 渲染路径现在直接调 `right_suffix_hits`（要顺带登记下载按钮），
+/// 这个包装只留给单测。
+#[cfg(test)]
 fn heart_hit_rect(left_rect: Rect, heart: &str) -> Option<HitRect> {
-    let width = display_width(heart) as u16;
-    if width == 0 || left_rect.width < width {
-        return None;
+    right_suffix_hits(left_rect, heart, None).1
+}
+
+/// 左列右端的「下载图标 + 空格 + 爱心」命中区（与渲染同源）。
+///
+/// 爱心贴最右端；下载图标在它左侧隔一格。任一段放不下就不登记（也不画），
+/// 避免留下点不动的隐形按钮。返回 `(下载, 爱心)`。
+fn right_suffix_hits(
+    left_rect: Rect,
+    heart: &str,
+    download: Option<char>,
+) -> (Option<HitRect>, Option<HitRect>) {
+    let heart_w = display_width(heart) as u16;
+    if heart_w == 0 || left_rect.width < heart_w {
+        return (None, None);
     }
 
-    Some(HitRect {
-        x: left_rect.x + left_rect.width - width,
+    let heart_x = left_rect.x + left_rect.width - heart_w;
+    let heart_hit = HitRect {
+        x: heart_x,
         y: left_rect.y,
-        width,
+        width: heart_w,
         height: 1,
-    })
+    };
+
+    let Some(glyph) = download else {
+        return (None, Some(heart_hit));
+    };
+
+    let glyph = glyph.to_string();
+    let glyph_w = display_width(&glyph) as u16;
+    let needed = glyph_w + 1;
+    if glyph_w == 0 || heart_x < left_rect.x.saturating_add(needed) {
+        return (None, Some(heart_hit));
+    }
+
+    let download_hit = HitRect {
+        x: heart_x - needed,
+        y: left_rect.y,
+        width: glyph_w,
+        height: 1,
+    };
+    (Some(download_hit), Some(heart_hit))
 }
 
 pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -172,21 +209,68 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     // 爱心由 compose_left_right_line 贴左列右端，命中区用同一算法倒推，
-    // 免得两处各写一份宽度计算。
+    // 免得两处各写一份宽度计算；下载图标（可用时）在它左侧隔一格。
+    let download_state = app.current_download_state();
+    let download_glyph = download_state
+        .map(|state| crate::app::download::state_glyph(state, app.download_spinner_phase()));
+    let download_style = match download_state {
+        Some(crate::app::download::DownloadState::Downloading) => Style::default()
+            .fg(app.theme.color_accent2())
+            .add_modifier(Modifier::BOLD),
+        Some(crate::app::download::DownloadState::Done) => {
+            Style::default().fg(app.theme.color_accent3())
+        }
+        _ => Style::default().fg(app.theme.color_subtext()),
+    };
+
     let mut like_hit = None;
+    let mut download_hit = None;
     let left_render = if app.now_playing.is_some() {
         let heart = if app.now_playing_liked {
             HEART_LIKED
         } else {
             HEART_UNLIKED
         };
-        like_hit = heart_hit_rect(left_rect, heart);
-        compose_left_right_line(&left_text, heart, left_rect.width as usize)
+        let suffix = match download_glyph {
+            Some(glyph) => format!("{glyph} {heart}"),
+            None => heart.to_string(),
+        };
+        (download_hit, like_hit) = right_suffix_hits(left_rect, heart, download_glyph);
+        compose_left_right_line(&left_text, &suffix, left_rect.width as usize)
     } else {
         clip_to_display_width(&left_text, left_rect.width as usize)
     };
 
-    frame.render_widget(Paragraph::new(left_render).style(left_style), left_rect);
+    // 右端图标段单独上色：从右往左剥出「爱心 → 空格 → 下载图标」。
+    let mut spans: Vec<Span> = Vec::new();
+    let mut tail: Vec<(String, Style)> = Vec::new();
+    let mut head = left_render.as_str();
+    if app.now_playing.is_some() {
+        let heart = if app.now_playing_liked {
+            HEART_LIKED
+        } else {
+            HEART_UNLIKED
+        };
+        if let Some(stripped) = head.strip_suffix(heart) {
+            head = stripped;
+            if let Some(glyph) = download_glyph
+                && let Some(stripped) = head.strip_suffix(glyph)
+                && let Some(stripped) = stripped.strip_suffix(' ')
+            {
+                head = stripped;
+                tail.push((glyph.to_string(), download_style));
+                tail.push((" ".to_string(), left_style));
+            }
+            tail.push((heart.to_string(), left_style));
+        }
+    }
+    spans.push(Span::styled(head.to_string(), left_style));
+    spans.extend(
+        tail.into_iter()
+            .map(|(text, style)| Span::styled(text, style)),
+    );
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), left_rect);
 
     frame.render_widget(
         Paragraph::new(controls)
@@ -226,6 +310,7 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         [prev_label, play_label, next_label, mode_symbol],
     );
     hits.like = like_hit;
+    hits.download = download_hit;
 
     if progress_w > 0 {
         let ratio = progress_ratio(position, duration);
@@ -433,6 +518,54 @@ mod tests {
     #[test]
     fn heart_hit_rect_is_absent_when_the_column_is_blank() {
         assert!(heart_hit_rect(row(0, 0), HEART_LIKED).is_none());
+    }
+
+    /// 下载按钮在爱心左侧隔一格；同一行里两者互不重叠。
+    #[test]
+    fn download_hit_rect_sits_one_gap_left_of_the_heart() {
+        let area = row(5, 20);
+        let (download, heart) = right_suffix_hits(area, HEART_UNLIKED, Some('\u{ec74}'));
+        let download = download.expect("宽度够时应登记下载按钮");
+        let heart = heart.expect("爱心格");
+
+        assert_eq!(heart.x, area.x + area.width - 1);
+        assert_eq!(
+            download.x + download.width + 1,
+            heart.x,
+            "下载图标与爱心之间正好隔一格"
+        );
+        assert_eq!(download.width, 1);
+        assert_eq!(download.y, area.y);
+    }
+
+    /// 左列放不下「图标 + 空格 + 爱心」时，只登记爱心（也不该画下载图标）。
+    #[test]
+    fn download_hit_rect_is_absent_when_the_gap_does_not_fit() {
+        // 宽度 1：只够爱心；宽度 2：够爱心 + 一格空格，但放不下图标。
+        for width in [1u16, 2] {
+            let (download, heart) = right_suffix_hits(row(0, width), HEART_LIKED, Some('⠋'));
+            assert!(download.is_none(), "宽度 {width} 不该登记下载按钮");
+            assert!(heart.is_some(), "宽度 {width} 仍应有爱心");
+        }
+    }
+
+    /// 下载图标本身必须是 1 格宽（否则左列排版会漂）。
+    #[test]
+    fn download_glyphs_are_single_cell() {
+        use crate::app::download::{DownloadState, state_glyph};
+        let phase = Duration::from_millis(0);
+        for state in [
+            DownloadState::NotDownloaded,
+            DownloadState::Downloading,
+            DownloadState::Done,
+        ] {
+            let glyph = state_glyph(state, phase);
+            assert_eq!(
+                display_width(&glyph.to_string()),
+                1,
+                "{glyph:?} 应为 1 格宽"
+            );
+        }
     }
 
     /// 符号被吞成空串时播放栏会错位并留下点不到的按钮——这条直接兜住。

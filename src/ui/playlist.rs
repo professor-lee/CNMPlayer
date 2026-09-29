@@ -225,6 +225,16 @@ fn draw_playlist_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
     app.playlist.set_visible_rows(visible);
     let offset = app.playlist.effective_scroll_offset();
 
+    // 下载图标先按可见行算好（memo：列表代/任务版本不变时只做切片索引），
+    // 再逐行渲染，免得与 `app.playlist.tracks` 的不可变借用撞车。
+    let download_phase = app.download_spinner_phase();
+    app.refresh_playlist_downloads();
+    let download_states: Vec<Option<crate::app::download::DownloadState>> = (offset
+        ..app.playlist.tracks.len())
+        .take(visible)
+        .map(|track_idx| app.playlist_download_state_at(track_idx))
+        .collect();
+
     for (line_idx, track_idx) in (offset..app.playlist.tracks.len())
         .take(visible)
         .enumerate()
@@ -281,14 +291,38 @@ fn draw_playlist_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
         let index_label = format!("{:>2}.", track_idx + 1);
         let left = format!("{} - {}", track.title, track.artist);
         let duration = track.duration.clone();
-        let reserved = display_width(&index_label) + 1 + display_width(&duration) + 1;
+        let download_state = download_states.get(line_idx).copied().flatten();
+        // 图标占一列 + 一列分隔空格；下载整体禁用时（None）不占位。
+        let icon_width = usize::from(download_state.is_some()) * 2;
+        let reserved = display_width(&index_label) + 1 + icon_width + display_width(&duration) + 1;
         let max_left = usize::from(row.width).saturating_sub(reserved);
         let clipped_left = clip_to_display_width(&left, max_left);
         let used = display_width(&index_label)
             + 1
             + display_width(&clipped_left)
+            + icon_width
             + display_width(&duration);
         let space = usize::from(row.width).saturating_sub(used).max(1);
+
+        let download_style = if focused {
+            style
+        } else {
+            let download_style = match download_state {
+                Some(crate::app::download::DownloadState::Done) => {
+                    Style::default().fg(app.theme.color_accent3())
+                }
+                Some(crate::app::download::DownloadState::Downloading) => Style::default()
+                    .fg(app.theme.color_accent2())
+                    .add_modifier(Modifier::BOLD),
+                _ => Style::default().fg(app.theme.color_subtext()),
+            };
+            // 图标格与所在行同底色：斑马底在行样式上，这里补齐，
+            // 避免图标格露出与行不同的背景。
+            match zebra_bg {
+                Some(bg) => download_style.bg(bg),
+                None => download_style,
+            }
+        };
 
         let index_style = if focused {
             style
@@ -305,16 +339,37 @@ fn draw_playlist_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
             style.fg(app.theme.color_subtext())
         };
 
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(index_label, index_style),
-                Span::styled(" ", style),
-                Span::styled(clipped_left, style),
-                Span::styled(" ".repeat(space), style),
-                Span::styled(duration, duration_style),
-            ])),
-            row,
-        );
+        let mut spans: Vec<Span> = vec![
+            Span::styled(index_label.clone(), index_style),
+            Span::styled(" ", style),
+            Span::styled(clipped_left.clone(), style),
+            Span::styled(" ".repeat(space), style),
+        ];
+
+        if let Some(state) = download_state {
+            // 图标贴在同一行内、时长左侧；命中区按渲染出来的那一格登记。
+            let icon_x = row.x.saturating_add(
+                (display_width(&index_label) + 1 + display_width(&clipped_left) + space) as u16,
+            );
+            spans.push(Span::styled(
+                crate::app::download::state_glyph(state, download_phase).to_string(),
+                download_style,
+            ));
+            spans.push(Span::styled(" ", style));
+            app.push_playlist_track_download_hit(
+                crate::app::HitRect {
+                    x: icon_x,
+                    y: row.y,
+                    width: 1,
+                    height: 1,
+                },
+                track_idx,
+            );
+        }
+
+        spans.push(Span::styled(duration, duration_style));
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), row);
     }
 }
 

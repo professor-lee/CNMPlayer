@@ -95,6 +95,20 @@ pub struct HostPlaybackRuntimeSnapshot {
     pub position: Duration,
     pub volume: f32,
     pub seeking: bool,
+    /// 信息区下载图标状态（宿主每帧同步；`Hidden` = 不显示）。
+    pub download: DownloadIconState,
+}
+
+/// 信息区下载图标的状态。
+///
+/// `Hidden`：下载不可用（宿主没有可写目录）或没有播放中的歌曲——图标整格不画、不可点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DownloadIconState {
+    #[default]
+    Hidden,
+    NotDownloaded,
+    Downloading,
+    Done,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +124,10 @@ pub struct HostConfigSync {
     pub page_lyrics_pos_x: f32,
     pub page_lyrics_pos_y: f32,
     pub audio_quality: HostAudioQuality,
+    /// 下载音质档位（与播放音质同一套可选值）。
+    pub download_audio_quality: HostAudioQuality,
+    /// 下载目录原始配置值（`None` = 用系统音乐目录推导）。
+    pub download_path: Option<String>,
     pub eq_bands_db: [f32; crate::tmplayer::app::state::EQ_BANDS],
     pub playback_memory: bool,
     pub vip_audio_unlocked: bool,
@@ -141,6 +159,8 @@ pub trait HostPlaybackBridge {
     fn set_volume(&mut self, volume: f32);
     fn toggle_repeat_mode(&mut self);
     async fn toggle_like_current(&mut self);
+    /// 全屏页发起/取消「下载当前播放歌曲」。
+    fn download_current(&mut self);
 }
 
 pub async fn run_fullscreen(
@@ -159,6 +179,7 @@ pub async fn run_fullscreen(
     let _ = std::fs::create_dir_all(&ncm_cover_cache_dir);
     app.ncm_cover_cache_dir = Some(ncm_cover_cache_dir);
     app.eq.bands_db = app.config.eq_bands_db;
+    app.refresh_download_root();
 
     apply_bootstrap(&mut app, bootstrap);
 
@@ -196,6 +217,18 @@ fn tm_config_from_host(host: &HostConfig) -> data::config::Config {
             HostAudioQuality::Jymaster => data::config::AudioQuality::Jymaster,
         },
         playback_memory: host.playback_memory,
+        download_audio_quality: match host.download_audio_quality {
+            HostAudioQuality::Standard => data::config::AudioQuality::Standard,
+            HostAudioQuality::Higher => data::config::AudioQuality::Higher,
+            HostAudioQuality::Exhigh => data::config::AudioQuality::Exhigh,
+            HostAudioQuality::Lossless => data::config::AudioQuality::Lossless,
+            HostAudioQuality::Hires => data::config::AudioQuality::Hires,
+            HostAudioQuality::Jyeffect => data::config::AudioQuality::Jyeffect,
+            HostAudioQuality::Sky => data::config::AudioQuality::Sky,
+            HostAudioQuality::Dolby => data::config::AudioQuality::Dolby,
+            HostAudioQuality::Jymaster => data::config::AudioQuality::Jymaster,
+        },
+        download_path: host.download_path.clone(),
         show_hints: host.show_hints,
         small_window_display: host.small_window_display,
         home_more_recommend: host.home_more_recommend,
@@ -238,6 +271,8 @@ fn tm_config_from_host(host: &HostConfig) -> data::config::Config {
         keybind_fullscreen_eq_reset: host.keybind_fullscreen_eq_reset.clone(),
         keybind_toggle_like_fullscreen: host.keybind_toggle_like_fullscreen.clone(),
         keybind_small_window_toggle: host.keybind_small_window_toggle.clone(),
+        keybind_download: host.keybind_download.clone(),
+        keybind_download_fullscreen: host.keybind_download_fullscreen.clone(),
     }
 }
 

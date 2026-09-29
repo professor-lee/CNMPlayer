@@ -279,6 +279,48 @@ impl ApiState {
         Ok(response)
     }
 
+    /// 客户端下载链接（新版）：登录后可用，对免费歌曲能拿到比播放更高的档位。
+    pub async fn song_download_url_v1(
+        &mut self,
+        song_id: &str,
+        level: &str,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", song_id)
+            .param("level", level);
+        let response = self.client.song_download_url_v1(&query).await?;
+        Ok(response)
+    }
+
+    /// 下载取链：`download/url/v1` 优先（未登录/无版权时回包里的 url 为空），
+    /// 退回 `player/url/v1`，再退回旧 `/song/url`。
+    pub async fn audio_download_url(
+        &mut self,
+        song_id: &str,
+        level: &str,
+    ) -> Result<AudioDownloadSource> {
+        if let Ok(response) = self.song_download_url_v1(song_id, level).await
+            && let Some(source) = parse_audio_source(&response, level)
+        {
+            return Ok(source);
+        }
+
+        let response = self.song_url_v1(song_id, level).await?;
+        if let Some(source) = parse_audio_source(&response, level) {
+            return Ok(source);
+        }
+
+        let fallback = self.song_url(song_id).await?;
+        parse_audio_source(&fallback, level).ok_or_else(|| {
+            anyhow!(
+                "song download url not found for id {} at level {}",
+                song_id,
+                level
+            )
+        })
+    }
+
     pub async fn song_stream_url_with_quality(
         &mut self,
         song_id: &str,
@@ -400,6 +442,44 @@ impl ApiState {
         self.cookie = Some(merged.clone());
         self.client.set_cookie(merged);
     }
+}
+
+/// 下载取链的结果：直链、载荷类型（mp3/flac）与实际档位（可能被账号权限降级）。
+#[derive(Debug, Clone)]
+pub struct AudioDownloadSource {
+    pub url: String,
+    pub file_type: String,
+    pub level: String,
+}
+
+/// 从 `…/url` 系列回包里取第一条 `data[0]`：空 url 视为不可用。
+fn parse_audio_source(
+    response: &ApiResponse,
+    requested_level: &str,
+) -> Option<AudioDownloadSource> {
+    let entry = response.body.pointer("/data/0")?;
+    let url = entry.get("url").and_then(|value| value.as_str())?.trim();
+    if url.is_empty() {
+        return None;
+    }
+
+    let file_type = entry
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("mp3")
+        .trim()
+        .to_ascii_lowercase();
+    let level = entry
+        .get("level")
+        .and_then(|value| value.as_str())
+        .unwrap_or(requested_level)
+        .trim();
+
+    Some(AudioDownloadSource {
+        url: url.to_string(),
+        file_type,
+        level: level.to_string(),
+    })
 }
 
 pub fn error_for_status(resp: Response) -> Result<Response> {

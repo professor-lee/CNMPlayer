@@ -13,6 +13,8 @@ pub enum Action {
     SetVolume(f32),
     ToggleRepeatMode,
     ToggleFavorite,
+    /// 下载当前播放的歌曲（再按一次取消在途下载）。
+    ToggleDownload,
     /// 信息区里点了作者名（多作者显示串里的**段序号**）：退出全屏页，由宿主打开该作者页。
     OpenAuthorPage(usize),
     /// 信息区里点了专辑名：退出全屏页，由宿主打开该专辑页。
@@ -30,7 +32,10 @@ pub enum Action {
 
     EqResetDefault,
 
-    EqSetBandDb { band: usize, db: f32 },
+    EqSetBandDb {
+        band: usize,
+        db: f32,
+    },
 
     ModalUp,
     ModalDown,
@@ -52,7 +57,10 @@ pub enum Action {
     FolderChar(char),
     FolderBackspace,
 
-    MouseClick { col: u16, row: u16 },
+    MouseClick {
+        col: u16,
+        row: u16,
+    },
 
     /// 滚轮：`col/row` 用于判断落在哪个面板上，`forward` 为向下滚。
     MouseScroll {
@@ -139,6 +147,37 @@ pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
         };
     }
 
+    if overlay == Overlay::DownloadSettingsModal {
+        return match ev.code {
+            KeyCode::Esc => Action::CloseOverlay,
+            KeyCode::Enter => Action::Confirm,
+            KeyCode::Up => Action::ModalUp,
+            KeyCode::Down => Action::ModalDown,
+            KeyCode::Left => Action::ModalLeft,
+            KeyCode::Right => Action::ModalRight,
+            _ => Action::None,
+        };
+    }
+
+    if overlay == Overlay::DownloadPathEditModal {
+        // 路径行编辑：字符直接进输入框，左右键移动光标，回车确认，Esc 取消。
+        return match ev.code {
+            KeyCode::Esc => Action::CloseOverlay,
+            KeyCode::Enter => Action::Confirm,
+            KeyCode::Backspace => Action::FolderBackspace,
+            KeyCode::Left => Action::ModalLeft,
+            KeyCode::Right => Action::ModalRight,
+            KeyCode::Char(ch) => {
+                if ev.modifiers.contains(KeyModifiers::CONTROL) || ch.is_control() {
+                    Action::None
+                } else {
+                    Action::FolderChar(ch)
+                }
+            }
+            _ => Action::None,
+        };
+    }
+
     if overlay == Overlay::EqModal {
         if keybind_matches(&config.keybind_fullscreen_eq_reset, ev) {
             return Action::EqResetDefault;
@@ -188,6 +227,12 @@ pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
 
     if keybind_matches(&config.keybind_fullscreen_eq, ev) {
         return Action::OpenEqModal;
+    }
+
+    // 下载（默认 Ctrl+D）：必须排在下面"与修饰键无关"的 match 之前，
+    // 否则 Ctrl+D 会落进 Char('d') 之类的分支。
+    if keybind_matches(&config.keybind_download_fullscreen, ev) {
+        return Action::ToggleDownload;
     }
 
     if ev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -532,6 +577,20 @@ mod tests {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     }
 
+    /// 全屏页 Ctrl+D 必须映射成下载动作（且不能被下面"与修饰键无关"的
+    /// `match ev.code` 分支吃掉）。
+    #[test]
+    fn ctrl_d_maps_to_toggle_download() {
+        let config = crate::tmplayer::data::config::Config::default();
+        assert_eq!(
+            config.keybind_download_fullscreen, "Ctrl+D",
+            "默认键位变了？"
+        );
+
+        let ev = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(map_key(ev, Overlay::None, &config), Action::ToggleDownload);
+    }
+
     /// 设置类弹窗里的 Esc 必须走"关闭弹窗"而不是退出全屏页。
     ///
     /// 曾经漏了 LyricsSettingsModal 的分支，Esc 于是落到默认的 Action::Quit，
@@ -545,6 +604,8 @@ mod tests {
             Overlay::BarSettingsModal,
             Overlay::LocalAudioSettingsModal,
             Overlay::LyricsSettingsModal,
+            Overlay::DownloadSettingsModal,
+            Overlay::DownloadPathEditModal,
             Overlay::HelpModal,
             Overlay::AboutModal,
             Overlay::EqModal,

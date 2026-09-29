@@ -242,6 +242,24 @@ pub fn layout(area: Rect, window_width: u16) -> InfoPanelLayout {
     }
 }
 
+/// 标题行右端的下载图标字形；`Hidden`（下载不可用）时不画。
+pub fn download_glyph(app: &AppState) -> Option<char> {
+    let state = match app.download_state {
+        crate::tmplayer::DownloadIconState::Hidden => return None,
+        crate::tmplayer::DownloadIconState::NotDownloaded => {
+            crate::app::download::DownloadState::NotDownloaded
+        }
+        crate::tmplayer::DownloadIconState::Downloading => {
+            crate::app::download::DownloadState::Downloading
+        }
+        crate::tmplayer::DownloadIconState::Done => crate::app::download::DownloadState::Done,
+    };
+    Some(crate::app::download::state_glyph(
+        state,
+        app.download_phase(),
+    ))
+}
+
 pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) {
     let b = Block::default()
         .borders(Borders::ALL)
@@ -435,18 +453,50 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
             height: 1,
         };
 
-        // 爱心与主页底栏同色，故与标题分成两段渲染。
+        // 爱心与主页底栏同色，故与标题分成两段渲染；下载图标（可用时）在爱心左侧。
         let heart_style = Style::default()
             .fg(app.theme.color_accent3())
             .add_modifier(Modifier::BOLD);
-        let title_line = compose_left_right_line(title, heart, meta_rect.width as usize);
-        let title_spans = match title_line.strip_suffix(heart) {
-            Some(head) => vec![
-                Span::styled(head.to_string(), text_style),
-                Span::styled(heart.to_string(), heart_style),
-            ],
-            None => vec![Span::styled(title_line, text_style)],
+        let download_glyph = download_glyph(app);
+        let download_style = match app.download_state {
+            crate::tmplayer::DownloadIconState::Downloading => Style::default()
+                .fg(app.theme.color_accent2())
+                .add_modifier(Modifier::BOLD),
+            crate::tmplayer::DownloadIconState::Done => {
+                Style::default().fg(app.theme.color_accent3())
+            }
+            _ => Style::default().fg(app.theme.color_subtext()),
         };
+
+        let right = match download_glyph {
+            // 下载图标与爱心之间留一个空格（图标整体再左一位）。
+            Some(glyph) => format!("{glyph} {heart}"),
+            None => heart.to_string(),
+        };
+        let title_line = compose_left_right_line(title, &right, meta_rect.width as usize);
+
+        // 从右往左剥出图标段：爱心 → 分隔空格 → 下载图标（行太窄被裁掉时 tail 为空）。
+        let mut tail: Vec<(String, Style)> = Vec::new();
+        let mut head = title_line.as_str();
+        if let Some(stripped) = head.strip_suffix(heart) {
+            head = stripped;
+            if let Some(glyph) = download_glyph
+                && let Some(stripped) = head.strip_suffix(glyph)
+                && let Some(stripped) = stripped.strip_suffix(' ')
+            {
+                head = stripped;
+                tail.push((glyph.to_string(), download_style));
+                tail.push((" ".to_string(), text_style));
+            }
+            tail.push((heart.to_string(), heart_style));
+        }
+
+        let mut title_spans = Vec::with_capacity(tail.len() + 1);
+        title_spans.push(Span::styled(head.to_string(), text_style));
+        title_spans.extend(
+            tail.into_iter()
+                .map(|(text, style)| Span::styled(text, style)),
+        );
         let t = Paragraph::new(Line::from(title_spans)).alignment(Alignment::Left);
         f.render_widget(t, meta_rect);
 

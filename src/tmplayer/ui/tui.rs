@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::io::{self, Stdout};
 
@@ -305,6 +305,9 @@ impl Tui {
                 Overlay::LyricsSettingsModal => {
                     render_lyrics_settings_modal(f, size, app, &mut layout_out.modal_rows)
                 }
+                Overlay::DownloadSettingsModal | Overlay::DownloadPathEditModal => {
+                    render_download_settings_modal(f, size, app, &mut layout_out.modal_rows)
+                }
                 Overlay::AboutModal => render_about_modal(f, size, app),
                 Overlay::AcoustIdModal => render_acoustid_modal(f, size, app),
                 Overlay::HelpModal => render_help_modal(f, size, app, &mut layout_out.modal_rows),
@@ -563,6 +566,7 @@ fn render_settings_modal(
             lang_text(app, "主页更多推荐", "More Home Recommendations"),
             lang_on_off(app, app.config.home_more_recommend)
         ),
+        format!("{}...", lang_text(app, "下载设置", "Download Settings")),
         lang_text(app, "退出登录", "Logout").to_string(),
         "about".to_string(),
     ];
@@ -896,6 +900,185 @@ fn render_lyrics_settings_modal(
     }
 
     f.render_widget(Paragraph::new(""), rows[2]);
+}
+
+fn render_download_settings_modal(
+    f: &mut ratatui::Frame,
+    size: Rect,
+    app: &mut AppState,
+    modal_rows: &mut ModalRows,
+) {
+    let area = centered_rect(size, 70, 20);
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(crate::tmplayer::ui::borders::SOLID_BORDER)
+        .title(lang_text(app, " 下载设置 ", " Download Settings "))
+        .style(
+            Style::default()
+                .fg(app.theme.color_subtext())
+                .bg(app.theme.color_surface()),
+        );
+    f.render_widget(block, area);
+
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    f.render_widget(Paragraph::new(""), rows[0]);
+
+    let enabled = app.download_enabled();
+    let text_color = app.theme.color_text();
+    let subtext = app.theme.color_subtext();
+    let accent2 = app.theme.color_accent2();
+    let warning = app.theme.color_accent3();
+    let buff = app.theme.color_buff();
+    let surface = app.theme.color_surface();
+
+    let quality_label = match app.config.download_audio_quality {
+        crate::tmplayer::data::config::AudioQuality::Standard => lang_text(app, "标准", "Standard"),
+        crate::tmplayer::data::config::AudioQuality::Higher => lang_text(app, "较高", "Higher"),
+        crate::tmplayer::data::config::AudioQuality::Exhigh => lang_text(app, "极高", "Exhigh"),
+        crate::tmplayer::data::config::AudioQuality::Lossless => lang_text(app, "无损", "Lossless"),
+        crate::tmplayer::data::config::AudioQuality::Hires => "Hi-Res",
+        crate::tmplayer::data::config::AudioQuality::Jyeffect => {
+            lang_text(app, "高清环绕声", "JYEffect")
+        }
+        crate::tmplayer::data::config::AudioQuality::Sky => lang_text(app, "沉浸环绕声", "Sky"),
+        crate::tmplayer::data::config::AudioQuality::Dolby => lang_text(app, "杜比全景声", "Dolby"),
+        crate::tmplayer::data::config::AudioQuality::Jymaster => {
+            lang_text(app, "超清母带", "JYMaster")
+        }
+    };
+    let path_prefix = format!("{}: ", lang_text(app, "下载路径", "Download Path"));
+    let path_display = app.download_display_path();
+    let reset_label = if app.download_reset_armed {
+        lang_text(app, "确认恢复", "Confirm Restore")
+    } else {
+        lang_text(app, "恢复默认", "Restore Defaults")
+    };
+
+    let editing = app.download_path_edit.is_some();
+    for idx in 0..3 {
+        // 不可用时只灰置「音质」：路径行与「恢复默认」都留着当出口。
+        let disabled = !enabled && idx == 0;
+        let selected = idx == app.download_settings_selected;
+        let base_style = if selected {
+            if disabled {
+                Style::default().fg(subtext)
+            } else {
+                Style::default().fg(accent2).add_modifier(Modifier::BOLD)
+            }
+        } else if disabled {
+            Style::default().fg(subtext)
+        } else {
+            Style::default().fg(text_color)
+        };
+
+        let (text, style) = match idx {
+            0 => (
+                format!(
+                    "  {}: {}",
+                    lang_text(app, "音质", "Audio Quality"),
+                    quality_label
+                ),
+                base_style,
+            ),
+            2 => (
+                format!("  {reset_label}"),
+                if app.download_reset_armed {
+                    Style::default().fg(warning).add_modifier(Modifier::BOLD)
+                } else {
+                    base_style
+                },
+            ),
+            _ => {
+                let avail = usize::from(rows[1].width)
+                    .saturating_sub(crate::ui::settings::display_width(&path_prefix) + 2)
+                    .max(1);
+                match app.download_path_edit.as_mut() {
+                    Some(edit) if editing => {
+                        // 同主应用：只有路径值段落变底色；窗口只在光标撞边界时才滚。
+                        let caret_col =
+                            crate::ui::settings::caret_display_col(&edit.buffer, edit.cursor);
+                        edit.window_col = crate::ui::settings::adjust_path_window(
+                            edit.window_col,
+                            caret_col,
+                            avail,
+                        );
+                        let (visible, caret) = crate::ui::settings::path_window(
+                            &edit.buffer,
+                            edit.cursor,
+                            avail,
+                            edit.window_col,
+                        );
+                        let value_style = Style::default().fg(text_color).bg(buff);
+                        let mut spans: Vec<Span> = vec![Span::styled(
+                            format!("  {path_prefix}"),
+                            base_style.bg(surface),
+                        )];
+                        let head: String = visible.chars().take(caret).collect();
+                        let caret_char = visible
+                            .chars()
+                            .nth(caret)
+                            .map(|ch| ch.to_string())
+                            .unwrap_or_else(|| " ".to_string());
+                        let tail: String = visible.chars().skip(caret + 1).collect();
+                        spans.push(Span::styled(head, value_style));
+                        spans.push(Span::styled(
+                            caret_char,
+                            value_style.add_modifier(Modifier::REVERSED),
+                        ));
+                        spans.push(Span::styled(tail, value_style));
+                        f.render_widget(
+                            Paragraph::new(Line::from(spans)),
+                            Rect {
+                                x: rows[1].x,
+                                y: rows[1].y + idx as u16,
+                                width: rows[1].width,
+                                height: 1,
+                            },
+                        );
+                        modal_rows.push(
+                            Rect {
+                                x: rows[1].x,
+                                y: rows[1].y + idx as u16,
+                                width: rows[1].width,
+                                height: 1,
+                            },
+                            idx,
+                        );
+                        continue;
+                    }
+                    _ => (
+                        format!(
+                            "  {path_prefix}{}",
+                            crate::ui::settings::clip_to_display_width(&path_display, avail)
+                        ),
+                        base_style,
+                    ),
+                }
+            }
+        };
+
+        let rect = Rect {
+            x: rows[1].x,
+            y: rows[1].y + idx as u16,
+            width: rows[1].width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Line::styled(text, style)), rect);
+        modal_rows.push(rect, idx);
+    }
 }
 
 fn render_local_audio_settings_modal(
@@ -1356,6 +1539,16 @@ pub fn help_items(app: &AppState) -> Vec<(String, String)> {
             &app.config.keybind_small_window_toggle,
         ),
         item(
+            "下载歌曲（主应用）",
+            "Download Song (Host)",
+            &app.config.keybind_download,
+        ),
+        item(
+            "下载歌曲（全屏页）",
+            "Download Song (Fullscreen)",
+            &app.config.keybind_download_fullscreen,
+        ),
+        item(
             "侧边栏歌单区切换",
             "Sidebar Playlist Section Switch",
             "Ctrl+Up/Down",
@@ -1718,6 +1911,16 @@ fn render_eq_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState) {
     );
 }
 
+/// 下载图标格：爱心左侧隔一格（再左一位，与爱心之间留一个空格）。
+/// 只在标题行画得下三格（图标 + 空格 + 爱心）时存在；更窄时整格不画、不可点。
+pub(crate) fn download_cell(meta: Rect) -> Option<(u16, u16)> {
+    let (heart_x, heart_y) = heart_cell(meta)?;
+    if meta.width < 3 {
+        return None;
+    }
+    Some((heart_x.saturating_sub(2), heart_y))
+}
+
 /// 标题行爱心所在的单元格（`compose_left_right_line` 把爱心右对齐到该行最后一格）。
 ///
 /// `meta` 为 3 行块，只有首行画标题与爱心；未绘制（尺寸为 0）时返回 `None`。
@@ -1725,7 +1928,6 @@ fn heart_cell(meta: Rect) -> Option<(u16, u16)> {
     if meta.width == 0 || meta.height == 0 {
         return None;
     }
-
     Some((meta.x + meta.width - 1, meta.y))
 }
 
@@ -1844,6 +2046,15 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
         }
     }
 
+    // 下载图标在爱心左侧一格；下载不可用（Hidden）时整格不画、不可点。
+    if app.download_state != crate::tmplayer::DownloadIconState::Hidden
+        && let Some((download_x, download_y)) = download_cell(layout.info_meta)
+        && col == download_x
+        && row == download_y
+    {
+        return Some(Action::ToggleDownload);
+    }
+
     // 歌单浮层（含滑出动画）画在信息区之上：它盖住的那几行不再是"看得见的名字"，
     // 命中区按空名字处理（空名字本就不返回命中区），以免点在可见的歌单行上被判成
     // "点作者名/专辑名"而退出全屏页。浮层自己的行命中在下面按绘制顺序判定。
@@ -1937,7 +2148,7 @@ fn ratio_in_track(r: Rect, col: u16) -> f32 {
     (x / denom).clamp(0.0, 1.0)
 }
 
-fn lang_text<'a>(app: &AppState, zh: &'a str, en: &'a str) -> &'a str {
+pub(crate) fn lang_text<'a>(app: &AppState, zh: &'a str, en: &'a str) -> &'a str {
     match app.language {
         crate::data::config::Language::Zh => zh,
         crate::data::config::Language::En => en,
@@ -2115,6 +2326,105 @@ mod tests {
             None,
             "专辑行没有爱心"
         );
+    }
+
+    /// 编辑态只有路径值段落换底色（标签保持 modal 底色）。
+    #[test]
+    fn download_path_edit_paints_only_the_value_area() {
+        let mut app = state(Overlay::DownloadSettingsModal);
+        app.download_root = Some(std::path::PathBuf::from("/tmp/cnmplayer"));
+        app.download_path_edit = Some(crate::app::DownloadPathEdit {
+            buffer: "/tmp/cnmplayer".to_string(),
+            cursor: 5,
+            window_col: 0,
+        });
+
+        let (rows, buf) = render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
+            render_download_settings_modal(f, f.area(), app, rows)
+        });
+
+        let path_row = rows.get(1).expect("路径行");
+        let label_x = path_row.x + 2;
+        let value_x = label_x + 10; // "下载路径" 4 个 CJK（8 列）+ ": "
+        let surface = app.theme.color_surface();
+        let buff = app.theme.color_buff();
+
+        let label_cell = &buf[(label_x, path_row.y)];
+        assert_eq!(label_cell.symbol(), "下");
+        assert_eq!(label_cell.style().bg, Some(surface), "标签不换底色");
+
+        let value_cell = &buf[(value_x, path_row.y)];
+        assert_eq!(value_cell.symbol(), "/");
+        assert_eq!(value_cell.style().bg, Some(buff), "路径值段落换底色");
+        assert_eq!(value_cell.style().fg, Some(app.theme.color_text()));
+    }
+    /// 标题行右端实际渲染出来的三格：下载图标、空格、爱心（与命中格同源）。
+    #[test]
+    fn info_title_row_renders_download_then_gap_then_heart() {
+        let mut app = state(Overlay::None);
+        app.player.track.title = "Title".to_string();
+        app.download_state = crate::tmplayer::DownloadIconState::NotDownloaded;
+
+        let (_, buf) = render_to_buffer_sized(120, 40, &mut app, |f, app, _rows| {
+            let area = f.area();
+            info_panel::render(f, area, area.width, app);
+        });
+
+        let left = ratatui::layout::Rect::new(0, 0, 120, 40);
+        let layout = info_panel::layout(left, 120);
+        let (download_x, y) = download_cell(layout.meta).expect("下载格");
+        let (heart_x, _) = heart_cell(layout.meta).expect("爱心格");
+
+        assert_eq!(heart_x, download_x + 2, "下载图标与爱心之间隔一格");
+        assert_eq!(
+            buf[(download_x, y)].symbol(),
+            crate::app::download::ICON_DOWNLOAD.to_string()
+        );
+        assert_eq!(buf[(download_x + 1, y)].symbol(), " ");
+        assert_eq!(buf[(heart_x, y)].symbol(), "\u{f08a}");
+    }
+
+    /// 下载图标格在爱心左侧隔一格；画不下三格时留给爱心，不画也不可点。
+    #[test]
+    fn download_cell_sits_left_of_the_heart() {
+        let meta = rect(10, 4, 26, 3);
+        assert_eq!(download_cell(meta), Some((10 + 26 - 3, 4)));
+        assert_eq!(download_cell(rect(0, 0, 2, 1)), None);
+        assert_eq!(download_cell(rect(0, 0, 1, 1)), None);
+        assert_eq!(download_cell(Rect::default()), None);
+    }
+
+    /// 下载可用时，爱心左边隔一格是下载按钮；下载不可用（Hidden）时整格不命中。
+    #[test]
+    fn clicking_the_download_cell_toggles_download_only_when_visible() {
+        let layout = UiLayout {
+            info_meta: rect(2, 5, 20, 3),
+            ..UiLayout::default()
+        };
+
+        let mut app = state(Overlay::None);
+        app.download_state = crate::tmplayer::DownloadIconState::NotDownloaded;
+        assert_eq!(
+            hit_test(&layout, &app, 2 + 20 - 3, 5),
+            Some(Action::ToggleDownload)
+        );
+        assert_eq!(
+            hit_test(&layout, &app, 2 + 20 - 2, 5),
+            None,
+            "图标与爱心之间是空格"
+        );
+        assert_eq!(
+            hit_test(&layout, &app, 2 + 20 - 1, 5),
+            Some(Action::ToggleFavorite),
+            "下载图标不影响爱心那一格"
+        );
+
+        let hidden = state(Overlay::None);
+        assert_eq!(
+            hidden.download_state,
+            crate::tmplayer::DownloadIconState::Hidden
+        );
+        assert_eq!(hit_test(&layout, &hidden, 2 + 20 - 3, 5), None);
     }
 
     /// 作者名贴 meta 块第 2 行左端：只有名字画出来的那几格可点，行尾空白不算。
@@ -2549,7 +2859,7 @@ mod tests {
         assert!(saw_hint, "“小窗口切换显示”应出现在按键提示弹窗里");
     }
 
-    /// 矮终端下设置弹窗的条目区放不下全部条目，但 about 行仍要按条目序号 11
+    /// 矮终端下设置弹窗的条目区放不下全部条目，但 about 行仍要按条目序号 12
     /// 登记——否则单击它会选中别的条目、双击会执行别的条目。
     #[test]
     fn settings_modal_about_row_keeps_its_item_index_when_items_are_truncated() {
@@ -2558,19 +2868,19 @@ mod tests {
             render_settings_modal(f, f.area(), app, rows)
         });
 
-        let about = rows.get(11).expect("about 行按条目序号 11 登记");
+        let about = rows.get(12).expect("about 行按条目序号 12 登记");
         assert!(
             compact(&line_text(&buf, about.y)).contains("about"),
-            "11 号条目行画的是 about"
+            "12 号条目行画的是 about"
         );
-        assert!(rows.len() < 12, "18 行终端下条目区放不下 11 条");
+        assert!(rows.len() < 13, "18 行终端下条目区放不下 12 条");
 
         let mut layout = page_layout();
         layout.modal_rows = rows;
         assert_eq!(
             hit_test(&layout, &app, about.x, about.y),
-            Some(Action::ModalSelect(11)),
-            "点 about 行要回条目序号 11"
+            Some(Action::ModalSelect(12)),
+            "点 about 行要回条目序号 12"
         );
     }
 

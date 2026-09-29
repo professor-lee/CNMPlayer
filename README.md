@@ -30,7 +30,10 @@ A single process carries two UIs:
 - the **host UI** — login, home recommendations, playlist / artist / search pages, a sliding sidebar and a 5-row collapsed player bar;
 - the **embedded fullscreen playback page** (TMPlayer) — cover, lyrics, playlist overlay and a 10-band EQ. The fullscreen keybind (default `Ctrl+F`) hands playback over to it; inside, `Ctrl+F` or `Esc` returns to the host.
 
-Playback belongs to the host: streaming with a local cache, queue memory, private roam, VIP-aware audio quality, and the visualizers (cava bars, a real-PCM oscilloscope, a LUFS VU meter) that the other UIs draw.
+Playback belongs to the host: streaming with a local cache, queue memory, private roam, VIP-aware audio quality, and the visualizers (cava bars, a real-PCM oscilloscope, a Lissajous vector mode, a LUFS VU meter) that the other UIs draw.
+
+> Read the [Disclaimer](#disclaimer) first: this is an unofficial client, music copyright belongs to the
+> rights holders, and the cache/download features are for personal offline use only — **no redistribution**.
 
 ## Main Features
 
@@ -79,12 +82,22 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 - Repeat modes: sequence → shuffle → loop all → loop one
 - Linux media control (MPRIS, player name `cnmplayer`) with metadata and cover art
 
+### Downloads
+
+- Songs are saved to `cnmplayer/` inside the system music directory (`download_path` overrides it; falls back to `~/Music/cnmplayer/`)
+- Host: single-song rows on playlist / album / search pages carry a download button left of the duration (click it), and `Ctrl+Alt+D` downloads the focused song
+- Fullscreen: the button left of the heart on the title row, or `Ctrl+D`, downloads the current song
+- Three icon states: not downloaded (`ec74`), downloading (spinning `f1ce`), downloaded (`f00c`); pressing/clicking again cancels and removes the partial file
+- Exactly one download task exists: extra requests queue up and run in order
+- File name is `Title - Artist - Album.<mp3|flac>`, with tags written in: title, artists, album, track number, date, embedded cover and lyrics (Vorbis Comment for lossless, ID3v2 for mp3)
+- The "Download Settings" page holds the download quality (same option set as playback quality, VIP-aware) and the download path: an absolute path enables downloads; leaving it empty or typing the literal `Null` disables them (no download button is drawn and the quality row greys out, while the path row and "Restore Defaults" stay usable); typing an absolute path back re-enables
+
 ### Visualization
 
 - `hidden` (shown as "Off" in settings) — the whole right-hand side of the fullscreen page is collapsed: neither a visualizer nor the lyrics are drawn, and the song info panel stretches across the full terminal width (its border spans the full width, while the content inside is capped at 1/3 of the window and centred).
 - `lyrics` (shown as "Lyrics") — the right-hand side only shows the lyrics; no visualizer is drawn. The old `off` value still selects this mode.
 - `bars` — cava spectrum bars. Requires the external `cava` binary.
-- `oscilloscope` — a real PCM waveform tapped from the playback chain: rising-edge trigger, min/max peak extraction per sub-column and absolute amplitude mapping, so quiet passages hug the centre line and loud ones fill the panel. It does **not** need cava.
+- `vector` — a Lissajous-style vectorscope on screen-aligned orthogonal axes: the left channel L drives the horizontal x-axis (right = positive) and the right channel R the vertical y-axis (up = positive, always), drawn dot by dot with the same braille raster as the oscilloscope, centred on the panel origin with no axes drawn. The scale reference is the loudest moment seen since the track started (monotone, never shrinks), so the peak passage exactly fills the panel; only track changes restart it. Mono sources collapse to the honest up-right 45° diagonal. On pause or a sudden cut to silence the figure bursts apart: every braille dot flies, fully lit, to a random resting spot inside the visualization area (hard deceleration, settling in turn, at most 1200 particles — surplus dots fade out once and retire), then the settled dust twinkles in place like the codex CLI's **Astra Sparkle** starfield — the same deterministic formula: each dot hashes its resting spot into a 4–7 s period and phase offset, brightness pulsing as sin¹² spikes with extinguished frames drawing nothing; positions and counts never change until playback resumes. When playback resumes (or sound returns) the dots gather back in a clearly visible stream: a short ignition stagger, then exponential homing onto the live figure (~0.5 s, expanding anchor search so every dot returns; surplus dots are absorbed on arrival). A gradual fade-out does **not** burst: the figure just shrinks with the level and disappears. It does **not** need cava.
 - If cava is missing, the default becomes `oscilloscope` and cycling the setting skips `bars` instead of failing.
 - The collapsed player bar draws a 10-cell braille mini spectrum from cava; that spot stays blank in `lyrics` and `hidden` because cava is not started there. The narrow small window draws a stereo VU meter driven by a 400 ms momentary LUFS meter (display range −60…0 LUFS).
 
@@ -202,7 +215,7 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 | --- | --- | --- |
 | `theme` | `frappe` | `system`, `latte`, `frappe`, `macchiato`, `mocha` |
 | `language` | `zh` | `zh`, `en` |
-| `visualize` | cava present → `bars`, otherwise `oscilloscope` | `hidden` (shown as "Off" in settings), `lyrics` ("Lyrics"; the old `off` means the same), `bars`, `oscilloscope`; only `bars` needs cava |
+| `visualize` | cava present → `bars`, otherwise `oscilloscope` | `hidden` (shown as "Off" in settings), `lyrics` ("Lyrics"; the old `off` means the same), `bars`, `oscilloscope`, `vector`; only `bars` needs cava |
 | `graphics_protocol` | `halfblocks` | `off`, `halfblocks`; `off` draws covers as ASCII art |
 | `transparent_background` | `true` | Use the terminal background |
 | `album_border` | `true` | Border around the fullscreen cover |
@@ -216,6 +229,8 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
 | `audio_quality` | `exhigh` | `standard`, `higher`, `exhigh`, `lossless`, `hires`, `jyeffect`, `sky`, `dolby`, `jymaster`; clamped to `exhigh` without VIP |
+| `download_audio_quality` | `exhigh` | Download quality: same option set as `audio_quality`, VIP-aware as well |
+| `download_path` | unset | Download directory (absolute; defaults to `<music dir>/cnmplayer/`, falling back to `~/Music/cnmplayer/`); an empty value or the literal `Null` disables downloads |
 | `playback_memory` | `false` | Persist and restore the queue, index and repeat mode |
 | `eq_bands_db` | 10 × `0.0` | EQ gains in dB, edited from the fullscreen EQ modal |
 | `bar_number` | `auto` | `auto`, `16`, `32`, `48`, `64`, `80`, `96` (fullscreen spectrum) |
@@ -235,7 +250,7 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
 | `cache.max_age_days` | `7` | Age limit for the TTL pass |
 | `cache.clean_on_startup` | `true` | Run the cleanup while starting |
-| `keybind_*` | see below | 20 rebindable shortcuts |
+| `keybind_*` | see below | 22 rebindable shortcuts |
 
 Cleanup runs as an age pass followed by a size LRU pass, and only looks at files directly inside the directory.
 
@@ -268,6 +283,8 @@ A binding that collides with another slot is rejected, and `Ctrl+Alt+R` inside t
 | `keybind_toggle_like_fullscreen` | `L` | Like / unlike (fullscreen page only) |
 | `keybind_toggle_like_collapsed` | `Alt+L` | Like / unlike from the collapsed player bar |
 | `keybind_small_window_toggle` | `Alt+X` | Switch between the flat small-window panels |
+| `keybind_download` | `Ctrl+Alt+D` | Download the focused song (press again to cancel) |
+| `keybind_download_fullscreen` | `Ctrl+D` | Download the current song (fullscreen page only; press again to cancel) |
 
 The fullscreen-only slots are inert in the host: there they fall through to page navigation instead.
 
@@ -353,6 +370,30 @@ Release (`release.yml`) triggers on a `v*` tag: it verifies that the tag matches
 
 - [TMPlayer](https://github.com/professor-lee/TMPlayer): the fullscreen playback UI, embedded into CNMPlayer
 - [ncm-api-rs](https://github.com/imsyy/ncm-api-rs): the NetEase Cloud Music API client vendored in `ncm-api-rs/`
+
+## Disclaimer
+
+> Short version: this is an unofficial client, music copyright belongs to the rights holders, and the
+> cache/download features are for personal offline use only — **redistribution is not allowed**.
+
+- **Unofficial project**: CNMPlayer is a third-party open-source client with no affiliation, authorization or
+  endorsement from NetEase Cloud Music or its affiliates. It talks to the service through `ncm-api-rs`
+  (a community-maintained, unofficial API client vendored in this repository) and makes no promise about
+  API availability or stability.
+- **Music copyright belongs to the rights holders**: all music, cover art, lyrics and metadata reached through
+  this software remain the property of their respective rights holders (labels, songwriters, performers).
+  This repository ships no music, and it neither hosts, proxies nor redistributes any audio.
+- **Personal use only**: the streaming cache and the download feature are meant for the user's own study,
+  research and offline listening; downloaded files stay on the user's machine.
+- **No redistribution**: you must not use any content obtained through this software (including downloaded
+  files and the covers/lyrics embedded in them) for commercial purposes, public performance, redistribution
+  or re-upload — for example to cloud drives, video platforms, other music services, or shared archives.
+  Such use may infringe the rights holders' rights, and the risk and consequences are the user's own.
+- **Account risk is yours**: third-party clients may violate the platform's terms of service (rate limits,
+  bans). Please assess and accept that risk yourself.
+- **Liability**: the project is provided "as is" (see the warranty disclaimer in [LICENSE](LICENSE)) and
+  accepts no liability for the consequences of use. If a rights holder believes this project or its
+  documentation infringes, please open an issue and we will remove or amend the relevant content.
 
 ## License
 

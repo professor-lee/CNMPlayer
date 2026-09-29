@@ -1,6 +1,6 @@
 [package]
 name = "cnmplayer"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 
 [features]
@@ -35,6 +35,7 @@ rodio = { git = "https://github.com/RustAudio/rodio", default-features = false, 
 # 无损 Hi-Res 高清环绕声 flac !VIP
 # 沉浸环绕声 杜比全景声 超清母带 flac !SVIP
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac"] }
+lofty = "0.25.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

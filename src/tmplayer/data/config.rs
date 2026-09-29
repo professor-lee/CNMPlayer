@@ -62,6 +62,14 @@ pub struct Config {
     #[serde(default = "default_audio_quality")]
     pub audio_quality: AudioQuality,
 
+    /// 下载音频的档位（与主应用同步；可选值同「播放设置 / 音质」）。
+    #[serde(default = "default_download_audio_quality")]
+    pub download_audio_quality: AudioQuality,
+
+    /// 下载目录（绝对路径）。`None` = 未自定义，由主应用按系统音乐目录推导。
+    #[serde(default)]
+    pub download_path: Option<String>,
+
     #[serde(default)]
     pub playback_memory: bool,
 
@@ -154,6 +162,14 @@ pub struct Config {
 
     #[serde(default = "default_keybind_small_window_toggle")]
     pub keybind_small_window_toggle: String,
+
+    /// 主应用：下载当前聚焦的单曲。
+    #[serde(default = "default_keybind_download")]
+    pub keybind_download: String,
+
+    /// 全屏页：下载当前播放的单曲。
+    #[serde(default = "default_keybind_download_fullscreen")]
+    pub keybind_download_fullscreen: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +306,11 @@ fn default_audio_quality() -> AudioQuality {
     AudioQuality::Exhigh
 }
 
+/// 下载音质默认档与播放默认档同源。
+pub fn default_download_audio_quality() -> AudioQuality {
+    default_audio_quality()
+}
+
 fn default_show_hints() -> bool {
     true
 }
@@ -380,6 +401,14 @@ fn default_keybind_small_window_toggle() -> String {
     "Alt+X".to_string()
 }
 
+fn default_keybind_download() -> String {
+    "Ctrl+Alt+D".to_string()
+}
+
+fn default_keybind_download_fullscreen() -> String {
+    "Ctrl+D".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -401,6 +430,8 @@ impl Default for Config {
             super_smooth_bar: false,
             bars_gap: false,
             audio_quality: default_audio_quality(),
+            download_audio_quality: default_download_audio_quality(),
+            download_path: None,
             playback_memory: false,
             show_hints: default_show_hints(),
             small_window_display: default_small_window_display(),
@@ -432,6 +463,8 @@ impl Default for Config {
             keybind_fullscreen_eq_reset: default_keybind_fullscreen_eq_reset(),
             keybind_toggle_like_fullscreen: default_keybind_toggle_like_fullscreen(),
             keybind_small_window_toggle: default_keybind_small_window_toggle(),
+            keybind_download: default_keybind_download(),
+            keybind_download_fullscreen: default_keybind_download_fullscreen(),
         }
     }
 }
@@ -504,6 +537,10 @@ impl Config {
             || !raw.contains("keybind_toggle_like_fullscreen")
             || !raw.contains("small_window_display")
             || !raw.contains("keybind_small_window_toggle")
+            || !raw.contains("download_audio_quality")
+            || !raw.contains("download_path")
+            || !raw.contains("keybind_download")
+            || !raw.contains("keybind_download_fullscreen")
             || legacy_startup_folder_key_present
             || !raw.contains("spectrum_hz")
             || forced_visualize_fallback
