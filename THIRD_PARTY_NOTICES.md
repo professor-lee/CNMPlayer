@@ -31,6 +31,19 @@ The notice below documents attribution and licensing for that code.
   0. You just DO WHAT THE FUCK YOU WANT TO.
 ```
 
+## codex (OpenAI codex-cli, Rust TUI)
+
+- Project: codex
+- Upstream: https://github.com/openai/codex
+- Declared upstream license: Apache License 2.0
+- Usage in this project: the vector-mode "settled dust" twinkle in `src/tmplayer/render/vector_renderer.rs`
+  ports the deterministic starfield formula from the upstream `tui` crate's `sparkle_field.rs`
+  (`render_stars`): the two-round `0x45d9f3b` coordinate hash, the 4–7 s per-star period, the phase
+  offset and the `sin¹² · 0.55` brightness pulse with the 0.04 extinguish threshold.
+- Local modification status: adapted, not copied verbatim — the density gate (`hash % 5`), the
+  per-cell glyph selection and the 15 s idle timeout are dropped; the braille raster of this
+  project is kept and the pulse is multiplied onto the existing per-particle fade state.
+
 ## Notes
 
 - Non-vendored Rust dependencies are consumed through Cargo and are listed in `Cargo.toml` and `Cargo.lock`.
