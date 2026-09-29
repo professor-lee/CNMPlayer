@@ -18,8 +18,8 @@
 //!   飞向可视化区域内的一个**随机落点**（恒定大减速度，0.25~0.55 s 先后
 //!   停稳），停稳后不保留原图形的剪影。粒子数有上限 [`MAX_PARTICLES`]，
 //!   超出的点亮点直接消失。
-//! - 停稳后 → **自刷新**：各点错峰进入「可见 1.6~4.5 s → 1 s 淡出 →
-//!   隐藏并换随机位置 → 1 s 淡入」的循环。淡变的「透明度」由颜色向
+//! - 停稳后 → **自刷新**：各点错峰进入「可见 1.6~4.5 s → 3 s 淡出 →
+//!   隐藏并换随机位置 → 3 s 淡入」的循环。淡变的「透明度」由颜色向
 //!   面板底色的平滑插值模拟（终端没有真透明度）。
 //! - 恢复播放（或声音回来）→ **聚集回归**：粒子先有一个小小的点火延迟
 //!   （0~0.12 s，读作陆续启程），再就近锚定当前图形指数逼近
@@ -89,7 +89,7 @@ const TWINKLE_HIDDEN_MAX: f32 = 1.2;
 
 /// 淡入/淡出时长（秒）：粒子颜色（模拟透明度）在波形色与面板底色之间
 /// 平滑插值 —— 单点是二值的，透明感完全由这段颜色渐变承担。
-const TWINKLE_FADE_S: f32 = 1.0;
+const TWINKLE_FADE_S: f32 = 3.0;
 
 /// 聚集回归的点火延迟上限（秒）：粒子陆续启程，汇聚流更可读。
 const GATHER_IGNITION_S: f32 = 0.12;
@@ -371,8 +371,8 @@ impl VectorState {
         }
         if all_stopped && !self.particles.is_empty() {
             // 停稳：进入自刷新。首次淡出时刻在可见期内错峰铺开（整体读作
-            // 渐隐），此后各点独立轮换「可见 → 1 s 淡出 → 隐藏并换随机
-            // 位置 → 1 s 淡入 → 可见」。
+            // 渐隐），此后各点独立轮换「可见 → 3 s 淡出 → 隐藏并换随机
+            // 位置 → 3 s 淡入 → 可见」。
             let seed = self.disperse_seed;
             for i in 0..self.particles.len() {
                 let s = dot_seed(
@@ -398,7 +398,7 @@ impl VectorState {
         }
         self.float_elapsed += dt;
 
-        // 自刷新状态机：可见 → 淡出(1s) → 隐藏并换随机位置 → 淡入(1s)。
+        // 自刷新状态机：可见 → 淡出(3s) → 隐藏并换随机位置 → 淡入(3s)。
         // 各点时刻独立错峰，整体读作「渐隐后在随机位置渐入」。
         let seed = self.disperse_seed;
         let (w_px, h_px) = (self.w_cells as f32 * 2.0, self.h_cells as f32 * 4.0);
@@ -1171,7 +1171,7 @@ mod tests {
             st.tick(true, false, Duration::from_millis(50)); // 共 12 s
             st.rasterize();
             hidden_seen |= st.particles.iter().any(|p| p.twinkle.alpha() == 0.0);
-            // 1 s 的淡入淡出：50 ms 步进必然采到中间透明度。
+            // 3 s 的淡入淡出：50 ms 步进必然采到中间透明度。
             mid_fade_seen |= st
                 .particles
                 .iter()
@@ -1189,7 +1189,7 @@ mod tests {
         }
         assert_eq!(st.particles.len(), settled_count, "自刷新不增减粒子");
         assert!(hidden_seen, "12 s 内应观测到淡出（隐藏期）");
-        assert!(mid_fade_seen, "应观测到 1 s 淡变中的中间透明度");
+        assert!(mid_fade_seen, "应观测到 3 s 淡变中的中间透明度");
         let later: std::collections::HashSet<(i32, i32)> = lit_dots(&st).into_iter().collect();
         let relocated = settled_dots.symmetric_difference(&later).count();
         assert!(
