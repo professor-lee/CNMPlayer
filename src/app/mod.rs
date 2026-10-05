@@ -94,6 +94,7 @@ fn next_list_generation() -> u64 {
     LIST_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 const SEARCH_RESULT_PAGE_SIZE: usize = 50;
+const ARTIST_ALBUM_PAGE_SIZE: usize = 60;
 /// 无后缀（混合）搜索里作者 / 歌单分区只取最相关的少量条目，不参与分页。
 const MIXED_AUX_RESULT_LIMIT: usize = 5;
 const SEARCH_BOX_TARGET_HEIGHT: u16 = 3;
@@ -439,7 +440,9 @@ type AuthorFetchFuture = SharedTask<Result<AuthorFetch, String>>;
 /// 装箱后的任务体（`spawn_shared` 的入参类型）。
 type AuthorFetchTask = Pin<Box<dyn Future<Output = Option<Result<AuthorFetch, String>>>>>;
 
-/// 作者页四个接口的原始回包（`None` = 该请求失败）；解析见 `App::build_author_page`。
+/// 作者页四个接口的原始回包（`None` = 该请求失败）；发行物请求会先完成全部分页。
+///
+/// 解析见 `App::build_author_page`。
 struct AuthorResponses {
     detail: Option<ApiResponse>,
     desc: Option<ApiResponse>,
@@ -464,28 +467,118 @@ struct AuthorFetch {
     singles: Vec<PlaylistTrack>,
 }
 
-/// 四个 `artist/*` 接口一次并发拉取。
+/// 四个 `artist/*` 接口一次并发拉取；发行物接口在自己的后台 future 内顺序遍历分页。
 ///
 /// 它们彼此独立，按仓库既有做法用 `futures::join!`：`cyper::Client` 是 `!Send`，
 /// 只能同一个 runtime 里并发，不能各自 spawn。
-async fn fetch_artist_responses(api: &ApiState, artist_id: &str) -> AuthorResponses {
+async fn fetch_artist_responses(
+    api: &ApiState,
+    artist_id: &str,
+) -> Result<AuthorResponses, String> {
     let mut detail_api = api.clone();
     let mut desc_api = api.clone();
     let mut top_song_api = api.clone();
-    let mut album_api = api.clone();
+    let album_api = api.clone();
+    let album_fetch = fetch_all_artist_albums(album_api, artist_id);
     let (detail, desc, top_song, album) = futures::join!(
         detail_api.artist_detail(artist_id),
         desc_api.artist_desc(artist_id),
         top_song_api.artist_top_song(artist_id),
-        album_api.artist_album(artist_id, 60, 0),
+        album_fetch,
     );
+    let album = album.map_err(|error| format!("artist album pagination failed: {error}"))?;
 
-    AuthorResponses {
+    Ok(AuthorResponses {
         detail: detail.ok(),
         desc: desc.ok(),
         top_song: top_song.ok(),
-        album: album.ok(),
+        album: Some(album),
+    })
+}
+
+/// 后台顺序遍历歌手发行物的所有分页。
+///
+/// 分页中途失败直接返回错误，不把已取得的首批数据冒充成完整列表。
+async fn fetch_all_artist_albums(
+    mut api: ApiState,
+    artist_id: &str,
+) -> Result<ApiResponse, String> {
+    let mut pages = Vec::new();
+    let mut offset = 0usize;
+
+    loop {
+        let page = api
+            .artist_album(artist_id, ARTIST_ALBUM_PAGE_SIZE, offset)
+            .await
+            .map_err(|error| format!("offset {offset}: {error:#}"))?;
+        let item_count = artist_album_items(&page.body)
+            .map(|items| items.len())
+            .ok_or_else(|| format!("offset {offset}: response has no album list"))?;
+        let more = page
+            .body
+            .get("more")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        pages.push(page);
+        if !more {
+            break;
+        }
+        if item_count == 0 {
+            return Err(format!("offset {offset}: empty page marked as more"));
+        }
+        offset = offset
+            .checked_add(item_count)
+            .ok_or_else(|| "artist album pagination offset overflowed".to_string())?;
     }
+
+    merge_artist_album_pages(pages)
+}
+
+fn merge_artist_album_pages(pages: Vec<ApiResponse>) -> Result<ApiResponse, String> {
+    let mut pages = pages.into_iter();
+    let Some(mut merged) = pages.next() else {
+        return Err("artist album pagination returned no pages".to_string());
+    };
+
+    for mut page in pages {
+        let items = take_artist_album_items(&mut page.body)
+            .ok_or_else(|| "artist album page has no album list".to_string())?;
+        let target = artist_album_items_mut(&mut merged.body)
+            .ok_or_else(|| "merged artist album response has no album list".to_string())?;
+        target.extend(items);
+    }
+
+    Ok(merged)
+}
+
+fn artist_album_items(body: &Value) -> Option<&[Value]> {
+    if let Some(items) = body.get("hotAlbums").and_then(Value::as_array) {
+        return Some(items);
+    }
+    body.pointer("/artist/albums")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+}
+
+fn artist_album_items_mut(body: &mut Value) -> Option<&mut Vec<Value>> {
+    if body.get("hotAlbums").and_then(Value::as_array).is_some() {
+        return body.get_mut("hotAlbums").and_then(Value::as_array_mut);
+    }
+    body.pointer_mut("/artist/albums")
+        .and_then(Value::as_array_mut)
+}
+
+fn take_artist_album_items(body: &mut Value) -> Option<Vec<Value>> {
+    if body.get("hotAlbums").and_then(Value::as_array).is_some() {
+        return body
+            .get_mut("hotAlbums")
+            .and_then(Value::as_array_mut)
+            .map(std::mem::take);
+    }
+    body.pointer_mut("/artist/albums")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
 }
 
 /// 全屏页点作者名要拉的东西：先 `song/detail` 解析出段对应的作者 ID，再拉作者页数据。
@@ -521,7 +614,7 @@ async fn fetch_author_page_by_id(
     artist_id: String,
     fallback_cover_url: Option<String>,
 ) -> Result<AuthorFetch, String> {
-    let responses = fetch_artist_responses(&api, &artist_id).await;
+    let responses = fetch_artist_responses(&api, &artist_id).await?;
     let mut fetch = App::build_author_page(&api, language, &artist_id, responses)?;
     if fetch.cover_url.is_none() {
         fetch.cover_url = fallback_cover_url;
@@ -10629,6 +10722,57 @@ fn placeholder_cover_ascii(width: u16, height: u16, ch: char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_artist_album_response(items: &[Value], more: bool) -> ApiResponse {
+        ApiResponse {
+            status: 200,
+            body: serde_json::json!({
+                "code": 200,
+                "hotAlbums": items,
+                "more": more,
+            }),
+            cookie: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn artist_album_pages_merge_all_release_metadata() {
+        let first = vec![serde_json::json!({"id": 1, "name": "first"})];
+        let second = vec![
+            serde_json::json!({"id": 2, "name": "second"}),
+            serde_json::json!({"id": 3, "name": "third"}),
+        ];
+
+        let merged = merge_artist_album_pages(vec![
+            test_artist_album_response(&first, true),
+            test_artist_album_response(&second, false),
+        ])
+        .unwrap();
+
+        let items = merged
+            .body
+            .get("hotAlbums")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["name"], "first");
+        assert_eq!(items[2]["name"], "third");
+    }
+
+    #[test]
+    fn artist_album_pages_reject_incomplete_page_instead_of_returning_partial_data() {
+        let first = vec![serde_json::json!({"id": 1, "name": "first"})];
+        let malformed = ApiResponse {
+            status: 200,
+            body: serde_json::json!({"code": 200, "more": false}),
+            cookie: Vec::new(),
+        };
+
+        let result =
+            merge_artist_album_pages(vec![test_artist_album_response(&first, true), malformed]);
+
+        assert!(result.is_err());
+    }
 
     #[test]
     fn cached_cover_requires_decodable_image_and_terminal_marker() {
