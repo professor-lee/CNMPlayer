@@ -229,6 +229,20 @@ impl ApiState {
         let response = self.client.playlist_detail(&query).await?;
         Ok(response)
     }
+    pub async fn playlist_track_all(
+        &mut self,
+        id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("limit", &limit.max(1).to_string())
+            .param("offset", &offset.to_string());
+        let response = self.client.playlist_track_all(&query).await?;
+        Ok(response)
+    }
 
     pub async fn album(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);

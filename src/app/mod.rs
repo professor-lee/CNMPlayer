@@ -93,7 +93,7 @@ static LIST_GENERATION: AtomicU64 = AtomicU64::new(1);
 fn next_list_generation() -> u64 {
     LIST_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
-const SEARCH_RESULT_PAGE_SIZE: usize = 50;
+const SEARCH_RESULT_PAGE_SIZE: usize = 100;
 const ARTIST_ALBUM_PAGE_SIZE: usize = 60;
 /// 无后缀（混合）搜索里作者 / 歌单分区只取最相关的少量条目，不参与分页。
 const MIXED_AUX_RESULT_LIMIT: usize = 5;
@@ -352,9 +352,45 @@ struct HomeSidebarFetch {
     user_name: String,
     created: Vec<HomeSidebarPlaylist>,
     collected: Vec<HomeSidebarPlaylist>,
+    created_more: bool,
+    collected_more: bool,
 }
 
+#[derive(Clone)]
+struct HomeSidebarPageFetch {
+    section: HomeSidebarSection,
+    items: Vec<HomeSidebarPlaylist>,
+    next_offset: usize,
+    has_more: bool,
+}
+
+type HomeSidebarPageTask =
+    Pin<Box<dyn Future<Output = Option<Result<HomeSidebarPageFetch, String>>>>>;
+
 type HomeSidebarFetchFuture = SharedTask<Result<HomeSidebarFetch, String>>;
+type HomeSidebarPageFetchFuture = SharedTask<Result<HomeSidebarPageFetch, String>>;
+
+fn response_page_has_more(
+    response: &ApiResponse,
+    offset: usize,
+    fetched: usize,
+    limit: usize,
+) -> bool {
+    response
+        .body
+        .pointer("/data/more")
+        .or_else(|| response.body.pointer("/more"))
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            response
+                .body
+                .pointer("/data/count")
+                .or_else(|| response.body.pointer("/count"))
+                .and_then(|value| parse_usize_value(Some(value)))
+                .map(|count| offset.saturating_add(fetched) < count)
+        })
+        .unwrap_or(fetched >= limit)
+}
 
 async fn fetch_home_sidebar_playlists(
     mut api: ApiState,
@@ -425,12 +461,71 @@ async fn fetch_home_sidebar_playlists(
         ));
     }
 
+    let created = parse_home_sidebar_playlists(&created_response);
+    let collected = parse_home_sidebar_playlists(&collected_response);
     Ok(HomeSidebarFetch {
         user_id,
         liked_playlist_id: extract_liked_playlist_id(&account),
         user_name,
-        created: parse_home_sidebar_playlists(&created_response),
-        collected: parse_home_sidebar_playlists(&collected_response),
+        created_more: response_page_has_more(
+            &created_response,
+            0,
+            created.len(),
+            HOME_SIDEBAR_PLAYLIST_LIMIT,
+        ),
+        collected_more: response_page_has_more(
+            &collected_response,
+            0,
+            collected.len(),
+            HOME_SIDEBAR_PLAYLIST_LIMIT,
+        ),
+        created,
+        collected,
+    })
+}
+
+async fn fetch_home_sidebar_page(
+    mut api: ApiState,
+    user_id: String,
+    section: HomeSidebarSection,
+    offset: usize,
+    language: Language,
+) -> Result<HomeSidebarPageFetch, String> {
+    let response = match section {
+        HomeSidebarSection::Created => {
+            api.user_playlist_create(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, offset)
+                .await
+        }
+        HomeSidebarSection::Collected => {
+            api.user_playlist_collect(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, offset)
+                .await
+        }
+    }
+    .map_err(|err| err.to_string())?;
+    let code = response_code(&response);
+    if code != 200 {
+        return Err(format!("请求失败({code}): {}", response_message(&response)));
+    }
+
+    let items = parse_home_sidebar_playlists(&response);
+    if items.is_empty() {
+        return Err(match language {
+            Language::Zh => "侧边栏歌单分页为空".to_string(),
+            Language::En => "Sidebar playlist page is empty".to_string(),
+        });
+    }
+    let item_count = items.len();
+    let next_offset = offset.saturating_add(item_count);
+    Ok(HomeSidebarPageFetch {
+        section,
+        items,
+        next_offset,
+        has_more: response_page_has_more(
+            &response,
+            offset,
+            item_count,
+            HOME_SIDEBAR_PLAYLIST_LIMIT,
+        ),
     })
 }
 type CoverFuture = SharedTask<Arc<DynamicImage>>;
@@ -658,9 +753,20 @@ async fn fetch_song_page_refs(mut api: ApiState, song_id: &str) -> SongPageRefs 
     SongPageRefs { artists, album_id }
 }
 
+const PLAYLIST_PAGE_SIZE: usize = 100;
 type PlaylistFetchFuture = SharedTask<Result<PlaylistFetch, String>>;
+type PlaylistPageFetchFuture = SharedTask<Result<PlaylistPageFetch, String>>;
 /// 装箱后的任务体（`spawn_shared` 的入参类型）。
 type PlaylistFetchTask = Pin<Box<dyn Future<Output = Option<Result<PlaylistFetch, String>>>>>;
+
+type PlaylistPageTask = Pin<Box<dyn Future<Output = Option<Result<PlaylistPageFetch, String>>>>>;
+
+#[derive(Clone)]
+struct PlaylistPageFetch {
+    tracks: Vec<PlaylistTrack>,
+    next_offset: usize,
+    has_more: bool,
+}
 
 /// 歌单页 / 专辑页的在途拉取：句柄旁边记下是哪种页面（成功后文案不同）。
 struct PlaylistFetchSlot {
@@ -788,6 +894,9 @@ struct PlaylistFetch {
     description: String,
     cover_url: Option<String>,
     tracks: Vec<PlaylistTrack>,
+    total_tracks: Option<usize>,
+    next_offset: usize,
+    has_more: bool,
     liked: Option<LikedRefresh>,
 }
 
@@ -826,10 +935,50 @@ async fn fetch_liked_refresh(
     Some(LikedRefresh { ids, profile })
 }
 
-/// 拉一次歌单页数据（不借 `&mut App`，可交给 `spawn_shared` 后台跑）。
+/// 后台获取歌单指定分页的歌曲详情，不持有 `&mut App`。
 ///
-/// `fallback_cover_url` 是搜索结果里那行的封面：接口没给封面时用它兜底。
-/// `liked_playlist_id` / `uid_hint` 只用于判断要不要顺带刷新「我喜欢的音乐」。
+/// 使用 `trackIds` 的分页接口，避免 `playlist.detail` 返回的 `tracks` 截断。
+async fn fetch_playlist_tracks_page(
+    mut api: ApiState,
+    playlist_id: String,
+    offset: usize,
+    total_tracks: Option<usize>,
+) -> Result<PlaylistPageFetch, String> {
+    let response = api
+        .playlist_track_all(&playlist_id, PLAYLIST_PAGE_SIZE, offset)
+        .await
+        .map_err(|err| err.to_string())?;
+    let code = response_code(&response);
+    if code != 200 {
+        return Err(format!("请求失败({code}): {}", response_message(&response)));
+    }
+
+    let tracks = response
+        .body
+        .get("songs")
+        .or_else(|| response.body.pointer("/data/songs"))
+        .or_else(|| response.body.pointer("/playlist/tracks"))
+        .and_then(Value::as_array)
+        .map(|items| parse_tracks(items))
+        .unwrap_or_default();
+    if tracks.is_empty() && total_tracks.is_some_and(|total| offset < total) {
+        return Err("歌单分页返回空数据".to_string());
+    }
+
+    let track_count = tracks.len();
+    let next_offset = total_tracks
+        .map(|total| offset.saturating_add(PLAYLIST_PAGE_SIZE).min(total))
+        .unwrap_or_else(|| offset.saturating_add(track_count));
+    Ok(PlaylistPageFetch {
+        tracks,
+        next_offset,
+        has_more: total_tracks
+            .map(|total| next_offset < total)
+            .unwrap_or(track_count >= PLAYLIST_PAGE_SIZE),
+    })
+}
+
+/// 拉一次歌单页数据（不借 `&mut App`，可交给 `spawn_shared` 后台跑）。
 async fn fetch_playlist_page(
     mut api: ApiState,
     language: Language,
@@ -882,11 +1031,9 @@ async fn fetch_playlist_page(
 
     let cover_url = first_non_empty(playlist, &["/coverImgUrl", "/picUrl"]).or(fallback_cover_url);
 
-    let tracks = playlist
-        .get("tracks")
-        .and_then(|value| value.as_array())
-        .map(|items| parse_tracks(items))
-        .unwrap_or_default();
+    let total_tracks = parse_usize_value(playlist.get("trackCount"));
+    let first_page =
+        fetch_playlist_tracks_page(api.clone(), playlist_id.clone(), 0, total_tracks).await?;
 
     Ok(PlaylistFetch {
         id: playlist_id,
@@ -894,7 +1041,10 @@ async fn fetch_playlist_page(
         artist,
         description,
         cover_url,
-        tracks,
+        tracks: first_page.tracks,
+        total_tracks,
+        next_offset: first_page.next_offset,
+        has_more: first_page.has_more,
         liked,
     })
 }
@@ -965,6 +1115,9 @@ async fn fetch_album_page(
         artist,
         description,
         cover_url,
+        total_tracks: Some(tracks.len()),
+        next_offset: tracks.len(),
+        has_more: false,
         tracks,
         liked: None,
     })
@@ -1668,11 +1821,16 @@ fn home_sidebar_wheel_target(
 pub struct HomeSidebarState {
     pub expanded: bool,
     pub loading: bool,
+    pub loading_more: bool,
     pub user_id: Option<String>,
     pub liked_playlist_id: Option<String>,
     pub user_name: String,
     pub created_playlists: Vec<HomeSidebarPlaylist>,
     pub collected_playlists: Vec<HomeSidebarPlaylist>,
+    pub created_has_more: bool,
+    pub collected_has_more: bool,
+    pub created_next_offset: usize,
+    pub collected_next_offset: usize,
     pub focused_section: HomeSidebarSection,
     pub focused_index: usize,
     pub created_focused_index: usize,
@@ -1692,11 +1850,16 @@ impl Default for HomeSidebarState {
         Self {
             expanded: false,
             loading: false,
+            loading_more: false,
             user_id: None,
             liked_playlist_id: None,
             user_name: String::new(),
             created_playlists: Vec::new(),
             collected_playlists: Vec::new(),
+            created_has_more: false,
+            collected_has_more: false,
+            created_next_offset: 0,
+            collected_next_offset: 0,
             focused_section: HomeSidebarSection::Created,
             focused_index: 0,
             created_focused_index: 0,
@@ -1757,6 +1920,35 @@ impl HomeSidebarState {
             HomeSidebarSection::Created => self.created_playlists.len(),
             HomeSidebarSection::Collected => self.collected_playlists.len(),
         }
+    }
+    fn section_has_more(&self, section: HomeSidebarSection) -> bool {
+        match section {
+            HomeSidebarSection::Created => self.created_has_more,
+            HomeSidebarSection::Collected => self.collected_has_more,
+        }
+    }
+
+    fn section_next_offset(&self, section: HomeSidebarSection) -> usize {
+        match section {
+            HomeSidebarSection::Created => self.created_next_offset,
+            HomeSidebarSection::Collected => self.collected_next_offset,
+        }
+    }
+
+    fn append_section_page(&mut self, page: HomeSidebarPageFetch) {
+        match page.section {
+            HomeSidebarSection::Created => {
+                self.created_playlists.extend(page.items);
+                self.created_next_offset = page.next_offset;
+                self.created_has_more = page.has_more;
+            }
+            HomeSidebarSection::Collected => {
+                self.collected_playlists.extend(page.items);
+                self.collected_next_offset = page.next_offset;
+                self.collected_has_more = page.has_more;
+            }
+        }
+        self.clamp_focus();
     }
 
     pub fn clamp_focus(&mut self) {
@@ -2052,6 +2244,10 @@ pub struct PlaylistState {
     pub scroll_offset: usize,
     pub visible_rows: usize,
     pub tracks: Vec<PlaylistTrack>,
+    pub total_tracks: Option<usize>,
+    pub has_more: bool,
+    pub next_offset: usize,
+    pub loading_more: bool,
     /// 列表代：内容被整体替换时换号（行内图标缓存据此决定是否重建行数据）。
     generation: u64,
 }
@@ -2068,6 +2264,10 @@ impl Default for PlaylistState {
             scroll_offset: 0,
             visible_rows: 1,
             tracks: Vec::new(),
+            total_tracks: None,
+            has_more: false,
+            next_offset: 0,
+            loading_more: false,
             generation: next_list_generation(),
         }
     }
@@ -2131,6 +2331,11 @@ impl PlaylistState {
         self.tracks = tracks;
         self.focused_idx = 0;
         self.scroll_offset = 0;
+        self.generation = next_list_generation();
+        self.ensure_focus_visible();
+    }
+    pub fn append_tracks(&mut self, tracks: Vec<PlaylistTrack>) {
+        self.tracks.extend(tracks);
         self.generation = next_list_generation();
         self.ensure_focus_visible();
     }
@@ -3103,8 +3308,10 @@ impl App {
         self.tick_search_box_animation();
         self.tick_home_sidebar_animation();
         self.tick_home_sidebar_fetch();
+        self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
         self.tick_playlist_fetch();
+        self.tick_playlist_page_fetch();
         self.tick_like_sync();
         self.tick_download();
         self.tick_stderr_log_trim();
@@ -3366,6 +3573,7 @@ impl App {
             Page::Playlist => {
                 if forward {
                     let _ = self.browse.playlist.focus_next();
+                    self.maybe_fetch_playlist_page();
                 } else {
                     let _ = self.browse.playlist.focus_prev();
                 }
@@ -3393,6 +3601,9 @@ impl App {
         };
 
         self.browse.home_sidebar.scroll_section_by(section, forward);
+        if forward {
+            self.maybe_fetch_home_sidebar_page();
+        }
     }
 
     async fn advance_search_focus(&mut self) {
@@ -3588,6 +3799,14 @@ impl App {
         }
         // 作者页数据在途：结果一到就上屏，别让 1s 空闲节流把它压住。
         if self.browse.author_fetch.is_some() {
+            return true;
+        }
+        // 侧边栏分页结果一到就上屏。
+        if self.browse.home_sidebar_page_fetch.is_some() {
+            return true;
+        }
+        // 歌单分页结果一到就上屏。
+        if self.browse.playlist_page_fetch.is_some() {
             return true;
         }
         // 歌单页 / 专辑页同理。
@@ -4350,6 +4569,12 @@ impl App {
                 self.browse.home_sidebar.user_name = data.user_name;
                 self.browse.home_sidebar.created_playlists = data.created;
                 self.browse.home_sidebar.collected_playlists = data.collected;
+                self.browse.home_sidebar.created_has_more = data.created_more;
+                self.browse.home_sidebar.collected_has_more = data.collected_more;
+                self.browse.home_sidebar.created_next_offset =
+                    self.browse.home_sidebar.created_playlists.len();
+                self.browse.home_sidebar.collected_next_offset =
+                    self.browse.home_sidebar.collected_playlists.len();
                 self.browse.home_sidebar.clamp_focus();
                 self.browse.home_sidebar.status_line = match self.config.language {
                     Language::Zh => format!(
@@ -4376,6 +4601,70 @@ impl App {
                 self.browse.home.status_line = text;
             }
         }
+    }
+    fn tick_home_sidebar_page_fetch(&mut self) {
+        let Some(result) = peek_shared_future(&self.browse.home_sidebar_page_fetch).cloned() else {
+            return;
+        };
+        self.browse.home_sidebar_page_fetch = None;
+        self.browse.home_sidebar.loading_more = false;
+
+        match result {
+            Ok(page) => {
+                self.browse.home_sidebar.append_section_page(page);
+                self.browse.home_sidebar.status_line = match self.config.language {
+                    Language::Zh => format!(
+                        "创建 {} 个，收藏 {} 个",
+                        self.browse.home_sidebar.created_playlists.len(),
+                        self.browse.home_sidebar.collected_playlists.len()
+                    ),
+                    Language::En => format!(
+                        "{} created, {} collected",
+                        self.browse.home_sidebar.created_playlists.len(),
+                        self.browse.home_sidebar.collected_playlists.len()
+                    ),
+                };
+            }
+            Err(error) => {
+                self.browse.home_sidebar.status_line = format!(
+                    "{}: {error}",
+                    self.lang_text("歌单分页加载失败", "Playlist page load failed")
+                );
+            }
+        }
+    }
+
+    fn maybe_fetch_home_sidebar_page(&mut self) {
+        if !self.browse.home_sidebar.expanded
+            || self.browse.home_sidebar.loading
+            || self.browse.home_sidebar.loading_more
+            || self.browse.home_sidebar_page_fetch.is_some()
+        {
+            return;
+        }
+
+        let section = self.browse.home_sidebar.focused_section;
+        let len = self.browse.home_sidebar.section_len(section);
+        if len == 0
+            || self.browse.home_sidebar.focused_index + 1 < len
+            || !self.browse.home_sidebar.section_has_more(section)
+        {
+            return;
+        }
+        let Some(user_id) = self.browse.home_sidebar.user_id.clone() else {
+            return;
+        };
+        let offset = self.browse.home_sidebar.section_next_offset(section);
+        self.browse.home_sidebar.loading_more = true;
+        let fut = fetch_home_sidebar_page(
+            self.api.clone(),
+            user_id,
+            section,
+            offset,
+            self.config.language,
+        );
+        let fut: HomeSidebarPageTask = Box::pin(async move { Some(fut.await) });
+        self.browse.home_sidebar_page_fetch = Some(spawn_shared(fut));
     }
 
     /// 搬运作者页的在途拉取（每帧调用，结果就绪才动状态）。
@@ -4436,6 +4725,48 @@ impl App {
                 ));
             }
         }
+    }
+    fn tick_playlist_page_fetch(&mut self) {
+        let Some(result) = peek_shared_future(&self.browse.playlist_page_fetch).cloned() else {
+            return;
+        };
+        self.browse.playlist_page_fetch = None;
+        self.browse.playlist.loading_more = false;
+
+        match result {
+            Ok(page) => {
+                self.browse.playlist.append_tracks(page.tracks);
+                self.browse.playlist.next_offset = page.next_offset;
+                self.browse.playlist.has_more = page.has_more;
+            }
+            Err(error) => {
+                self.set_runtime_status(format!(
+                    "{}: {error}",
+                    self.lang_text("歌单分页加载失败", "Playlist page load failed")
+                ));
+            }
+        }
+    }
+
+    fn maybe_fetch_playlist_page(&mut self) {
+        if self.page != Page::Playlist
+            || self.browse.playlist_fetch.is_some()
+            || self.browse.playlist_page_fetch.is_some()
+            || self.browse.playlist.loading_more
+            || !self.browse.playlist.has_more
+            || self.browse.playlist.focused_idx + 1 < self.browse.playlist.tracks.len()
+        {
+            return;
+        }
+        let Some(playlist_id) = self.browse.playlist.id.clone() else {
+            return;
+        };
+        let offset = self.browse.playlist.next_offset;
+        let total_tracks = self.browse.playlist.total_tracks;
+        self.browse.playlist.loading_more = true;
+        let fut = fetch_playlist_tracks_page(self.api.clone(), playlist_id, offset, total_tracks);
+        let fut: PlaylistPageTask = Box::pin(async move { Some(fut.await) });
+        self.browse.playlist_page_fetch = Some(spawn_shared(fut));
     }
 
     async fn open_focused_home_sidebar_playlist(&mut self) {
@@ -4852,6 +5183,7 @@ impl App {
                     if !self.browse.playlist.focus_next() {
                         break;
                     }
+                    self.maybe_fetch_playlist_page();
                 }
             }
             _ => {}
@@ -7126,7 +7458,17 @@ impl App {
                     self.animate_home_sidebar();
                 }
                 KeyCode::Up | KeyCode::BackTab => self.browse.home_sidebar.focus_prev(),
-                KeyCode::Down | KeyCode::Tab => self.browse.home_sidebar.focus_next(),
+                KeyCode::Down | KeyCode::Tab => {
+                    let section = self.browse.home_sidebar.focused_section;
+                    let len = self.browse.home_sidebar.section_len(section);
+                    let at_end = len > 0 && self.browse.home_sidebar.focused_index + 1 == len;
+                    if at_end && self.browse.home_sidebar.section_has_more(section) {
+                        self.maybe_fetch_home_sidebar_page();
+                    } else {
+                        self.browse.home_sidebar.focus_next();
+                        self.maybe_fetch_home_sidebar_page();
+                    }
+                }
                 KeyCode::Enter => self.open_focused_home_sidebar_playlist().await,
                 _ => {}
             }
@@ -7161,9 +7503,12 @@ impl App {
             }
             KeyCode::Down | KeyCode::Tab => {
                 let _ = self.browse.playlist.focus_next();
+                self.maybe_fetch_playlist_page();
             }
             KeyCode::Enter => self.play_focused_playlist_track().await,
             KeyCode::Esc | KeyCode::Left => {
+                self.browse.playlist_page_fetch = None;
+                self.browse.playlist.loading_more = false;
                 if let Some(snapshot) = self.playlist_section_return_snapshot.take() {
                     self.browse.playlist = snapshot;
                     return;
@@ -7392,6 +7737,7 @@ impl App {
                         if let Some(hit) = sidebar_hit {
                             if self.browse.home_sidebar.expanded {
                                 self.browse.home_sidebar.set_focus(hit.section, hit.index);
+                                self.maybe_fetch_home_sidebar_page();
                                 if self.is_double_content_click(
                                     Page::Home,
                                     Self::home_sidebar_double_click_index(hit),
@@ -7449,6 +7795,7 @@ impl App {
                     && idx < self.browse.playlist.tracks.len()
                 {
                     self.browse.playlist.set_focus(idx);
+                    self.maybe_fetch_playlist_page();
                     if self.is_double_content_click(Page::Playlist, idx) {
                         self.play_focused_playlist_track().await;
                     }
@@ -10941,6 +11288,61 @@ mod tests {
             duration_ms: 1000,
             duration: "00:01".to_string(),
         }
+    }
+    #[test]
+    fn playlist_state_appends_pages_without_resetting_focus() {
+        let mut state = PlaylistState::default();
+        state.set_tracks(vec![track("a"), track("b")]);
+        state.set_focus(1);
+        state.total_tracks = Some(4);
+        state.next_offset = 2;
+        state.has_more = true;
+
+        state.append_tracks(vec![track("c"), track("d")]);
+        state.next_offset = 4;
+        state.has_more = false;
+
+        let ids: Vec<Option<String>> = state.tracks.iter().map(|item| item.id.clone()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("a".to_string()),
+                Some("b".to_string()),
+                Some("c".to_string()),
+                Some("d".to_string()),
+            ]
+        );
+        assert_eq!(state.focused_idx, 1);
+        assert_eq!(state.total_tracks, Some(4));
+        assert!(!state.has_more);
+    }
+
+    #[test]
+    fn sidebar_state_appends_requested_section_page() {
+        let mut state = HomeSidebarState::default();
+        state.created_has_more = true;
+        state.created_next_offset = 100;
+        state.created_playlists = vec![HomeSidebarPlaylist {
+            id: Some("first".to_string()),
+            title: "first".to_string(),
+            creator: "creator".to_string(),
+            track_count: 1,
+        }];
+        state.append_section_page(HomeSidebarPageFetch {
+            section: HomeSidebarSection::Created,
+            items: vec![HomeSidebarPlaylist {
+                id: Some("second".to_string()),
+                title: "second".to_string(),
+                creator: "creator".to_string(),
+                track_count: 2,
+            }],
+            next_offset: 101,
+            has_more: false,
+        });
+
+        assert_eq!(state.created_playlists.len(), 2);
+        assert_eq!(state.created_next_offset, 101);
+        assert!(!state.created_has_more);
     }
 
     #[test]

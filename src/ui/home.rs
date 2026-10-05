@@ -342,7 +342,7 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         app.browse.home_sidebar.user_name.clone()
     };
 
-    let status = if app.browse.home_sidebar.loading {
+    let status = if app.browse.home_sidebar.loading || app.browse.home_sidebar.loading_more {
         match app.config.language {
             Language::Zh => "正在同步歌单...".to_string(),
             Language::En => "Syncing playlists...".to_string(),

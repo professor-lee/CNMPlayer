@@ -46,10 +46,10 @@ Playback belongs to the host: streaming with a local cache, queue memory, privat
 ### Browsing
 
 - Home: a recommendation tile grid whose first three slots are always `每日推荐` (Daily Recommendations), `私人雷达` (Private Radar) and `私人漫游` (Private Roam); `home_more_recommend` expands the remaining recommendations
-- Home sidebar (toggle keybind, default `P`): your created and collected playlists, up to 100 each; `Ctrl+Up/Down` switches section, Enter opens, Esc collapses; the wheel scrolls the section under the cursor (stopping at either end), a click focuses and a double click opens
+- Home sidebar (toggle keybind, default `P`): your created and collected playlists, fetched 100 at a time and appended when scrolling to the end; `Ctrl+Up/Down` switches section, Enter opens, Esc collapses; the wheel scrolls the section under the cursor (stopping at either end), a click focuses and a double click opens
 - Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list
 - Artist page: avatar, name, hot-song / album / EP / single counts and a tile grid per section
-- Search page: a plain keyword searches artists, playlists and songs at once (artists and playlists show the 5 most relevant hits each, above separate rules); songs are requested 50 at a time and appended as you scroll further
+- Search page: a plain keyword searches artists, playlists and songs at once (artists and playlists show the 5 most relevant hits each, above separate rules); songs are requested 100 at a time and appended as you scroll further
 - Private roam: refreshed daily while keeping the last played track at the head; reaching the end of the list fetches more (each API call returns 3 songs, three calls are merged and de-duplicated) and appends them; the tile cover follows the currently playing roam song, and the queue origin survives a restart
 - Navigation: Enter opens or plays, Esc / Left goes back, Tab / Down and Shift+Tab / Up move, PageUp / PageDown jump one page
 - Mouse: the wheel scrolls, a single click focuses, a double click activates (400 ms window); the collapsed player bar's previous / play-pause / next, like and repeat-mode buttons and its progress bar are clickable
