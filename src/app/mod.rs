@@ -5,6 +5,7 @@ mod latest_fetch;
 mod mpris_bridge;
 mod owned_task;
 pub(crate) mod player;
+mod playlist_pagination;
 mod startup;
 pub(crate) mod streaming;
 
@@ -77,6 +78,7 @@ use input_controller::InputController;
 use mpris_bridge::{MprisBridge, MprisControlEvent, MprisSyncPayload};
 use owned_task::{SharedTask, spawn_shared};
 use playback_controller::PlaybackController;
+use playlist_pagination::PlaylistPagination;
 use settings_controller::SettingsController;
 use startup::StartupInit;
 use startup_controller::StartupController;
@@ -763,6 +765,8 @@ type PlaylistPageTask = Pin<Box<dyn Future<Output = Option<Result<PlaylistPageFe
 
 #[derive(Clone)]
 struct PlaylistPageFetch {
+    source_id: String,
+    offset: usize,
     tracks: Vec<PlaylistTrack>,
     next_offset: usize,
     has_more: bool,
@@ -897,6 +901,7 @@ struct PlaylistFetch {
     total_tracks: Option<usize>,
     next_offset: usize,
     has_more: bool,
+    paginated: bool,
     liked: Option<LikedRefresh>,
 }
 
@@ -970,6 +975,8 @@ async fn fetch_playlist_tracks_page(
         .map(|total| offset.saturating_add(PLAYLIST_PAGE_SIZE).min(total))
         .unwrap_or_else(|| offset.saturating_add(track_count));
     Ok(PlaylistPageFetch {
+        source_id: playlist_id,
+        offset,
         tracks,
         next_offset,
         has_more: total_tracks
@@ -1045,6 +1052,7 @@ async fn fetch_playlist_page(
         total_tracks,
         next_offset: first_page.next_offset,
         has_more: first_page.has_more,
+        paginated: true,
         liked,
     })
 }
@@ -1118,6 +1126,7 @@ async fn fetch_album_page(
         total_tracks: Some(tracks.len()),
         next_offset: tracks.len(),
         has_more: false,
+        paginated: false,
         tracks,
         liked: None,
     })
@@ -2248,9 +2257,7 @@ pub struct PlaylistState {
     pub visible_rows: usize,
     pub tracks: Vec<PlaylistTrack>,
     pub total_tracks: Option<usize>,
-    pub has_more: bool,
-    pub next_offset: usize,
-    pub loading_more: bool,
+    pagination: Option<PlaylistPagination>,
     /// 列表代：内容被整体替换时换号（行内图标缓存据此决定是否重建行数据）。
     generation: u64,
 }
@@ -2268,9 +2275,7 @@ impl Default for PlaylistState {
             visible_rows: 1,
             tracks: Vec::new(),
             total_tracks: None,
-            has_more: false,
-            next_offset: 0,
-            loading_more: false,
+            pagination: None,
             generation: next_list_generation(),
         }
     }
@@ -2331,6 +2336,8 @@ impl PlaylistState {
     }
 
     pub fn set_tracks(&mut self, tracks: Vec<PlaylistTrack>) {
+        self.cancel_pagination();
+        self.total_tracks = None;
         self.tracks = tracks;
         self.focused_idx = 0;
         self.scroll_offset = 0;
@@ -2341,6 +2348,12 @@ impl PlaylistState {
         self.tracks.extend(tracks);
         self.generation = next_list_generation();
         self.ensure_focus_visible();
+    }
+
+    fn cancel_pagination(&mut self) {
+        if let Some(pagination) = self.pagination.take() {
+            pagination.cancel();
+        }
     }
 
     /// 列表代（行内图标的行数据缓存据此失效）。
@@ -2693,6 +2706,19 @@ pub struct PlaybackTrack {
 }
 
 impl PlaybackTrack {
+    fn as_playlist_track(&self) -> PlaylistTrack {
+        PlaylistTrack {
+            kind: PlaylistTrackKind::Song,
+            id: Some(self.song_id.clone()),
+            title: self.title.clone(),
+            artist: self.artist.clone(),
+            album: self.album.clone(),
+            cover_url: self.cover_url.clone(),
+            duration_ms: self.duration_ms,
+            duration: format_duration(self.duration_ms),
+        }
+    }
+
     fn from_playlist_track(track: &PlaylistTrack) -> Option<Self> {
         if track.kind != PlaylistTrackKind::Song {
             return None;
@@ -3314,7 +3340,6 @@ impl App {
         self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
         self.tick_playlist_fetch();
-        self.tick_playlist_page_fetch();
         self.tick_like_sync();
         self.tick_download();
         self.tick_stderr_log_trim();
@@ -3809,7 +3834,18 @@ impl App {
             return true;
         }
         // 歌单分页结果一到就上屏。
-        if self.browse.playlist_page_fetch.is_some() {
+        if self
+            .browse
+            .playlist
+            .pagination
+            .as_ref()
+            .is_some_and(PlaylistPagination::is_pending)
+            || self
+                .playback
+                .pagination
+                .as_ref()
+                .is_some_and(PlaylistPagination::is_pending)
+        {
             return true;
         }
         // 歌单页 / 专辑页同理。
@@ -4192,6 +4228,7 @@ impl App {
                 MprisControlEvent::Pause => self.mpris_pause(),
                 MprisControlEvent::PlayPause => self.toggle_play_pause_hotkey().await,
                 MprisControlEvent::Stop => {
+                    self.playback.page_advance = None;
                     self.playback.audio_player.stop();
                     self.playback.playback_state = PlaybackRuntimeState::Stopped;
                 }
@@ -4220,6 +4257,7 @@ impl App {
     }
 
     fn mpris_pause(&mut self) {
+        self.playback.page_advance = None;
         if self.playback.playback_state == PlaybackRuntimeState::Playing {
             self.playback.audio_player.toggle_play_pause();
             self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
@@ -4730,46 +4768,70 @@ impl App {
         }
     }
     fn tick_playlist_page_fetch(&mut self) {
-        let Some(result) = peek_shared_future(&self.browse.playlist_page_fetch).cloned() else {
-            return;
-        };
-        self.browse.playlist_page_fetch = None;
-        self.browse.playlist.loading_more = false;
-
-        match result {
-            Ok(page) => {
-                self.browse.playlist.append_tracks(page.tracks);
-                self.browse.playlist.next_offset = page.next_offset;
-                self.browse.playlist.has_more = page.has_more;
-            }
-            Err(error) => {
-                self.set_runtime_status(format!(
-                    "{}: {error}",
-                    self.lang_text("歌单分页加载失败", "Playlist page load failed")
-                ));
+        let browse = self.browse.playlist.pagination.clone();
+        let playback = self.playback.pagination.clone();
+        for pagination in browse.iter().chain(playback.iter().filter(|pager| {
+            !browse
+                .as_ref()
+                .is_some_and(|browse| browse.same_source(pager))
+        })) {
+            let Some(result) = pagination.take_ready() else {
+                continue;
+            };
+            match result {
+                Ok(page) => {
+                    if playlist_pagination::apply_page(
+                        pagination,
+                        page,
+                        &mut self.browse.playlist,
+                        self.playback.pagination.as_ref(),
+                        &mut self.playback.playback_queue,
+                    ) {
+                        self.persist_playback_memory();
+                    }
+                }
+                Err(error) => {
+                    if self
+                        .playback
+                        .pagination
+                        .as_ref()
+                        .is_some_and(|pager| pager.same_source(pagination))
+                        && self.playback.page_advance.take().is_some()
+                    {
+                        self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                    }
+                    self.set_runtime_status(format!(
+                        "{}: {error}",
+                        self.lang_text("歌单分页加载失败", "Playlist page load failed")
+                    ));
+                }
             }
         }
     }
 
     fn maybe_fetch_playlist_page(&mut self) {
-        if self.page != Page::Playlist
-            || self.browse.playlist_fetch.is_some()
-            || self.browse.playlist_page_fetch.is_some()
-            || self.browse.playlist.loading_more
-            || !self.browse.playlist.has_more
-            || self.browse.playlist.focused_idx + 1 < self.browse.playlist.tracks.len()
+        if self.page == Page::Playlist
+            && self.browse.playlist_fetch.is_none()
+            && self.browse.playlist.focused_idx + 1 >= self.browse.playlist.tracks.len()
+            && let Some(pagination) = &self.browse.playlist.pagination
         {
-            return;
+            pagination.request(self.api.clone());
         }
-        let Some(playlist_id) = self.browse.playlist.id.clone() else {
-            return;
-        };
-        let offset = self.browse.playlist.next_offset;
-        let total_tracks = self.browse.playlist.total_tracks;
-        self.browse.playlist.loading_more = true;
-        let fut = fetch_playlist_tracks_page(self.api.clone(), playlist_id, offset, total_tracks);
-        let fut: PlaylistPageTask = Box::pin(async move { Some(fut.await) });
-        self.browse.playlist_page_fetch = Some(spawn_shared(fut));
+    }
+
+    fn maybe_prefetch_playback_page(&self) {
+        if let Some(index) = self.playback.playback_index
+            && index.saturating_add(3) >= self.playback.playback_queue.len()
+            && let Some(pagination) = &self.playback.pagination
+        {
+            pagination.prefetch(self.api.clone());
+        }
+    }
+
+    pub fn fullscreen_request_queue_page(&self) {
+        if let Some(pagination) = &self.playback.pagination {
+            pagination.request(self.api.clone());
+        }
     }
 
     async fn open_focused_home_sidebar_playlist(&mut self) {
@@ -5049,6 +5111,7 @@ impl App {
     }
 
     async fn toggle_play_pause_hotkey(&mut self) {
+        self.playback.page_advance = None;
         if self.playback.now_playing.is_none() {
             self.set_runtime_status(
                 self.lang_text("当前没有可控制的播放", "No controllable playback right now"),
@@ -5107,6 +5170,9 @@ impl App {
             .playback_index
             .unwrap_or(0)
             .min(self.playback.playback_queue.len() - 1);
+        if self.defer_playlist_advance(current, true) {
+            return;
+        }
         let target = match self.playback.playback_repeat_mode {
             PlaybackRepeatMode::Sequence => {
                 if current + 1 < self.playback.playback_queue.len() {
@@ -5629,6 +5695,24 @@ impl App {
     }
 
     async fn tick_audio(&mut self) {
+        self.tick_playlist_page_fetch();
+        self.maybe_prefetch_playback_page();
+        if let Some(announce) = self.playback.page_advance {
+            let current = self.playback.playback_index.unwrap_or(0);
+            if current + 1 < self.playback.playback_queue.len() {
+                self.playback.page_advance = None;
+                self.play_queue_index(current + 1, announce).await;
+            } else if !self
+                .playback
+                .pagination
+                .as_ref()
+                .is_some_and(PlaylistPagination::is_pending)
+            {
+                self.playback.page_advance = None;
+                self.play_next_after_finish().await;
+            }
+            return;
+        }
         let runtime = map_audio_state(self.playback.audio_player.state());
 
         if self.playback.playback_state == PlaybackRuntimeState::Playing
@@ -5652,6 +5736,9 @@ impl App {
             .playback_index
             .unwrap_or(0)
             .min(self.playback.playback_queue.len() - 1);
+        if self.defer_playlist_advance(current, false) {
+            return;
+        }
 
         // 私人漫游：队列（快照）播完后，若列表已追加新歌则从列表继续顺序播放
         if self.playback.playback_repeat_mode == PlaybackRepeatMode::Sequence
@@ -5667,7 +5754,14 @@ impl App {
                     .collect();
                 // 来源仍是漫游本身，封面沿用漫游当前封面（跟随播放歌曲）。
                 let source_cover = self.browse.private_roam.cover_url.clone();
-                self.replace_queue_and_play(queue, 0, source_cover).await;
+                self.replace_queue_and_play(
+                    queue,
+                    0,
+                    source_cover,
+                    Some(HOME_PRIVATE_ROAM_TILE_ID.to_string()),
+                    None,
+                )
+                .await;
                 return;
             }
         }
@@ -5696,10 +5790,26 @@ impl App {
         }
     }
 
+    fn defer_playlist_advance(&mut self, current: usize, announce: bool) -> bool {
+        if matches!(
+            self.playback.playback_repeat_mode,
+            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll
+        ) && current + 1 >= self.playback.playback_queue.len()
+            && let Some(pagination) = &self.playback.pagination
+            && pagination.has_more()
+        {
+            pagination.request(self.api.clone());
+            self.playback.page_advance = Some(announce);
+            return true;
+        }
+        false
+    }
+
     async fn play_queue_index(&mut self, index: usize, announce: bool) {
         let Some(track) = self.playback.playback_queue.get(index).cloned() else {
             return;
         };
+        self.playback.page_advance = None;
 
         // 记录私人漫游播放位置/封面；播放到列表末尾时追加新歌
         self.track_private_roam_playback(&track).await;
@@ -5714,6 +5824,7 @@ impl App {
         self.playback.now_playing = Some(enriched.clone());
         self.refresh_now_playing_like_state();
         self.playback.playback_index = Some(index);
+        self.maybe_prefetch_playback_page();
         self.cover_fetch_inflight_url = None;
         self.cover_fetch_last_attempt_at = None;
         self.maybe_schedule_now_playing_cover_fetch();
@@ -6104,6 +6215,8 @@ impl App {
         queue: Vec<PlaybackTrack>,
         index: usize,
         source_cover_url: Option<String>,
+        source_id: Option<String>,
+        pagination: Option<PlaylistPagination>,
     ) {
         if queue.is_empty() {
             self.set_runtime_status(
@@ -6112,12 +6225,8 @@ impl App {
             return;
         }
 
-        self.playback.replace_queue(
-            queue,
-            None,
-            source_cover_url,
-            self.browse.playlist.id.clone(),
-        );
+        self.playback
+            .replace_queue(queue, None, source_cover_url, source_id, pagination);
         let target = index.min(self.playback.playback_queue.len() - 1);
         self.play_queue_index(target, true).await;
     }
@@ -6172,8 +6281,14 @@ impl App {
             PlaylistTrackKind::Song => {
                 let (queue, target) = self.build_queue_from_playlist();
                 let source_cover = self.browse.playlist.cover.url.clone();
-                self.replace_queue_and_play(queue, target, source_cover)
-                    .await;
+                self.replace_queue_and_play(
+                    queue,
+                    target,
+                    source_cover,
+                    self.browse.playlist.id.clone(),
+                    self.browse.playlist.pagination.clone(),
+                )
+                .await;
             }
             PlaylistTrackKind::Album | PlaylistTrackKind::Ep | PlaylistTrackKind::Single => {
                 self.open_focused_playlist_album().await;
@@ -6184,7 +6299,8 @@ impl App {
     async fn play_focused_search_track(&mut self) {
         let (queue, target) = self.build_queue_from_search();
         // 搜索结果没有"所属列表"，交给首歌封面兜底。
-        self.replace_queue_and_play(queue, target, None).await;
+        self.replace_queue_and_play(queue, target, None, None, None)
+            .await;
     }
 
     async fn play_focused_author_tile(&mut self) {
@@ -6393,6 +6509,7 @@ impl App {
             )
         };
 
+        self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
             self.lang_text("正在加载专辑…", "Loading album…")
@@ -6436,6 +6553,7 @@ impl App {
             (playlist_id, item.left_label.clone(), item.cover_url.clone())
         };
 
+        self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
             self.lang_text("正在加载歌单…", "Loading playlist…")
@@ -7510,8 +7628,9 @@ impl App {
             }
             KeyCode::Enter => self.play_focused_playlist_track().await,
             KeyCode::Esc | KeyCode::Left => {
-                self.browse.playlist_page_fetch = None;
-                self.browse.playlist.loading_more = false;
+                if let Some(pagination) = &self.browse.playlist.pagination {
+                    pagination.cancel();
+                }
                 if let Some(snapshot) = self.playlist_section_return_snapshot.take() {
                     self.browse.playlist = snapshot;
                     return;
@@ -7986,6 +8105,7 @@ impl App {
             }
         };
 
+        self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
             self.lang_text("正在加载专辑…", "Loading album…")
@@ -8166,6 +8286,11 @@ impl App {
             ),
             source_playlist_id: self.playback.playback_queue_source_id.clone(),
             source_cover_url: self.playback.playback_queue_cover_url.clone(),
+            source_cursor: self
+                .playback
+                .pagination
+                .as_ref()
+                .map(PlaylistPagination::cursor),
             updated_at: 0,
         };
 
@@ -8228,12 +8353,19 @@ impl App {
             self.playback.playback_repeat_mode = mode;
         }
 
+        let pagination = record
+            .source_cursor
+            .filter(|cursor| {
+                Some(cursor.source_id.as_str()) == record.source_playlist_id.as_deref()
+            })
+            .map(PlaylistPagination::new);
         self.playback.restoring_memory = true;
         self.playback.replace_queue(
             queue,
             None,
             record.source_cover_url,
             record.source_playlist_id,
+            pagination,
         );
         let target = record
             .current_index
@@ -8616,7 +8748,24 @@ impl App {
     /// 落状态即宣告"这一页换成了新来源"：在途的那次拉取随之作废，否则它迟到时
     /// 会把刚打开的页面覆盖成被放弃的那一份（`tick_playlist_fetch` 只看句柄）。
     fn apply_playlist_fetch(&mut self, fetch: PlaylistFetch) {
+        let playing_source = self
+            .playback
+            .pagination
+            .as_ref()
+            .filter(|pagination| fetch.paginated && pagination.cursor().source_id == fetch.id)
+            .cloned();
         let liked = self.browse.apply_playlist(fetch, &self.api);
+        if let Some(pagination) = playing_source {
+            self.browse.playlist.set_tracks(
+                self.playback
+                    .playback_queue
+                    .iter()
+                    .map(PlaybackTrack::as_playlist_track)
+                    .collect(),
+            );
+            self.browse.playlist.total_tracks = pagination.cursor().total_tracks;
+            self.browse.playlist.pagination = Some(pagination);
+        }
 
         if let Some(liked) = liked {
             if let Some(profile) = liked.profile {
@@ -11303,12 +11452,8 @@ mod tests {
         state.set_tracks(vec![track("a"), track("b")]);
         state.set_focus(1);
         state.total_tracks = Some(4);
-        state.next_offset = 2;
-        state.has_more = true;
 
         state.append_tracks(vec![track("c"), track("d")]);
-        state.next_offset = 4;
-        state.has_more = false;
 
         let ids: Vec<Option<String>> = state.tracks.iter().map(|item| item.id.clone()).collect();
         assert_eq!(
@@ -11322,7 +11467,6 @@ mod tests {
         );
         assert_eq!(state.focused_idx, 1);
         assert_eq!(state.total_tracks, Some(4));
-        assert!(!state.has_more);
     }
 
     #[test]

@@ -185,6 +185,10 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
         self.app.fullscreen_play_queue_index(index).await;
     }
 
+    fn request_queue_page(&mut self) {
+        self.app.fullscreen_request_queue_page();
+    }
+
     fn seek_to_ratio(&mut self, ratio: f32) {
         self.app.fullscreen_seek_to_ratio(ratio);
     }

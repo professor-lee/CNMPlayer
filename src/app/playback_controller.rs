@@ -1,4 +1,5 @@
 use super::player::AudioPlayer;
+use super::playlist_pagination::PlaylistPagination;
 use super::{LikeMachine, PlaybackRepeatMode, PlaybackRuntimeState, PlaybackTrack};
 
 pub(crate) struct PlaybackController {
@@ -14,6 +15,9 @@ pub(crate) struct PlaybackController {
     pub playback_repeat_mode: PlaybackRepeatMode,
     pub playback_state: PlaybackRuntimeState,
     pub restoring_memory: bool,
+    pub(super) pagination: Option<PlaylistPagination>,
+    /// End-of-page advance waits for the shared page instead of stopping or wrapping early.
+    pub page_advance: Option<bool>,
 }
 
 impl PlaybackController {
@@ -31,6 +35,8 @@ impl PlaybackController {
             playback_repeat_mode: PlaybackRepeatMode::Sequence,
             playback_state: PlaybackRuntimeState::Stopped,
             restoring_memory: false,
+            pagination: None,
+            page_advance: None,
         }
     }
 
@@ -68,19 +74,24 @@ impl PlaybackController {
         self.playback_queue_cover = None;
         self.playback_queue_source_id = None;
         self.restoring_memory = false;
+        self.pagination = None;
+        self.page_advance = None;
     }
 
-    pub fn replace_queue(
+    pub(super) fn replace_queue(
         &mut self,
         queue: Vec<PlaybackTrack>,
         index: Option<usize>,
         cover_url: Option<String>,
         source_id: Option<String>,
+        pagination: Option<PlaylistPagination>,
     ) {
         self.playback_queue = queue;
         self.playback_index = index;
         self.playback_queue_cover_url = cover_url;
         self.playback_queue_cover = None;
         self.playback_queue_source_id = source_id;
+        self.pagination = pagination;
+        self.page_advance = None;
     }
 }

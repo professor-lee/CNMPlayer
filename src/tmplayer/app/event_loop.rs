@@ -191,7 +191,14 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
     playlist.selected = current;
     playlist.clamp_selected();
 
-    let keep_selected = app.overlay == Overlay::Playlist && app.playlist_view.len() == queue_len;
+    let keep_selected = app.overlay == Overlay::Playlist
+        && app.playlist_view.len() <= queue_len
+        && app
+            .playlist_view
+            .items
+            .iter()
+            .zip(&playlist.items)
+            .all(|(old, new)| old.song_id == new.song_id);
     let view_selected = if keep_selected {
         app.playlist_view.selected.min(queue_len.saturating_sub(1))
     } else {
@@ -749,6 +756,9 @@ async fn handle_action(
         Action::PlaylistDown => {
             app.playlist_view.move_down();
             app.playlist_view.clamp_selected();
+            if app.playlist_view.selected + 1 >= app.playlist_view.len() {
+                host_bridge.request_queue_page();
+            }
         }
         Action::ModalUp => {
             if app.overlay == Overlay::SettingsModal {
@@ -929,6 +939,9 @@ async fn handle_action(
             if idx < app.playlist_view.len() {
                 app.playlist_view.selected = idx;
                 app.playlist_view.clamp_selected();
+                if idx + 1 >= app.playlist_view.len() {
+                    host_bridge.request_queue_page();
+                }
                 let now = Instant::now();
                 let is_double = app.last_playlist_click.is_some_and(|(at, last)| {
                     now.duration_since(at) <= Duration::from_millis(400) && last == idx
@@ -1549,5 +1562,35 @@ mod tests {
         sync_from_host_snapshot(&mut app, HostPlaybackSnapshot::default());
         assert!(app.cover_anim.is_none());
         assert!(app.playlist.items.is_empty());
+    }
+    #[test]
+    fn appended_host_page_keeps_playlist_focus_on_the_boundary_row() {
+        let mut app = AppState::new(
+            Config::default(),
+            crate::ui::theme::Theme::default(),
+            crate::data::config::Language::Zh,
+        );
+        let snapshot = |ids: &[&str]| HostPlaybackSnapshot {
+            playlist: ids
+                .iter()
+                .map(|id| crate::tmplayer::FullscreenPlaylistItemSeed {
+                    id: Some(id.to_string()),
+                    title: id.to_string(),
+                    artist: String::new(),
+                    album: String::new(),
+                    duration: Duration::from_secs(60),
+                })
+                .collect(),
+            current_index: Some(0),
+            ..Default::default()
+        };
+        sync_from_host_snapshot(&mut app, snapshot(&["99", "100"]));
+        app.overlay = Overlay::Playlist;
+        app.playlist_view.selected = 1;
+        sync_from_host_snapshot(&mut app, snapshot(&["99", "100", "101"]));
+        assert_eq!(app.playlist_view.selected, 1);
+        assert_eq!(app.playlist_view.items[2].song_id.as_deref(), Some("101"));
+        sync_from_host_snapshot(&mut app, snapshot(&["new-a", "new-b", "new-c"]));
+        assert_eq!(app.playlist_view.selected, 0, "替换来源时聚焦当前播放项");
     }
 }
