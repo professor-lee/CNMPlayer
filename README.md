@@ -47,7 +47,7 @@ Playback belongs to the host: streaming with a local cache, queue memory, privat
 
 - Home: a recommendation tile grid whose first three slots are always `每日推荐` (Daily Recommendations), `私人雷达` (Private Radar) and `私人漫游` (Private Roam); `home_more_recommend` expands the remaining recommendations
 - Home sidebar (toggle keybind, default `P`): your created and collected playlists, fetched 100 at a time and appended when scrolling to the end; `Ctrl+Up/Down` switches section, Enter opens, Esc collapses; the wheel scrolls the section under the cursor (stopping at either end), a click focuses and a double click opens
-- Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list
+- Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list. Playlist tracks load 100 at a time; browsing and playback share the same source-bound cursor and request, so a page fetched by either is appended to both. Switching to daily recommendations, artist sections or albums cancels the old browsing request and clears its pagination state.
 - Artist page: avatar, name, hot-song / album / EP / single counts and a tile grid per section
 - Search page: a plain keyword searches artists, playlists and songs at once (artists and playlists show the 5 most relevant hits each, above separate rules); songs are requested 100 at a time and appended as you scroll further
 - Private roam: refreshed daily while keeping the last played track at the head; reaching the end of the list fetches more (each API call returns 3 songs, three calls are merged and de-duplicated) and appends them; the tile cover follows the currently playing roam song, and the queue origin survives a restart
@@ -75,11 +75,12 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 
 - Streaming: the song downloads into `<cache>/audio/<song_id>__<quality>.<pid>-<job_id>.part` and is renamed to `<song_id>__<quality>.audio` only after the complete response is written successfully. Independent temporary files prevent cancellation of an old task from affecting its replacement. Completed cache files play directly from disk; the buffered part of the progress bar shows download progress.
 - Seeking from the progress bar or inside the fullscreen page, with a pulse animation while the position catches up
-- Queue memory (`playback_memory`): queue, current index, repeat mode and the queue's origin list are saved on every track change and restored after login — the restored track starts from the beginning
+- Queue memory (`playback_memory`): queue, current index, repeat mode and the queue's origin list are saved on every track change; new saves also retain the playlist cursor. Startup restoration shares the 12-second initialization budget (at most 6 seconds for one step); timeout skips this attempt without replacing the saved memory. The restored track starts from the beginning.
 - VIP-aware audio quality (`audio_quality`): 9 levels from `standard` to `jymaster`; a non-VIP account is clamped to `exhigh`
 - 10-band EQ, ±12 dB (`eq_bands_db`), edited from the fullscreen EQ modal and applied to the live stream
-- Like / unlike from the fullscreen page and from the collapsed player bar
+- Like / unlike from the fullscreen page and from the collapsed player bar; requests are serialized and rapid inputs retain the latest intent instead of letting an older in-flight result discard it
 - Repeat modes: sequence → shuffle → loop all → loop one
+- Playlist playback prefetches the next page when entering the last three loaded tracks. At an unfinished boundary, sequence/list-repeat waits for that page instead of stopping or wrapping early; scrolling the fullscreen queue to its last row uses the same request. The open fullscreen playlist consumes clicks over hidden information controls.
 - Linux media control (MPRIS, player name `cnmplayer`) with metadata and cover art; the host owns MPRIS updates and the fullscreen page has no independent polling setting
 
 ### Downloads
@@ -121,7 +122,7 @@ The flat player bar keeps its mouse targets (previous, play-pause, next, like, r
 
 - Themes: loaded dynamically from `themes/*.toml` — 20 built-ins (`frappe` by default, plus `system`, the other Catppuccin variants, `ayu_light`, `ayu_mirage`, `ocean`, `everforest_dark`, `everforest_light`, `monokai_pro`, `nord`, `rose_pine_moon`, `solarized_dark`, `solarized_light`, `tomorrow_light`, `tomorrow_night`, `zenburn`, `zinc_dark`, `zinc_light`); drop in your own toml and it joins the cycle. Files that fail validation are skipped, and a broken selected theme falls back to the default
 - UI language: `zh` / `en`
-- Startup: a loading page (ASCII title plus progress bar, no text) appears first; login restore and recommendation fetches run in the background step by step, and an unusable saved session hands over to the login page
+- Startup: a loading page (ASCII title plus progress bar, no text) appears first; login restore and recommendation fetches run in the background step by step, and an unusable saved session hands over to the login page. Playback-memory restoration is bounded by the same initialization deadline.
 - Transparent background, album-cover border and hint lines
 - 22 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
 - About modal with braille art, and a hidden easter egg inside it (the `easter-egg` cargo feature, compiled in by default and removable with `--no-default-features`)

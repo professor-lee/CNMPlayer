@@ -158,8 +158,10 @@ mod tests {
     async fn browsing_and_playback_share_page_and_preserve_focus() {
         let pagination = pagination("playlist-a");
         let playback = pagination.clone();
-        let mut browse = PlaylistState::default();
-        browse.id = Some("playlist-a".to_string());
+        let mut browse = PlaylistState {
+            id: Some("playlist-a".to_string()),
+            ..Default::default()
+        };
         browse.set_tracks(vec![track("99"), track("100")]);
         browse.set_focus(1);
         browse.pagination = Some(pagination.clone());

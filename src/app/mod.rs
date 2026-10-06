@@ -8754,6 +8754,17 @@ impl App {
             .as_ref()
             .filter(|pagination| fetch.paginated && pagination.cursor().source_id == fetch.id)
             .cloned();
+        if let Some(pagination) = &playing_source
+            && self
+                .browse
+                .playlist
+                .pagination
+                .as_ref()
+                .is_some_and(|current| current.same_source(pagination))
+        {
+            // Reopening the playback source must not cancel its shared in-flight page.
+            self.browse.playlist.pagination = None;
+        }
         let liked = self.browse.apply_playlist(fetch, &self.api);
         if let Some(pagination) = playing_source {
             self.browse.playlist.set_tracks(
@@ -11471,15 +11482,17 @@ mod tests {
 
     #[test]
     fn sidebar_state_appends_requested_section_page() {
-        let mut state = HomeSidebarState::default();
-        state.created_has_more = true;
-        state.created_next_offset = 100;
-        state.created_playlists = vec![HomeSidebarPlaylist {
-            id: Some("first".to_string()),
-            title: "first".to_string(),
-            creator: "creator".to_string(),
-            track_count: 1,
-        }];
+        let mut state = HomeSidebarState {
+            created_has_more: true,
+            created_next_offset: 100,
+            created_playlists: vec![HomeSidebarPlaylist {
+                id: Some("first".to_string()),
+                title: "first".to_string(),
+                creator: "creator".to_string(),
+                track_count: 1,
+            }],
+            ..HomeSidebarState::default()
+        };
         state.append_section_page(HomeSidebarPageFetch {
             section: HomeSidebarSection::Created,
             items: vec![HomeSidebarPlaylist {
