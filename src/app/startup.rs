@@ -50,7 +50,7 @@ enum StartupEvent {
     /// 扫码登录二维码。
     QrCode(QrLoginCode),
     /// 全部结束，后台任务持有的 `ApiState` 交还主循环。
-    Done { api: ApiState },
+    Done { api: ApiState, deadline: Instant },
 }
 
 /// 启动初始化任务与加载页进度。
@@ -232,7 +232,7 @@ async fn run_startup_init(
             None => log::warn!("二维码获取超时"),
         }
         let _ = tx.send(StartupEvent::Step { done: done.max(1) });
-        let _ = tx.send(StartupEvent::Done { api });
+        let _ = tx.send(StartupEvent::Done { api, deadline });
         return;
     }
 
@@ -290,7 +290,7 @@ async fn run_startup_init(
         None => log::warn!("首页推荐加载超时"),
     }
 
-    let _ = tx.send(StartupEvent::Done { api });
+    let _ = tx.send(StartupEvent::Done { api, deadline });
 }
 
 impl App {
@@ -339,15 +339,70 @@ impl App {
             StartupEvent::Roam { tracks } => self.apply_private_roam_refresh(tracks),
             StartupEvent::Home { tiles } => self.apply_home_tiles(tiles),
             StartupEvent::QrCode(code) => self.apply_qr_login_code(code),
-            StartupEvent::Done { api } => {
+            StartupEvent::Done { api, deadline } => {
                 self.api = api;
                 if self.session_cookie.is_some() {
-                    // 播放记忆恢复要写 App 状态，留在主循环做，算作最后一步。
-                    self.try_restore_playback_memory().await;
+                    if step(deadline, self.try_restore_playback_memory())
+                        .await
+                        .is_none()
+                    {
+                        self.playback.audio_player.stop();
+                        self.playback.clear_queue();
+                        self.playback.now_playing = None;
+                        self.playback.now_playing_liked = false;
+                        self.cover_fetch_generation = self.cover_fetch_generation.wrapping_add(1);
+                        let _ = self.cover_fetch_tx.send(None);
+                        self.cover_fetch_inflight_url = None;
+                        self.lyric_fetch_generation = self.lyric_fetch_generation.wrapping_add(1);
+                        let _ = self.lyric_fetch_tx.send(None);
+                        self.lyric_fetch_inflight_song_id = None;
+                        self.set_runtime_status(self.lang_text(
+                            "播放记忆恢复超时，跳过本次恢复",
+                            "Playback memory restore timed out; skipped this attempt",
+                        ));
+                    }
                     self.startup.init.complete_step();
                 }
                 self.finish_startup_loading();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::step;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    #[compio::test]
+    async fn exhausted_startup_budget_does_not_start_restore() {
+        let entered = Cell::new(false);
+        let result = step(Instant::now(), async {
+            entered.set(true);
+        })
+        .await;
+        assert!(result.is_none());
+        assert!(!entered.get());
+    }
+
+    #[compio::test]
+    async fn restore_uses_remaining_budget_and_drops_pending_work() {
+        struct Pending(Rc<Cell<bool>>);
+        impl Drop for Pending {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Rc::new(Cell::new(false));
+        let pending = Pending(dropped.clone());
+        let result = step(Instant::now() + Duration::from_millis(20), async move {
+            let _pending = pending;
+            std::future::pending::<()>().await;
+        })
+        .await;
+        assert!(result.is_none());
+        assert!(dropped.get());
     }
 }

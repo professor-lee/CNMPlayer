@@ -13,6 +13,7 @@ pub(crate) struct PlaybackController {
     pub playback_index: Option<usize>,
     pub playback_repeat_mode: PlaybackRepeatMode,
     pub playback_state: PlaybackRuntimeState,
+    pub restoring_memory: bool,
 }
 
 impl PlaybackController {
@@ -29,6 +30,7 @@ impl PlaybackController {
             playback_index: None,
             playback_repeat_mode: PlaybackRepeatMode::Sequence,
             playback_state: PlaybackRuntimeState::Stopped,
+            restoring_memory: false,
         }
     }
 
@@ -64,6 +66,8 @@ impl PlaybackController {
         self.playback_repeat_mode = PlaybackRepeatMode::Sequence;
         self.playback_queue_cover_url = None;
         self.playback_queue_cover = None;
+        self.playback_queue_source_id = None;
+        self.restoring_memory = false;
     }
 
     pub fn replace_queue(

@@ -8137,7 +8137,10 @@ impl App {
     }
 
     fn persist_playback_memory(&self) {
-        if !self.config.playback_memory || self.playback.playback_queue.is_empty() {
+        if self.playback.restoring_memory
+            || !self.config.playback_memory
+            || self.playback.playback_queue.is_empty()
+        {
             return;
         }
 
@@ -8225,6 +8228,7 @@ impl App {
             self.playback.playback_repeat_mode = mode;
         }
 
+        self.playback.restoring_memory = true;
         self.playback.replace_queue(
             queue,
             None,
@@ -8236,6 +8240,7 @@ impl App {
             .unwrap_or(0)
             .min(self.playback.playback_queue.len().saturating_sub(1));
         self.play_queue_index(target, false).await;
+        self.playback.restoring_memory = false;
         self.set_runtime_status(self.lang_text("已恢复播放记忆", "Playback memory restored"));
     }
 
@@ -11496,7 +11501,11 @@ mod tests {
         machine.set_intent("s1".to_string(), false);
 
         assert_eq!(machine.pending_dispatch(), None, "串行化：一次只发一个");
-        assert_eq!(machine.drop_satisfied_intent(), None, "在途写入不能满足新意图");
+        assert_eq!(
+            machine.drop_satisfied_intent(),
+            None,
+            "在途写入不能满足新意图"
+        );
         assert!(!machine.displayed("s1"));
     }
 
