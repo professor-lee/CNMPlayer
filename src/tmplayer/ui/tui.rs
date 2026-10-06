@@ -1773,6 +1773,17 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
         return None;
     }
 
+    // The rendered playlist (including its slide shell) covers every information control.
+    if contains(layout.playlist_rect, col, row) || contains(layout.playlist_list_inner, col, row) {
+        if contains(layout.playlist_list_inner, col, row) {
+            let offset = row.saturating_sub(layout.playlist_list_inner.y) as usize;
+            if offset < app.playlist_list_rows {
+                return Some(Action::PlaylistSelect(app.playlist_list_scroll + offset));
+            }
+        }
+        return None;
+    }
+
     if contains(layout.info_controls, col, row) {
         return control_buttons::hit_test(layout.info_controls, app, col, row);
     }
@@ -1795,23 +1806,9 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
         return Some(Action::ToggleDownload);
     }
 
-    // 歌单浮层（含滑出动画）画在信息区之上：它盖住的那几行不再是"看得见的名字"，
-    // 命中区按空名字处理（空名字本就不返回命中区），以免点在可见的歌单行上被判成
-    // "点作者名/专辑名"而退出全屏页。浮层自己的行命中在下面按绘制顺序判定。
-    let covered_by_playlist_panel =
-        !layout.playlist_rect.is_empty() && contains(layout.playlist_rect, col, row);
-    let (artist_hit, album_hit) = if covered_by_playlist_panel {
-        ("", "")
-    } else {
-        (
-            app.player.track.artist.as_str(),
-            app.player.track.album.as_str(),
-        )
-    };
-
     // 作者名贴 meta 块第 2 行左端，多作者按字符位置分段（"A / B" 点谁的名字进谁）：
     // 只有名字画出来的那几格可点，连接符与行尾空白都不算。
-    for (index, rect) in info_panel::artist_row_hits(layout.info_meta, artist_hit) {
+    for (index, rect) in info_panel::artist_row_hits(layout.info_meta, &app.player.track.artist) {
         if contains(rect, col, row) {
             return Some(Action::OpenAuthorPage(index));
         }
@@ -1819,7 +1816,7 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
 
     // 专辑名贴 meta 块第 3 行左端，同样只算画出来的字符：点了打开专辑页。
     if contains(
-        info_panel::album_row_rect(layout.info_meta, album_hit),
+        info_panel::album_row_rect(layout.info_meta, &app.player.track.album),
         col,
         row,
     ) {
@@ -1835,16 +1832,6 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
             layout.info_progress,
             col,
         )));
-    }
-
-    if contains(layout.playlist_list_inner, col, row) {
-        // 渲染带虚拟滚动窗口 + 末尾 2 行 footer，命中区必须用同一份映射，
-        // 否则列表滚过一屏后点到的不是看到的那首。
-        let offset = row.saturating_sub(layout.playlist_list_inner.y) as usize;
-        if offset < app.playlist_list_rows {
-            return Some(Action::PlaylistSelect(app.playlist_list_scroll + offset));
-        }
-        return None;
     }
 
     None
@@ -2439,6 +2426,58 @@ mod tests {
             hit_test(&uncovered, &app, 2, 7),
             Some(Action::OpenAlbumPage)
         );
+    }
+
+    #[test]
+    fn playlist_panel_blocks_hidden_controls_but_not_uncovered_cells() {
+        let mut app = state(Overlay::Playlist);
+        app.download_state = crate::tmplayer::DownloadIconState::NotDownloaded;
+        app.playlist_list_scroll = 7;
+        app.playlist_list_rows = 5;
+        let layout = UiLayout {
+            playlist_rect: rect(0, 0, 24, 8),
+            playlist_list_inner: rect(1, 1, 22, 6),
+            info_meta: rect(1, 1, 22, 3),
+            info_controls: rect(0, 4, 30, 1),
+            info_volume: rect(0, 5, 30, 1),
+            info_progress: rect(0, 6, 30, 1),
+            ..UiLayout::default()
+        };
+        for row in 1..=5 {
+            assert_eq!(
+                hit_test(&layout, &app, 21, row),
+                Some(Action::PlaylistSelect(7 + usize::from(row - 1)))
+            );
+        }
+        assert_eq!(
+            hit_test(&layout, &app, 21, 6),
+            None,
+            "footer swallows the hidden seek bar"
+        );
+        assert_eq!(
+            hit_test(&layout, &app, 0, 4),
+            None,
+            "panel border swallows hidden buttons"
+        );
+        assert!(matches!(
+            hit_test(&layout, &app, 25, 5),
+            Some(Action::SetVolume(_))
+        ));
+        assert!(matches!(
+            hit_test(&layout, &app, 25, 6),
+            Some(Action::SeekToFraction(_))
+        ));
+
+        let sliding = UiLayout {
+            playlist_rect: rect(0, 0, 12, 8),
+            playlist_list_inner: Rect::default(),
+            ..layout
+        };
+        assert_eq!(hit_test(&sliding, &app, 5, 5), None);
+        assert!(matches!(
+            hit_test(&sliding, &app, 15, 5),
+            Some(Action::SetVolume(_))
+        ));
     }
 
     /// 命中宽度按显示宽度算：中日韩名字一个字占两格。
