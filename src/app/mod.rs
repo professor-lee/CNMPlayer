@@ -1284,6 +1284,9 @@ impl LikeMachine {
 
     /// 期望已被满足（例如连点两次回到原状态）时清掉意图，返回该曲目 id。
     fn drop_satisfied_intent(&mut self) -> Option<String> {
+        if self.toggle.is_some() {
+            return None;
+        }
         let (song_id, target) = self.desired.as_ref()?;
         if self.is_confirmed(song_id) != *target {
             return None;
@@ -11493,6 +11496,7 @@ mod tests {
         machine.set_intent("s1".to_string(), false);
 
         assert_eq!(machine.pending_dispatch(), None, "串行化：一次只发一个");
+        assert_eq!(machine.drop_satisfied_intent(), None, "在途写入不能满足新意图");
         assert!(!machine.displayed("s1"));
     }
 
@@ -11503,6 +11507,7 @@ mod tests {
         machine.set_intent("s1".to_string(), true);
         machine.begin_toggle("s1".to_string(), true, pending_toggle_future());
         machine.set_intent("s1".to_string(), false);
+        assert_eq!(machine.drop_satisfied_intent(), None);
         // 真实路径里 pump 先取走回包句柄，再交给状态机收敛
         machine.toggle = None;
 
