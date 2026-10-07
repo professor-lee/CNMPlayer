@@ -687,30 +687,7 @@ impl AppState {
     }
 
     pub fn active_render_fps(&self) -> u32 {
-        use crate::data::config::VisualizeMode;
-
-        let base = self.config.ui_fps.clamp(10, 60);
-        // 频谱靠 cava 的拖尾衰减，示波器靠自己的收尾动画：暂停后两者都还在动。
-        let visual_active = match self.config.visualize {
-            // 两个无可视化档位都不画东西：歌词只在整行切换时变，跟得上基础帧率。
-            VisualizeMode::Hidden | VisualizeMode::Lyrics => false,
-            VisualizeMode::Bars => {
-                self.player.playback == PlaybackState::Playing
-                    || (self.player.playback == PlaybackState::Paused
-                        && self.has_spectrum_tail_motion())
-            }
-            VisualizeMode::Oscilloscope => {
-                self.player.playback == PlaybackState::Playing || self.scope_gain.is_animating()
-            }
-            VisualizeMode::Vector => {
-                self.player.playback == PlaybackState::Playing || self.vector.is_animating()
-            }
-        };
-
-        if visual_active {
-            return self.config.spectrum_hz.clamp(base, 60);
-        }
-        base
+        self.config.ui_fps.clamp(10, 60)
     }
 
     pub fn idle_render_fps(&self) -> u32 {
