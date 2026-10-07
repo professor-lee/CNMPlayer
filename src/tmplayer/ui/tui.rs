@@ -254,6 +254,7 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
                 .style(Style::default().fg(app.theme.color_subtext())),
                 size,
             );
+            slide_page_from_bottom(f.buffer_mut(), progress);
             return;
         }
 
@@ -416,18 +417,36 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
             Overlay::EqModal => render_eq_modal(f, size, app),
             _ => {}
         }
-        // Keep the final layout and image geometry stable; only its visible
-        // window changes, so reveal frames do not re-encode cover sizes.
-        let visible = (f32::from(size.height) * progress.clamp(0.0, 1.0)).round() as u16;
-        let hidden = Rect::new(
-            size.x,
-            size.y,
-            size.width,
-            size.height.saturating_sub(visible),
-        );
-        f.render_widget(ratatui::widgets::Clear, hidden);
+        // Draw at the final geometry, then move the whole page as one drawer.
+        // Cover preparation and cache keys are independent of this screen offset.
+        slide_page_from_bottom(f.buffer_mut(), progress);
     })?;
     Ok(layout_out)
+}
+
+fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32) {
+    let width = usize::from(buffer.area.width);
+    let height = usize::from(buffer.area.height);
+    if width == 0 || height == 0 {
+        return;
+    }
+    let visible = (f32::from(buffer.area.height) * progress.clamp(0.0, 1.0)).round() as usize;
+    let offset = height - visible;
+    if offset == 0 {
+        return;
+    }
+
+    // Copy bottom-to-top so destinations cannot overwrite the remaining source
+    // rows. Reuse the frame's cells: no second full-page buffer or image encoding.
+    for source_row in (0..visible).rev() {
+        let destination = (source_row + offset) * width;
+        let (source, target) = buffer.content.split_at_mut(destination);
+        let start = source_row * width;
+        target[..width].clone_from_slice(&source[start..start + width]);
+    }
+    for cell in &mut buffer.content[..offset * width] {
+        cell.reset();
+    }
 }
 
 fn translated_clip(area: Rect, dx: i16, clip: Rect) -> Rect {
@@ -2067,45 +2086,103 @@ mod tests {
     use crate::ui::theme::{ColorCapability, Theme, ThemePalette};
 
     #[test]
-    fn page_reveal_shows_real_columns_controls_and_loading_cover() {
+    fn fullscreen_drawer_translates_content_and_keeps_cover_geometry() {
+        use crate::data::config::VisualizeMode;
         use crate::render::cover_pipeline::CoverStatus;
         use ratatui::backend::TestBackend;
+        use ratatui::buffer::Cell;
+
         let mut app = state(Overlay::None);
         app.config.show_hints = false;
-        app.player.track.title = "Reveal song".into();
-        app.player.track.artist = "Reveal artist".into();
+        app.config.visualize = VisualizeMode::Lyrics;
+        // TestBackend does not emulate a terminal erasing a wide glyph's tail.
+        // Compare full terminal diffs with narrow text; wide cells are tested below.
+        app.language = crate::data::config::Language::En;
+        app.player.track.title = "Drawer song".into();
+        app.player.track.artist = "Drawer artist".into();
         app.player.track.cover = Some(encoded_cover());
         app.player.track.cover_hash = Some(700);
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let mut covers = CoverPipeline::new(WakeSignal::default());
         let mut drawer = PlaylistDrawer::default();
+
+        // The first, fully offscreen frame still starts real cover preparation.
         let layout =
-            draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.8).unwrap();
-        let buffer = terminal.backend().buffer();
+            draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.0).unwrap();
         let content = info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover);
-        assert_eq!(covers.status(cover_key(content, 700)), CoverStatus::Loading);
-        assert!(
-            buffer.content.iter().any(|cell| cell.symbol() == "R"),
-            "song text is visible before full expansion"
-        );
-        assert!(
-            buffer[(layout.left.right() - 1, 30)].symbol() != " ",
-            "column border is visible"
-        );
-        assert!(
-            buffer[(layout.info_progress.x, layout.info_progress.y)].symbol() != " ",
-            "progress is visible"
-        );
-        wait_ready(&mut covers, cover_key(content, 700));
-        draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.8).unwrap();
+        let key = cover_key(content, 700);
+        assert_eq!(covers.status(key), CoverStatus::Loading);
         assert!(
             terminal
                 .backend()
                 .buffer()
                 .content
                 .iter()
-                .any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..)))
+                .all(|cell| *cell == Cell::default())
         );
+
+        wait_ready(&mut covers, key);
+        draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        let full = terminal.backend().buffer().clone();
+        let steady_cover = covers.frame(key).unwrap().clone();
+
+        // Open from below, then close downwards. Row offsets are worked examples
+        // at height 40, independent of the implementation's movement calculation.
+        for (progress, offset) in [
+            (0.025, 39),
+            (0.2, 32),
+            (0.5, 20),
+            (0.8, 8),
+            (1.0, 0),
+            (0.8, 8),
+            (0.5, 20),
+            (0.2, 32),
+            (0.0, 40),
+        ] {
+            draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, progress).unwrap();
+            let actual = terminal.backend().buffer();
+            for y in 0..40 {
+                for x in 0..120 {
+                    if y < offset {
+                        assert_eq!(
+                            actual[(x, y)],
+                            Cell::default(),
+                            "vacated row, progress={progress}"
+                        );
+                    } else {
+                        assert_eq!(
+                            actual[(x, y)],
+                            full[(x, y - offset)],
+                            "whole page translates: progress={progress}, cell=({x},{y})"
+                        );
+                    }
+                }
+            }
+            assert_eq!(covers.status(key), CoverStatus::Ready);
+            assert_eq!(
+                covers.frame(key),
+                Some(&steady_cover),
+                "movement must reuse final-size chafa cells"
+            );
+        }
+    }
+
+    #[test]
+    fn drawer_moves_wide_glyph_and_colors_with_a_nonzero_origin() {
+        let mut buffer = Buffer::empty(Rect::new(7, 9, 6, 4));
+        let style = Style::default()
+            .fg(ratatui::style::Color::Rgb(200, 50, 30))
+            .bg(ratatui::style::Color::Rgb(20, 40, 60));
+        buffer.set_string(7, 9, "中AB", style);
+        let source = buffer.clone();
+        slide_page_from_bottom(&mut buffer, 0.5);
+        assert_eq!(buffer[(7, 11)].symbol(), "中");
+        for x in 7..13 {
+            assert_eq!(buffer[(x, 11)], source[(x, 9)]);
+            assert_eq!(buffer[(x, 12)], source[(x, 10)]);
+            assert_eq!(buffer[(x, 9)], ratatui::buffer::Cell::default());
+            assert_eq!(buffer[(x, 10)], ratatui::buffer::Cell::default());
+        }
     }
 
     fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
