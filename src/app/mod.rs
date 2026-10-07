@@ -28,7 +28,7 @@ use crate::data::theme_loader::ThemeLoader;
 use crate::launch;
 use crate::render::cover_pipeline::CoverKey;
 use crate::render::cover_renderer::render_cover_ascii;
-use crate::render::motion::{Curve, Toggle, Transition};
+use crate::render::motion::{Curve, Toggle, Trail, Transition};
 use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::LyricLine;
 use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, MiniCavaState};
@@ -1820,6 +1820,7 @@ pub struct HomeSidebarState {
     pub created_scroll_offset: usize,
     pub collected_scroll_offset: usize,
     pub(crate) motion: Toggle,
+    pub(crate) trail: Trail,
     pub status_line: String,
 }
 
@@ -1845,6 +1846,7 @@ impl Default for HomeSidebarState {
             created_scroll_offset: 0,
             collected_scroll_offset: 0,
             motion: Toggle::new(false),
+            trail: Trail::new(0.0),
             status_line: String::new(),
         }
     }
@@ -2068,7 +2070,7 @@ impl HomeSidebarState {
     }
 
     pub fn is_visible(&self) -> bool {
-        self.expanded || self.motion.value() > 0.0
+        self.expanded || self.motion.on() || self.trail.value() > 0.0
     }
 }
 
@@ -3969,6 +3971,7 @@ impl App {
         }
         self.browse.home_sidebar.expanded = false;
         self.browse.home_sidebar.motion = Toggle::new(false);
+        self.browse.home_sidebar.trail = Trail::new(0.0);
         self.clear_content_hits();
         self.clear_player_bar_hits();
     }
@@ -3978,7 +3981,14 @@ impl App {
         let width = self.term_width.max(1) as f32;
         self.flat_switch_anim
             .as_ref()
-            .map(|anim| anim.sample(Instant::now()))
+            .map(|anim| {
+                let value = anim.sample(Instant::now());
+                if anim.is_running() {
+                    value
+                } else {
+                    anim.target()
+                }
+            })
             .unwrap_or(match self.flat_panel {
                 FlatPanel::Player => 0.0,
                 FlatPanel::Lyrics => width,
@@ -4034,12 +4044,26 @@ impl App {
 
     fn tick_home_sidebar_animation(&mut self, now: Instant) {
         self.browse.home_sidebar.motion.tick(now);
+        self.browse.home_sidebar.trail.tick(now);
     }
 
     fn animate_home_sidebar(&mut self) {
+        let now = Instant::now();
+        let target = if self.browse.home_sidebar.expanded {
+            1.0
+        } else {
+            0.0
+        };
         self.browse.home_sidebar.motion.set(
-            self.browse.home_sidebar.expanded,
-            Instant::now(),
+            target > 0.5,
+            now,
+            SIDEBAR_ANIM_DURATION,
+            Curve::EaseOut,
+        );
+        self.browse.home_sidebar.trail.follow(
+            target,
+            now,
+            Duration::ZERO,
             SIDEBAR_ANIM_DURATION,
             Curve::EaseOut,
         );

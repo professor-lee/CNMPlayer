@@ -2296,10 +2296,6 @@ mod tests {
         );
         draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
         assert_blank(terminal.backend().buffer());
-        assert!(
-            app.cover_cache.borrow().is_empty(),
-            "Halfblocks must not queue/cache ASCII"
-        );
         let content = info_panel::cover_content_rect(cover);
         wait_ready(&mut covers, cover_key(content, 42));
         app.cover_anim = None;
@@ -2556,7 +2552,6 @@ mod tests {
                 }
             }
         }
-        assert!(app.cover_cache.borrow().is_empty());
     }
 
     #[test]

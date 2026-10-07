@@ -427,9 +427,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             clock.presented(Instant::now());
         }
 
-        let wait_until = clock
-            .next_deadline()
-            .unwrap_or_else(|| Instant::now() + Duration::from_secs(1));
+        let wait_until = if clock.is_dirty() {
+            clock
+                .next_deadline()
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(1))
+        } else {
+            Instant::now() + Duration::from_secs(1)
+        };
         let wait = wait_until.saturating_duration_since(Instant::now());
         select_biased! {
             f = input.next().fuse() => if let Some(f) = f {
