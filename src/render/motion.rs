@@ -182,10 +182,6 @@ impl Trail {
     pub fn value(&self) -> f32 {
         self.motion.value()
     }
-
-    pub fn is_running(&self) -> bool {
-        self.waiting.is_some() || self.motion.is_running()
-    }
 }
 
 #[cfg(test)]
@@ -251,6 +247,6 @@ mod tests {
         assert_eq!(trail.value(), 0.5);
         assert!(trail.tick(now + Duration::from_millis(400)));
         assert_eq!(trail.value(), 1.0);
-        assert!(!trail.is_running());
+        assert!(!trail.motion.is_running() && trail.waiting.is_none());
     }
 }
