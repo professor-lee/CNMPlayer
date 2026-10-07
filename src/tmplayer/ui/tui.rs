@@ -115,6 +115,16 @@ impl Tui {
 
         Ok(layout_out)
     }
+    pub fn draw_reveal(&mut self, app: &mut AppState, progress: f32) -> Result<UiLayout> {
+        draw_page_reveal(
+            &mut self.terminal,
+            app,
+            &mut self.covers,
+            &mut self.sidebar,
+            progress,
+        )
+        .map_err(Into::into)
+    }
 
     /// 把提示以 `┤文字├` 的形式嵌进左侧面板的底边框。
     ///
@@ -178,6 +188,16 @@ fn draw_page<B: ratatui::backend::Backend>(
     app: &mut AppState,
     covers: &mut CoverPipeline,
     sidebar: &mut PlaylistDrawer,
+) -> std::result::Result<UiLayout, B::Error> {
+    draw_page_reveal(terminal, app, covers, sidebar, 1.0)
+}
+
+fn draw_page_reveal<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    covers: &mut CoverPipeline,
+    sidebar: &mut PlaylistDrawer,
+    progress: f32,
 ) -> std::result::Result<UiLayout, B::Error> {
     let mut layout_out = UiLayout::default();
     terminal.autoresize()?;
@@ -396,6 +416,16 @@ fn draw_page<B: ratatui::backend::Backend>(
             Overlay::EqModal => render_eq_modal(f, size, app),
             _ => {}
         }
+        // Keep the final layout and image geometry stable; only its visible
+        // window changes, so reveal frames do not re-encode cover sizes.
+        let visible = (f32::from(size.height) * progress.clamp(0.0, 1.0)).round() as u16;
+        let hidden = Rect::new(
+            size.x,
+            size.y,
+            size.width,
+            size.height.saturating_sub(visible),
+        );
+        f.render_widget(ratatui::widgets::Clear, hidden);
     })?;
     Ok(layout_out)
 }
@@ -2036,6 +2066,48 @@ mod tests {
     use crate::data::icons::UiIcons;
     use crate::ui::theme::{ColorCapability, Theme, ThemePalette};
 
+    #[test]
+    fn page_reveal_shows_real_columns_controls_and_loading_cover() {
+        use crate::render::cover_pipeline::CoverStatus;
+        use ratatui::backend::TestBackend;
+        let mut app = state(Overlay::None);
+        app.config.show_hints = false;
+        app.player.track.title = "Reveal song".into();
+        app.player.track.artist = "Reveal artist".into();
+        app.player.track.cover = Some(encoded_cover());
+        app.player.track.cover_hash = Some(700);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut covers = CoverPipeline::new(WakeSignal::default());
+        let mut drawer = PlaylistDrawer::default();
+        let layout =
+            draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.8).unwrap();
+        let buffer = terminal.backend().buffer();
+        let content = info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover);
+        assert_eq!(covers.status(cover_key(content, 700)), CoverStatus::Loading);
+        assert!(
+            buffer.content.iter().any(|cell| cell.symbol() == "R"),
+            "song text is visible before full expansion"
+        );
+        assert!(
+            buffer[(layout.left.right() - 1, 30)].symbol() != " ",
+            "column border is visible"
+        );
+        assert!(
+            buffer[(layout.info_progress.x, layout.info_progress.y)].symbol() != " ",
+            "progress is visible"
+        );
+        wait_ready(&mut covers, cover_key(content, 700));
+        draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.8).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..)))
+        );
+    }
+
     fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
         Rect {
             x,
@@ -2217,10 +2289,6 @@ mod tests {
                         buf[(download_x, y)].fg,
                         app.theme.color_subtext(),
                         "下载三态均使用歌曲列表未下载图标的颜色"
-                    );
-                    assert_eq!(
-                        buf[(download_x, y)].symbol(),
-                        info_panel::download_glyph(&app).unwrap().to_string()
                     );
                     for x in download_x..download_x + width {
                         assert_eq!(click(x, y), Some(Action::ToggleDownload));

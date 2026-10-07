@@ -5,7 +5,6 @@ mod tmplayer;
 mod ui;
 
 use crate::render::frame_clock::FrameClock;
-use crate::render::motion::{Curve, Transition};
 use crate::tmplayer::audio::cava::MiniCavaState;
 use anyhow::Result;
 use app::App;
@@ -26,9 +25,6 @@ use ftail::Ftail;
 use futures::{FutureExt, Stream, StreamExt, select_biased};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear};
 use see::unsync::Receiver;
 use std::future::pending;
 use std::io::{self, Stdout};
@@ -463,7 +459,6 @@ async fn launch_tmplayer_fullscreen(
     app: &mut App,
     bootstrap: tmplayer::FullscreenBootstrap,
 ) -> Result<()> {
-    play_fullscreen_transition(terminal, app, true).await?;
     app.suspend_main_cava_for_fullscreen().await;
     restore_terminal(terminal)?;
 
@@ -477,7 +472,6 @@ async fn launch_tmplayer_fullscreen(
 
     *terminal = init_terminal()?;
     app.resume_main_cava_after_fullscreen();
-    play_fullscreen_transition(terminal, app, false).await?;
     if !status_text.is_empty() {
         app.set_runtime_status(status_text);
     }
@@ -494,59 +488,6 @@ async fn launch_tmplayer_fullscreen(
             app.open_album_page_from_fullscreen()
         }
         Some(tmplayer::FullscreenExit::BackToHost) | None => {}
-    }
-    Ok(())
-}
-
-async fn play_fullscreen_transition(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: &mut App,
-    opening: bool,
-) -> Result<()> {
-    let started = Instant::now();
-    let mut motion = Transition::new(if opening { 0.0 } else { 1.0 });
-    motion.retarget(
-        if opening { 1.0 } else { 0.0 },
-        started,
-        Duration::from_millis(220),
-        Curve::EaseInOut,
-    );
-
-    loop {
-        let now = Instant::now();
-        motion.tick(now);
-        let progress = motion.value();
-        terminal.draw(|frame| {
-            ui::draw(frame, app);
-            let full = frame.area();
-            if full.height == 0 || full.width == 0 {
-                return;
-            }
-            let bar_h = 5_u16.min(full.height);
-            let span = full.height.saturating_sub(bar_h);
-            let animated = bar_h + (f32::from(span) * progress).round() as u16;
-            let overlay = Rect {
-                x: full.x,
-                y: full.y + full.height.saturating_sub(animated),
-                width: full.width,
-                height: animated,
-            };
-            frame.render_widget(Clear, overlay);
-            frame.render_widget(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(app.theme.color_surface()))
-                    .style(Style::default().bg(app.theme.color_base())),
-                overlay,
-            );
-        })?;
-        if !motion.is_running() {
-            break;
-        }
-        let wait = (now + Duration::from_millis(16)).saturating_duration_since(Instant::now());
-        if !wait.is_zero() {
-            sleep(wait).await;
-        }
     }
     Ok(())
 }

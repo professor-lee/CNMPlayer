@@ -359,6 +359,7 @@ pub async fn run(
     enable_raw_mode()?;
     let mut tui = Tui::new(host_bridge.wake_signal())?;
     tui.enter()?;
+    play_page_transition(&mut tui, app, host_bridge, true).await?;
 
     // Prefer cava for system-wide visualization (keeps our renderer/style; cava only provides bars).
     // If cava isn't installed, we leave the spectrum empty.
@@ -504,6 +505,11 @@ pub async fn run(
     }
     .await;
 
+    let transition_result = if loop_result.is_ok() {
+        play_page_transition(&mut tui, app, host_bridge, false).await
+    } else {
+        Ok(())
+    };
     let exit_result = tui.exit();
     let raw_result = disable_raw_mode();
     let cava_result = compio::runtime::spawn_blocking(move || cava.shutdown_blocking())
@@ -513,6 +519,7 @@ pub async fn run(
     exit_result?;
     raw_result?;
     cava_result?;
+    transition_result?;
 
     let exit = match app.exit_request {
         Some(exit) => exit,
@@ -522,6 +529,51 @@ pub async fn run(
         None => crate::tmplayer::FullscreenExit::BackToHost,
     };
     Ok(exit)
+}
+
+async fn play_page_transition(
+    tui: &mut Tui,
+    app: &mut AppState,
+    host: &mut impl HostPlaybackBridge,
+    opening: bool,
+) -> Result<()> {
+    use crate::render::motion::{Curve, Transition};
+    let mut motion = Transition::new(if opening { 0.0 } else { 1.0 });
+    motion.retarget(
+        if opening { 1.0 } else { 0.0 },
+        Instant::now(),
+        Duration::from_millis(220),
+        Curve::EaseOut,
+    );
+    let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
+    let mut metadata = None;
+    loop {
+        host.tick().await;
+        apply_host_runtime_snapshot(app, host.runtime_snapshot());
+        let signature = host.metadata_signature();
+        if metadata != Some(signature) {
+            sync_from_host_snapshot(app, host.snapshot());
+            metadata = Some(signature);
+        }
+        let now = Instant::now();
+        app.tick(now);
+        motion.tick(now);
+        tui.poll_cover_frames();
+        clock.mark_dirty();
+        if clock.due(now) {
+            tui.draw_reveal(app, motion.value())?;
+            clock.presented(Instant::now());
+            if !motion.is_running() {
+                break;
+            }
+        }
+        let wait = clock
+            .next_deadline()
+            .unwrap_or(now)
+            .saturating_duration_since(Instant::now());
+        compio::time::sleep(wait).await;
+    }
+    Ok(())
 }
 
 async fn handle_action(
