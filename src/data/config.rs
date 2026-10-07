@@ -24,12 +24,6 @@ pub enum GraphicsProtocol {
 impl GraphicsProtocol {
     const ALL: [Self; 2] = [Self::Off, Self::Halfblocks];
 
-    pub fn to_ratatui_protocol(self) -> Option<ratatui_image::picker::ProtocolType> {
-        match self {
-            GraphicsProtocol::Off => None,
-            GraphicsProtocol::Halfblocks => Some(ratatui_image::picker::ProtocolType::Halfblocks),
-        }
-    }
 
     pub fn cycle(self, delta: i32) -> Self {
         if delta == 0 {

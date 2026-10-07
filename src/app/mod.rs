@@ -99,7 +99,6 @@ const SEARCH_RESULT_PAGE_SIZE: usize = 100;
 const ARTIST_ALBUM_PAGE_SIZE: usize = 60;
 /// 无后缀（混合）搜索里作者 / 歌单分区只取最相关的少量条目，不参与分页。
 const MIXED_AUX_RESULT_LIMIT: usize = 5;
-const SEARCH_BOX_TARGET_HEIGHT: u16 = 3;
 /// 搜索框滑出动画时长（time-based，与帧率解耦）
 const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
 /// 侧边栏滑出动画时长（time-based，与帧率解耦）。主页与全屏播放页共用。
@@ -220,12 +219,6 @@ pub enum FlatPanel {
     Lyrics,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FlatSwitchAnim {
-    pub from_x: f32,
-    pub to_x: f32,
-    pub started_at: Instant,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginMethod {
@@ -1810,11 +1803,7 @@ pub struct HomeSidebarState {
     pub collected_focused_index: usize,
     pub created_scroll_offset: usize,
     pub collected_scroll_offset: usize,
-    pub anim_progress: f32,
-    /// 滑出/收起动画起始时刻（None = 无进行中动画）
-    pub anim_started_at: Option<Instant>,
-    /// 动画起始时的 progress 值（支持动画中途反向切换）
-    pub anim_from: f32,
+    pub(crate) motion: Toggle,
     pub status_line: String,
 }
 
@@ -1839,9 +1828,7 @@ impl Default for HomeSidebarState {
             collected_focused_index: 0,
             created_scroll_offset: 0,
             collected_scroll_offset: 0,
-            anim_progress: 0.0,
-            anim_started_at: None,
-            anim_from: 0.0,
+            motion: Toggle::new(false),
             status_line: String::new(),
         }
     }
@@ -2065,7 +2052,7 @@ impl HomeSidebarState {
     }
 
     pub fn is_visible(&self) -> bool {
-        self.expanded || self.anim_progress > 0.0
+        self.expanded || self.motion.value() > 0.0
     }
 }
 
@@ -3039,8 +3026,8 @@ pub struct App {
     pub small_window_mode: Option<SmallWindowMode>,
     /// 扁窗高度恰为播放栏高度时，Alt+X 切换的当前目标面板。
     pub flat_panel: FlatPanel,
-    /// 扁窗切换动画；None 表示已停在目标面板。
-    pub flat_switch_anim: Option<FlatSwitchAnim>,
+    /// Visual transition, separate from the logical target in `flat_panel`.
+    pub(crate) flat_switch_anim: Option<Transition>,
     /// 上一帧是否处于“扁窗高度恰为播放栏高度”的子状态。
     flat_exact_height: bool,
     /// 窄窗音量条的显示端平滑值（LUFS）。以 VU_FLOOR 表示静音。
@@ -3296,10 +3283,10 @@ impl App {
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
         let now = Instant::now();
-        self.tick_flat_switch();
+        self.tick_flat_switch(now);
         self.tick_vu_meter(now);
-        self.tick_search_box_animation();
-        self.tick_home_sidebar_animation();
+        self.tick_search_box_animation(now);
+        self.tick_home_sidebar_animation(now);
         self.tick_home_sidebar_fetch();
         self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
@@ -3774,58 +3761,18 @@ impl App {
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
     pub fn should_continuous_redraw(&self) -> bool {
-        if self.is_seeking() {
+        if self.is_seeking() || self.page_lyrics_grab.is_some() {
             return true;
         }
-        // 拖歌词浮窗时保持高帧率，鼠标跟手。
-        if self.page_lyrics_grab.is_some() {
-            return true;
-        }
-        if let Some(started_at) = self.input.search_box_anim_started_at
-            && started_at.elapsed() < SEARCH_BOX_ANIM_DURATION
+        if self.input.search_motion.is_running()
+            || self.browse.home_sidebar.motion.is_running()
         {
             return true;
         }
-        if self.browse.home_sidebar.anim_started_at.is_some() {
-            return true;
-        }
-        // 作者页数据在途：结果一到就上屏，别让 1s 空闲节流把它压住。
-        if self.browse.author_fetch.is_some() {
-            return true;
-        }
-        // 侧边栏分页结果一到就上屏。
-        if self.browse.home_sidebar_page_fetch.is_some() {
-            return true;
-        }
-        // 歌单分页结果一到就上屏。
-        if self
-            .browse
-            .playlist
-            .pagination
-            .as_ref()
-            .is_some_and(PlaylistPagination::is_pending)
-            || self
-                .playback
-                .pagination
-                .as_ref()
-                .is_some_and(PlaylistPagination::is_pending)
+        if self.downloads.manager.is_active()
+            || self.page == Page::Loading
+            || self.flat_switch_anim.as_ref().is_some_and(Transition::is_running)
         {
-            return true;
-        }
-        // 歌单页 / 专辑页同理。
-        if self.browse.playlist_fetch.is_some() {
-            return true;
-        }
-        // 下载中：图标要一直转（time-based 帧），别被 1s 空闲节流压成 1fps。
-        if self.downloads.manager.is_active() {
-            return true;
-        }
-        // 加载页全程保持高帧率：进度条本身在缓动，收尾还要等最短可见时长，
-        // 交给 1s 空闲节流会把最后一步拖慢。
-        if self.page == Page::Loading {
-            return true;
-        }
-        if self.flat_switch_anim.is_some() {
             return true;
         }
         if self.small_window_mode == Some(SmallWindowMode::Flat)
@@ -3838,7 +3785,6 @@ impl App {
         {
             return true;
         }
-        // about 彩蛋：蓄力/迸发在动，激活后边框噪点也持续流动。
         #[cfg(feature = "easter-egg")]
         if self.about_egg.phase != EasterEggPhase::Idle {
             return true;
@@ -3933,14 +3879,14 @@ impl App {
         let mode = self.compute_small_window_mode();
         if mode == self.small_window_mode {
             if mode == Some(SmallWindowMode::Flat) {
-                let width = self.term_width.max(1) as f32;
-                let current = self.flat_switch_offset().min(width);
-                if let Some(anim) = &mut self.flat_switch_anim {
-                    anim.to_x = match self.flat_panel {
-                        FlatPanel::Player => 0.0,
-                        FlatPanel::Lyrics => width,
-                    };
-                    anim.from_x = current;
+                if self.flat_switch_anim.is_some() {
+                    let now = Instant::now();
+                    let width = self.term_width.max(1) as f32;
+                    let current = self.flat_switch_offset().min(width);
+                    let target = match self.flat_panel { FlatPanel::Player => 0.0, FlatPanel::Lyrics => width };
+                    let mut motion = Transition::new(current);
+                    motion.retarget(target, now, FLAT_SWITCH_ANIM_DURATION, Curve::EaseOut);
+                    self.flat_switch_anim = Some(motion);
                 }
                 let exact = self.term_height == FLAT_SMALL_HEIGHT;
                 if exact && !self.flat_exact_height {
@@ -3993,9 +3939,7 @@ impl App {
             self.close_overlay();
         }
         self.browse.home_sidebar.expanded = false;
-        self.browse.home_sidebar.anim_progress = 0.0;
-        self.browse.home_sidebar.anim_from = 0.0;
-        self.browse.home_sidebar.anim_started_at = None;
+        self.browse.home_sidebar.motion = Toggle::new(false);
         self.clear_content_hits();
         self.clear_player_bar_hits();
     }
@@ -4003,70 +3947,54 @@ impl App {
     /// 扁窗 5 行视口下两个面板的水平偏移（0=播放栏，width=歌词栏）。
     pub fn flat_switch_offset(&self) -> f32 {
         let width = self.term_width.max(1) as f32;
-        if let Some(anim) = &self.flat_switch_anim {
-            let elapsed = anim.started_at.elapsed().as_secs_f32();
-            let t = if elapsed >= FLAT_SWITCH_ANIM_DURATION.as_secs_f32() {
-                1.0
-            } else {
-                elapsed / FLAT_SWITCH_ANIM_DURATION.as_secs_f32()
-            };
-            let eased = cubic_bezier_y(t, 0.0, 0.7);
-            return anim.from_x + (anim.to_x - anim.from_x) * eased;
-        }
-        match self.flat_panel {
-            FlatPanel::Player => 0.0,
-            FlatPanel::Lyrics => width,
-        }
+        self.flat_switch_anim
+            .as_ref()
+            .map(|anim| anim.sample(Instant::now()))
+            .unwrap_or(match self.flat_panel { FlatPanel::Player => 0.0, FlatPanel::Lyrics => width })
     }
 
     pub fn flat_switch_animating(&self) -> bool {
-        self.flat_switch_anim.is_some()
+        self.flat_switch_anim.as_ref().is_some_and(Transition::is_running)
     }
 
     pub fn toggle_flat_panel(&mut self) {
-        if self.small_window_mode != Some(SmallWindowMode::Flat)
-            || self.term_height != FLAT_SMALL_HEIGHT
-        {
-            return;
-        }
-
+        if self.small_window_mode != Some(SmallWindowMode::Flat) || self.term_height != FLAT_SMALL_HEIGHT { return; }
+        let now = Instant::now();
         let width = self.term_width.max(1) as f32;
         let current = self.flat_switch_offset().clamp(0.0, width);
         let visually_lyrics = current >= width * 0.5;
-        self.flat_panel = if visually_lyrics {
-            FlatPanel::Player
-        } else {
-            FlatPanel::Lyrics
-        };
-        let to_x = match self.flat_panel {
-            FlatPanel::Player => 0.0,
-            FlatPanel::Lyrics => width,
-        };
-        self.flat_switch_anim = Some(FlatSwitchAnim {
-            from_x: current,
-            to_x,
-            started_at: Instant::now(),
-        });
+        self.flat_panel = if visually_lyrics { FlatPanel::Player } else { FlatPanel::Lyrics };
+        let target = if self.flat_panel == FlatPanel::Player { 0.0 } else { width };
+        let mut anim = Transition::new(current);
+        anim.retarget(target, now, FLAT_SWITCH_ANIM_DURATION, Curve::EaseOut);
+        self.flat_switch_anim = Some(anim);
     }
 
-    fn tick_flat_switch(&mut self) {
-        let Some(anim) = &mut self.flat_switch_anim else {
-            return;
-        };
-        let width = self.term_width.max(1) as f32;
-        let target = match self.flat_panel {
-            FlatPanel::Player => 0.0,
-            FlatPanel::Lyrics => width,
-        };
-        anim.to_x = target;
-        if (anim.from_x - target).abs() < 0.5 {
-            self.flat_switch_anim = None;
-            return;
-        }
-        if anim.started_at.elapsed() >= FLAT_SWITCH_ANIM_DURATION {
-            self.flat_switch_anim = None;
+    fn tick_flat_switch(&mut self, now: Instant) {
+        if let Some(anim) = &mut self.flat_switch_anim {
+            anim.tick(now);
+            if !anim.is_running() { self.flat_switch_anim = None; }
         }
     }
+    fn tick_search_box_animation(&mut self, now: Instant) {
+        let open = matches!(self.overlay, Some(Overlay::SearchBox));
+        self.input.search_motion.set(open, now, SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
+        self.input.search_motion.tick(now);
+    }
+
+    fn tick_home_sidebar_animation(&mut self, now: Instant) {
+        self.browse.home_sidebar.motion.tick(now);
+    }
+
+    fn animate_home_sidebar(&mut self) {
+        self.browse.home_sidebar.motion.set(
+            self.browse.home_sidebar.expanded,
+            Instant::now(),
+            SIDEBAR_ANIM_DURATION,
+            Curve::EaseOut,
+        );
+    }
+
 
     fn tick_vu_meter(&mut self, now: Instant) {
         if self.small_window_mode != Some(SmallWindowMode::Narrow) {
@@ -4833,12 +4761,7 @@ impl App {
                 self.playlist_return_page = Page::Home;
                 self.playlist_section_return_snapshot = None;
                 self.browse.home_sidebar.expanded = false;
-                let target = if self.browse.home_sidebar.expanded {
-                    1.0
-                } else {
-                    0.0
-                };
-                self.browse.home_sidebar.anim_progress = target;
+                self.browse.home_sidebar.motion.set(false, Instant::now(), SIDEBAR_ANIM_DURATION, Curve::EaseOut);
                 self.page = Page::Playlist;
                 self.browse.home.status_line =
                     format!("{} {}", self.lang_text("已打开", "Opened"), title);
@@ -6624,10 +6547,9 @@ impl App {
             return;
         }
 
-        let visible_h = self
-            .input
-            .search_box_anim_height
-            .min(crate::ui::search_box::TARGET_HEIGHT)
+        let visible_h = ((self.input.search_motion.value()
+            * f32::from(crate::ui::search_box::TARGET_HEIGHT))
+            .round() as u16)
             .min(term_h);
         if visible_h < crate::ui::search_box::TARGET_HEIGHT {
             return;
@@ -7642,28 +7564,6 @@ impl App {
         }
     }
 
-    fn tick_search_box_animation(&mut self) {
-        if matches!(self.overlay, Some(Overlay::SearchBox)) {
-            // time-based：动画时长与驱动帧率解耦，与 startup_loading 同风格
-            let started_at = self
-                .input
-                .search_box_anim_started_at
-                .get_or_insert_with(Instant::now);
-            let elapsed = started_at.elapsed();
-            if elapsed >= SEARCH_BOX_ANIM_DURATION {
-                self.input.search_box_anim_height = SEARCH_BOX_TARGET_HEIGHT;
-                return;
-            }
-            let t = elapsed.as_secs_f32() / SEARCH_BOX_ANIM_DURATION.as_secs_f32();
-            // ease-out：先快后慢（cubic-bezier y 曲线，p2y=0.7）
-            let eased = cubic_bezier_y(t, 0.0, 0.7);
-            self.input.search_box_anim_height =
-                ((SEARCH_BOX_TARGET_HEIGHT as f32) * eased).round() as u16;
-        } else {
-            self.input.search_box_anim_height = 0;
-            self.input.search_box_anim_started_at = None;
-        }
-    }
 
     /// 推进 about 彩蛋的蓄力/迸发阶段（time-based，与帧率解耦）。
     #[cfg(feature = "easter-egg")]
@@ -7706,60 +7606,16 @@ impl App {
         }
     }
 
-    fn tick_home_sidebar_animation(&mut self) {
-        let target = if self.browse.home_sidebar.expanded {
-            1.0
-        } else {
-            0.0
-        };
-        let state = &mut self.browse.home_sidebar;
-        if (state.anim_progress - target).abs() < 0.001 {
-            state.anim_progress = target;
-            state.anim_started_at = None;
-            return;
-        }
-        // time-based：从 anim_from 向 target 插值（ease-out），支持中途反向
-        let started_at = state.anim_started_at.get_or_insert_with(Instant::now);
-        let elapsed = started_at.elapsed();
-        let t = if elapsed >= SIDEBAR_ANIM_DURATION {
-            1.0
-        } else {
-            elapsed.as_secs_f32() / SIDEBAR_ANIM_DURATION.as_secs_f32()
-        };
-        let eased = cubic_bezier_y(t, 0.0, 0.7);
-        state.anim_progress = state.anim_from + (target - state.anim_from) * eased;
-        if t >= 1.0 {
-            state.anim_progress = target;
-            state.anim_started_at = None;
-        }
-    }
-
-    /// 启动一次侧边栏滑出/收起动画（记录当前进度作为动画起点，支持中途反向）。
-    fn animate_home_sidebar(&mut self) {
-        let target = if self.browse.home_sidebar.expanded {
-            1.0
-        } else {
-            0.0
-        };
-        if (self.browse.home_sidebar.anim_progress - target).abs() < 0.001 {
-            // 已在目标态：无需动画，清掉可能的残留状态
-            self.browse.home_sidebar.anim_progress = target;
-            self.browse.home_sidebar.anim_started_at = None;
-            return;
-        }
-        self.browse.home_sidebar.anim_from = self.browse.home_sidebar.anim_progress;
-        self.browse.home_sidebar.anim_started_at = Some(Instant::now());
-    }
-
     fn begin_startup_loading(&mut self, target: Page) {
         self.page = Page::Loading;
         self.overlay = None;
         self.startup.begin(target);
     }
-
     fn finish_startup_loading(&mut self) {
         self.startup.finish();
     }
+
+
 
     fn tick_startup_loading(&mut self) {
         if self.page == Page::Loading
@@ -7938,19 +7794,15 @@ impl App {
     }
 
     fn open_search_box(&mut self) {
-        if self.page != Page::Search {
-            self.search_return_page = Page::Home;
-        }
+        if self.page != Page::Search { self.search_return_page = Page::Home; }
         self.input.set_text(self.search.query.clone());
-        self.input.search_box_anim_height = 0;
-        self.input.search_box_anim_started_at = Some(Instant::now());
+        self.input.search_motion.set(true, Instant::now(), SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
         self.overlay = Some(Overlay::SearchBox);
     }
 
     fn close_overlay(&mut self) {
         self.overlay = None;
-        self.input.search_box_anim_height = 0;
-        self.input.search_box_anim_started_at = None;
+        self.input.search_motion.set(false, Instant::now(), SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
         self.settings.last_click = None;
         self.settings.cancel_download_path_edit();
         self.clear_settings_item_hits();

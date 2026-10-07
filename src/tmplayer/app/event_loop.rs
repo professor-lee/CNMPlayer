@@ -14,6 +14,7 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
+use crate::render::frame_clock::FrameClock;
 
 /// 子页的上一级：挂在设置弹窗下面的这些弹窗，Esc 应该回到设置弹窗，
 /// 而不是直接关掉整个弹窗。`None` 表示没有上一级。
@@ -366,10 +367,9 @@ pub async fn run(
     let mut last_spectrum = Instant::now();
     let mut last_host_metadata_signature: Option<u64> = None;
     let mut last_host_config_signature: Option<u64> = None;
-    let mut needs_redraw = true;
-    let mut last_draw_at = Instant::now()
-        .checked_sub(Duration::from_millis(250))
-        .unwrap_or_else(Instant::now);
+    let mut last_host_sync = Instant::now() - Duration::from_millis(50);
+    let wake = host_bridge.wake_signal();
+    let mut clock = FrameClock::new(app.idle_render_fps(), Instant::now());
 
     let mut last_layout = UiLayout::default();
 
@@ -393,16 +393,11 @@ pub async fn run(
         loop {
             let frame_start = Instant::now();
             let mut state_changed = false;
-
-            state_changed |= sync_from_host_bridge(
-                app,
-                host_bridge,
-                &mut last_host_metadata_signature,
-                &mut last_host_config_signature,
-            )
-            .await;
-
-            while event::poll(Duration::from_millis(0))? {
+            if wake.take() || last_host_sync.elapsed() >= Duration::from_millis(50) {
+                state_changed |= sync_from_host_bridge(app, host_bridge, &mut last_host_metadata_signature, &mut last_host_config_signature).await;
+                last_host_sync = frame_start;
+            }
+            while event::poll(Duration::ZERO)? {
                 match event::read()? {
                     Event::Key(k) => {
                         let action = map_key(k, app.overlay, &app.config);
@@ -414,13 +409,10 @@ pub async fn run(
                         handle_action(app, host_bridge, action, &last_layout).await?;
                         state_changed = true;
                     }
-                    Event::Resize(_, _) => {
-                        state_changed = true;
-                    }
+                    Event::Resize(_, _) => state_changed = true,
                     _ => {}
                 }
             }
-
             let desired = desired_cava_config(app, &last_layout);
             if cava_cfg != desired {
                 cava.set_desired(desired);
@@ -440,15 +432,9 @@ pub async fn run(
                     last_cava_failure.clone_from(&failure);
                 }
             }
-
             if app.config.visualize == VisualizeMode::Bars {
-                let bars = desired_bar_count(app, &last_layout);
-                ensure_bar_buffers(app, bars);
+                ensure_bar_buffers(app, desired_bar_count(app, &last_layout));
             }
-
-            // 频谱采集。示波器不走这里 —— 它在渲染时直接读 PCM 抽头环。但残留的
-            // cava 数据会让 has_spectrum_tail_motion() 长期为真，暂停后仍按高帧率
-            // 空转，所以切走时必须清零。
             if app.config.visualize.needs_cava() {
                 let period = Duration::from_millis((1000 / app.config.spectrum_hz.max(1)) as u64);
                 if frame_start.duration_since(last_spectrum) >= period {
@@ -462,64 +448,37 @@ pub async fn run(
                     let mut mono = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
                     if app.config.bar_channels == BarChannels::Stereo {
                         let _ = snapshot.copy_stereo_into(&mut left, &mut right);
-                        app.spectrum_left_smoother
-                            .apply_in_place(&left[..bars], &mut app.spectrum.bars_left);
-                        app.spectrum_right_smoother
-                            .apply_in_place(&right[..bars], &mut app.spectrum.bars_right);
+                        app.spectrum_left_smoother.apply_in_place(&left[..bars], &mut app.spectrum.bars_left);
+                        app.spectrum_right_smoother.apply_in_place(&right[..bars], &mut app.spectrum.bars_right);
                     } else {
                         app.spectrum.bars_left.fill(0.0);
                         app.spectrum.bars_right.fill(0.0);
                     }
                     let _ = snapshot.mono_into(&mut mono);
-                    app.spectrum_bar_smoother
-                        .apply_in_place(&mono[..bars], &mut app.spectrum.bars);
+                    app.spectrum_bar_smoother.apply_in_place(&mono[..bars], &mut app.spectrum.bars);
                 }
             } else if has_spectrum_data(app) {
                 clear_spectrum(app);
                 state_changed = true;
             }
-
             state_changed |= tick_visual_state(app, frame_start);
             state_changed |= tui.poll_cover_frames();
-
-            if app.should_continuous_redraw() {
-                state_changed = true;
+            if state_changed || app.should_continuous_redraw() {
+                clock.mark_dirty();
             }
-
-            let target_fps = if app.should_continuous_redraw() {
-                app.active_render_fps()
-            } else {
-                app.idle_render_fps()
-            };
-            let frame_dt = fps_to_dt(target_fps);
-
-            if state_changed {
-                needs_redraw = true;
-            }
-
-            if app.should_continuous_redraw() && last_draw_at.elapsed() >= frame_dt {
-                needs_redraw = true;
-            }
-
-            if needs_redraw {
+            let target_fps = if app.should_continuous_redraw() { app.active_render_fps() } else { app.idle_render_fps() };
+            clock.set_fps(target_fps, frame_start);
+            if clock.due(frame_start) {
                 last_layout = tui.draw(app)?;
-                last_draw_at = Instant::now();
-                needs_redraw = false;
+                clock.presented(Instant::now());
             }
-
-            // frame pacing
-            // 使用异步 sleep 而非 std::thread::sleep：本应用跑在单线程 compio 运行时上，
-            // 阻塞式 sleep 会让 executor/proactor（含流媒体下载任务）在整个睡眠期间停摆，
-            // 导致全屏页切到未缓存的下一首时下载冻结、播放卡在歌曲开头。
-            // 异步 sleep 会把执行权交还给运行时，后台下载得以持续推进。
-            let elapsed = frame_start.elapsed();
-            if elapsed < frame_dt {
-                compio::time::sleep(frame_dt - elapsed).await;
+            let maintenance_wait = Duration::from_millis(50).saturating_sub(last_host_sync.elapsed());
+            let frame_wait = clock.next_deadline().map(|deadline| deadline.saturating_duration_since(Instant::now())).unwrap_or(Duration::from_secs(1));
+            let wait = maintenance_wait.min(frame_wait);
+            if !wait.is_zero() {
+                compio::time::sleep(wait).await;
             }
-
-            if tui.should_quit {
-                break;
-            }
+            if tui.should_quit { break; }
         }
         Ok(())
     }
@@ -1446,9 +1405,6 @@ fn max_display_bars(width_cells: u16, gap: bool) -> usize {
     }
 }
 
-fn fps_to_dt(fps: u32) -> Duration {
-    Duration::from_secs_f64(1.0 / f64::from(fps.clamp(1, 120)))
-}
 
 #[cfg(test)]
 mod tests {

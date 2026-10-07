@@ -276,7 +276,7 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let max_width = (area.width / 3).max(24).min(area.width);
     app.set_home_sidebar_anim_span_cells(max_width);
-    let progress = app.browse.home_sidebar.anim_progress.clamp(0.0, 1.0);
+    let progress = app.browse.home_sidebar.motion.value().clamp(0.0, 1.0);
     let width = ((max_width as f32) * progress).round() as u16;
     if width < 12 {
         return;

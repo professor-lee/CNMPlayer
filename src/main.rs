@@ -5,6 +5,7 @@ mod tmplayer;
 mod ui;
 
 use crate::tmplayer::audio::cava::MiniCavaState;
+use crate::render::frame_clock::FrameClock;
 use anyhow::Result;
 use app::App;
 use compio::fs::{create_dir_all, remove_file};
@@ -33,7 +34,7 @@ use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct AppFullscreenBridge<'a> {
     app: &'a mut App,
@@ -396,39 +397,46 @@ fn input_event() -> impl Stream<Item = impl AsyncFn(&mut App)> {
 
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     let mut input = pin!(input_event());
+    let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
 
     loop {
+        let now = Instant::now();
+        clock.set_fps(app.config.ui_fps, now);
         app.tick().await;
-        app.covers.poll();
+        if app.covers.poll() || app.should_continuous_redraw() {
+            clock.mark_dirty();
+        }
 
         if app.consume_fullscreen_launch_request() {
             let bootstrap = app.build_fullscreen_bootstrap();
             launch_tmplayer_fullscreen(terminal, app, bootstrap).await?;
+            clock.mark_dirty();
             continue;
         }
-
         if app.should_quit {
             app.persist_playback_memory_on_exit();
             break Ok(());
         }
-        terminal.draw(|frame| {
-            ui::draw(frame, app);
-            ui::draw_settings(frame, app);
-        })?;
-        app.covers.prepare();
 
-        // 动画进行中（进度条脉冲、搜索框滑出、启动加载）加快重绘，
-        // 其余时间保持 1s 空闲节流（省电、减少终端输出）。
-        let redraw_sleep = if app.should_continuous_redraw() {
-            Duration::from_millis(33)
-        } else {
-            Duration::from_secs(1)
-        };
+        if clock.due(Instant::now()) {
+            terminal.draw(|frame| {
+                ui::draw(frame, app);
+                ui::draw_settings(frame, app);
+            })?;
+            app.covers.prepare();
+            clock.presented(Instant::now());
+        }
 
+        let wait_until = clock.next_deadline().unwrap_or_else(|| Instant::now() + Duration::from_secs(1));
+        let wait = wait_until.saturating_duration_since(Instant::now());
         select_biased! {
-            f = input.next().fuse() => if let Some(f) = f { f(app).await },
-            _ = wait_cava_event(&mut app.cava).fuse() => (),
-            _ = sleep(redraw_sleep).fuse() => (),
+            f = input.next().fuse() => if let Some(f) = f {
+                f(app).await;
+                clock.mark_dirty();
+            },
+            _ = wait_cava_event(&mut app.cava).fuse() => clock.mark_dirty(),
+            _ = app.wake.wait().fuse() => clock.mark_dirty(),
+            _ = sleep(wait).fuse() => (),
         }
     }
 }

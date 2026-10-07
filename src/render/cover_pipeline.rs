@@ -103,9 +103,6 @@ impl CoverPipeline {
         }
     }
 
-    pub fn wake(&self) -> WakeSignal {
-        self.wake.clone()
-    }
 
     pub fn begin_frame(&mut self) {
         self.needed.clear();

@@ -1,4 +1,6 @@
-use crate::app::{SIDEBAR_ANIM_DURATION, cubic_bezier_y};
+use crate::app::cubic_bezier_y;
+use crate::app::SIDEBAR_ANIM_DURATION;
+use crate::render::motion::{Curve, Transition};
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
 use crate::tmplayer::audio::smoother::Ema;
@@ -100,23 +102,14 @@ impl From<&TrackMetadata> for CoverSnapshot {
 pub struct CoverAnim {
     pub from: CoverSnapshot,
     pub to: CoverSnapshot,
-    // -1 => slide left (next), +1 => slide right (prev)
     pub dir: i8,
-    pub started_at: Instant,
-    pub duration: Duration,
+    pub motion: Transition,
 }
 impl CoverAnim {
     pub fn slide_offsets(&self, width: u16, now: Instant) -> (i16, i16) {
         let width = width.min(i16::MAX as u16) as i16;
-        let progress = (now.saturating_duration_since(self.started_at).as_secs_f32()
-            / self.duration.as_secs_f32())
-        .clamp(0.0, 1.0);
-        let offset = (progress * f32::from(width)).round() as i16;
-        if self.dir < 0 {
-            (-offset, width - offset)
-        } else {
-            (offset, -width + offset)
-        }
+        let offset = (self.motion.sample(now) * f32::from(width)).round() as i16;
+        if self.dir < 0 { (-offset, width - offset) } else { (offset, -width + offset) }
     }
 }
 
@@ -576,10 +569,11 @@ impl AppState {
             }
         }
 
-        if let Some(anim) = &self.cover_anim
-            && now.duration_since(anim.started_at) >= anim.duration
-        {
-            self.cover_anim = None;
+        if let Some(anim) = &mut self.cover_anim {
+            anim.motion.tick(now);
+            if !anim.motion.is_running() {
+                self.cover_anim = None;
+            }
         }
 
         if let Some((_, _, at)) = &self.pending_system_cover_anim
@@ -642,7 +636,7 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
-        if self.player.playback == PlaybackState::Playing {
+        if self.player.playback == PlaybackState::Playing && self.config.visualize.needs_cava() {
             return true;
         }
 
@@ -744,13 +738,9 @@ impl AppState {
         dir: i8,
         now: Instant,
     ) {
-        self.cover_anim = Some(CoverAnim {
-            from,
-            to,
-            dir,
-            started_at: now,
-            duration: Duration::from_millis(220),
-        });
+        let mut motion = Transition::new(0.0);
+        motion.retarget(1.0, now, Duration::from_millis(220), Curve::EaseInOut);
+        self.cover_anim = Some(CoverAnim { from, to, dir, motion });
     }
 
     pub fn close_overlay(&mut self) {

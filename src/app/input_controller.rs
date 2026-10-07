@@ -1,12 +1,16 @@
-use std::time::Instant;
+use crate::render::motion::Toggle;
 
 /// Search-box input and animation state.
-#[derive(Default)]
 pub(crate) struct InputController {
     pub search_box_input: String,
     pub search_box_cursor: usize,
-    pub search_box_anim_height: u16,
-    pub search_box_anim_started_at: Option<Instant>,
+    pub(crate) search_motion: Toggle,
+}
+
+impl Default for InputController {
+    fn default() -> Self {
+        Self { search_box_input: String::new(), search_box_cursor: 0, search_motion: Toggle::new(false) }
+    }
 }
 
 impl InputController {
