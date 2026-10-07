@@ -519,6 +519,21 @@ fn centered_rect(size: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
+fn animated_centered_rect(size: Rect, width: u16, height: u16, progress: f32) -> Rect {
+    let full = centered_rect(size, width, height);
+    let progress = progress.clamp(0.0, 1.0);
+    let visible_height = ((f32::from(full.height) * progress).round() as u16).min(full.height);
+    if visible_height == 0 {
+        return Rect::default();
+    }
+    Rect {
+        x: full.x,
+        y: full.y + (full.height - visible_height) / 2,
+        width: full.width,
+        height: visible_height,
+    }
+}
+
 /// 当前弹窗里可点击的条目行，按条目序号逐行登记。
 ///
 /// `Copy` 且定长，好跟着 `UiLayout` 一起传出来；渲染时填、`hit_test` 时查，
@@ -584,7 +599,7 @@ fn render_settings_modal(
     app: &mut AppState,
     modal_rows: &mut ModalRows,
 ) {
-    let area = centered_rect(size, 70, 20);
+    let area = animated_centered_rect(size, 70, 20, app.overlay_progress());
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()
@@ -705,7 +720,7 @@ fn render_bar_settings_modal(
     app: &mut AppState,
     modal_rows: &mut ModalRows,
 ) {
-    let area = centered_rect(size, 70, 20);
+    let area = animated_centered_rect(size, 70, 20, app.overlay_progress());
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()
@@ -848,7 +863,7 @@ fn render_lyrics_settings_modal(
     app: &mut AppState,
     modal_rows: &mut ModalRows,
 ) {
-    let area = centered_rect(size, 70, 20);
+    let area = animated_centered_rect(size, 70, 20, app.overlay_progress());
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()
@@ -936,7 +951,7 @@ fn render_download_settings_modal(
     app: &mut AppState,
     modal_rows: &mut ModalRows,
 ) {
-    let area = centered_rect(size, 70, 20);
+    let area = animated_centered_rect(size, 70, 20, app.overlay_progress());
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()
@@ -1106,7 +1121,7 @@ fn render_download_settings_modal(
 }
 
 fn render_about_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState) {
-    let area = centered_rect(size, 70, 22);
+    let area = animated_centered_rect(size, 70, 22, app.overlay_progress());
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()
@@ -1440,7 +1455,7 @@ fn render_help_modal(
     app: &mut AppState,
     modal_rows: &mut ModalRows,
 ) {
-    let area = centered_rect(size, 70, 20);
+    let area = animated_centered_rect(size, 70, 20, app.overlay_progress());
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()
@@ -1518,7 +1533,7 @@ fn render_help_modal(
 fn render_eq_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState) {
     // 需求：柱状条宽 2 格，高度 +12/-12（含 0 行共 25）
     // 额外预留：顶部提示 1 行 + 底部频率/数值 2 行
-    let area = centered_rect(size, 44, 31);
+    let area = animated_centered_rect(size, 44, 31, app.overlay_progress());
     f.render_widget(ratatui::widgets::Clear, area);
 
     let block = Block::default()

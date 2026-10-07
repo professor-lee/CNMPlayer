@@ -5,6 +5,7 @@ mod tmplayer;
 mod ui;
 
 use crate::render::frame_clock::FrameClock;
+use crate::render::motion::{Curve, Transition};
 use crate::tmplayer::audio::cava::MiniCavaState;
 use anyhow::Result;
 use app::App;
@@ -502,28 +503,34 @@ async fn play_fullscreen_transition(
     app: &mut App,
     opening: bool,
 ) -> Result<()> {
-    let steps: u16 = 10;
+    let started = Instant::now();
+    let mut motion = Transition::new(if opening { 0.0 } else { 1.0 });
+    motion.retarget(
+        if opening { 1.0 } else { 0.0 },
+        started,
+        Duration::from_millis(220),
+        Curve::EaseInOut,
+    );
 
-    for step in 0..=steps {
-        let progress = if opening { step } else { steps - step };
+    loop {
+        let now = Instant::now();
+        motion.tick(now);
+        let progress = motion.value();
         terminal.draw(|frame| {
             ui::draw(frame, app);
-
             let full = frame.area();
             if full.height == 0 || full.width == 0 {
                 return;
             }
-
             let bar_h = 5_u16.min(full.height);
             let span = full.height.saturating_sub(bar_h);
-            let animated = bar_h + ((span as u32 * progress as u32) / steps as u32) as u16;
+            let animated = bar_h + (f32::from(span) * progress).round() as u16;
             let overlay = Rect {
                 x: full.x,
                 y: full.y + full.height.saturating_sub(animated),
                 width: full.width,
                 height: animated,
             };
-
             frame.render_widget(Clear, overlay);
             frame.render_widget(
                 Block::default()
@@ -533,9 +540,13 @@ async fn play_fullscreen_transition(
                 overlay,
             );
         })?;
-
-        sleep(Duration::from_millis(14)).await;
+        if !motion.is_running() {
+            break;
+        }
+        let wait = (now + Duration::from_millis(16)).saturating_duration_since(Instant::now());
+        if !wait.is_zero() {
+            sleep(wait).await;
+        }
     }
-
     Ok(())
 }

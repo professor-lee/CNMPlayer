@@ -3791,7 +3791,10 @@ impl App {
         if self.is_seeking() || self.page_lyrics_grab.is_some() {
             return true;
         }
-        if self.input.search_motion.is_running() || self.browse.home_sidebar.motion.is_running() {
+        if self.input.search_motion.is_running()
+            || self.browse.home_sidebar.motion.is_running()
+            || self.browse.home_sidebar.trail.value() > 0.0
+        {
             return true;
         }
         if self.downloads.manager.is_active()
@@ -4508,23 +4511,19 @@ impl App {
         if self.page != Page::Home || self.overlay.is_some() {
             return;
         }
-
-        if self.browse.home_sidebar.expanded {
+        if self.browse.home_sidebar.is_visible() {
             self.browse.home_sidebar.expanded = false;
             self.animate_home_sidebar();
             return;
         }
-
         self.browse.home_sidebar.expanded = true;
         self.animate_home_sidebar();
-
         if !self.browse.home_sidebar.created_playlists.is_empty()
             || !self.browse.home_sidebar.collected_playlists.is_empty()
         {
             self.browse.home_sidebar.reset_focus();
             return;
         }
-
         // 异步填充：立刻返回，动画照常跑，数据由 tick 搬入。
         if self.browse.home_sidebar_fetch.is_none() {
             self.browse.home_sidebar.loading = true;
@@ -7524,7 +7523,7 @@ impl App {
     }
 
     async fn handle_home_key(&mut self, key: KeyEvent) {
-        if self.browse.home_sidebar.expanded {
+        if self.browse.home_sidebar.is_visible() {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
                     KeyCode::Up => {
@@ -7538,7 +7537,6 @@ impl App {
                     _ => {}
                 }
             }
-
             match key.code {
                 KeyCode::Esc => {
                     self.browse.home_sidebar.expanded = false;

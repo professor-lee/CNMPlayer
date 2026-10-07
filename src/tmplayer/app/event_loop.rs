@@ -419,6 +419,7 @@ pub async fn run(
                     _ => {}
                 }
             }
+            app.sync_overlay_transition(frame_start);
             let desired = desired_cava_config(app, &last_layout);
             if cava_cfg != desired {
                 cava.set_desired(desired);
@@ -529,6 +530,9 @@ async fn handle_action(
     action: Action,
     layout: &UiLayout,
 ) -> Result<()> {
+    if app.overlay_close_pending && !matches!(action, Action::CloseOverlay) {
+        return Ok(());
+    }
     match action {
         Action::Quit => {
             // handled by tui flag

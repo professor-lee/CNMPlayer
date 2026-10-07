@@ -1,8 +1,7 @@
 use crate::app::SIDEBAR_ANIM_DURATION;
-use crate::app::cubic_bezier_y;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
-use crate::render::motion::{Curve, Transition};
+use crate::render::motion::{Curve, Toggle, Transition};
 use crate::tmplayer::audio::smoother::Ema;
 use crate::tmplayer::data::playlist::Playlist;
 use crate::tmplayer::render::cover_cache::CoverCache;
@@ -357,6 +356,9 @@ pub struct AppState {
     cover_render_inflight: RefCell<HashSet<CoverKey>>,
 
     pub overlay: Overlay,
+    pub overlay_motion: Toggle,
+    pub overlay_close_pending: bool,
+    overlay_seen: Overlay,
 
     pub settings_selected: usize,
     pub bar_settings_selected: usize,
@@ -405,11 +407,11 @@ pub struct AppState {
     /// 正在按住拖动全屏页音量条。
     pub volume_drag: bool,
 
-    // playlist slide animation（time-based，与帧率解耦；与主页侧边栏共用时长/缓动）
+    // Legacy coordinates remain for hit-test/layout compatibility; motion owns the curve.
     pub playlist_slide_x: i16,
     pub playlist_slide_target_x: i16,
     playlist_slide_from_x: i16,
-    playlist_slide_started_at: Option<Instant>,
+    playlist_slide_motion: Transition,
 
     pub last_frame: Instant,
 }
@@ -476,6 +478,9 @@ impl AppState {
             cover_render_rx,
             cover_render_inflight: RefCell::new(HashSet::new()),
             overlay: Overlay::None,
+            overlay_motion: Toggle::new(false),
+            overlay_close_pending: false,
+            overlay_seen: Overlay::None,
             settings_selected: 0,
             bar_settings_selected: 0,
             lyrics_settings_selected: 0,
@@ -507,7 +512,7 @@ impl AppState {
             playlist_slide_x: 0,
             playlist_slide_target_x: 0,
             playlist_slide_from_x: 0,
-            playlist_slide_started_at: None,
+            playlist_slide_motion: Transition::new(0.0),
             last_frame: Instant::now(),
         }
     }
@@ -559,6 +564,7 @@ impl AppState {
         // 必须在覆盖 last_frame 之前取，否则帧间隔恒为 0。
         let dt = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
+        self.tick_overlay_transition(now);
 
         if !self.cover_render_inflight.borrow().is_empty() {
             loop {
@@ -603,6 +609,53 @@ impl AppState {
         );
     }
 
+    pub fn sync_overlay_transition(&mut self, now: Instant) {
+        if self.overlay == self.overlay_seen {
+            return;
+        }
+        self.overlay_seen = self.overlay;
+        if self.overlay != Overlay::None {
+            self.overlay_close_pending = false;
+            self.overlay_motion
+                .set(true, now, Duration::from_millis(180), Curve::EaseOut);
+        } else if !self.overlay_close_pending {
+            self.overlay_motion
+                .set(false, now, Duration::from_millis(180), Curve::EaseOut);
+        }
+    }
+
+    pub fn overlay_progress(&self) -> f32 {
+        if self.overlay != Overlay::None
+            && self.overlay_seen == Overlay::None
+            && !self.overlay_close_pending
+        {
+            return 1.0;
+        }
+        self.overlay_motion.value().clamp(0.0, 1.0)
+    }
+
+    pub fn begin_overlay_close(&mut self) {
+        if self.overlay == Overlay::None {
+            return;
+        }
+        self.overlay_close_pending = true;
+        self.overlay_motion.set(
+            false,
+            Instant::now(),
+            Duration::from_millis(180),
+            Curve::EaseInOut,
+        );
+    }
+
+    fn tick_overlay_transition(&mut self, now: Instant) {
+        self.overlay_motion.tick(now);
+        if self.overlay_close_pending && !self.overlay_motion.is_running() {
+            self.overlay = Overlay::None;
+            self.overlay_seen = Overlay::None;
+            self.overlay_close_pending = false;
+        }
+    }
+
     /// 启动一次侧边栏滑入/滑出。记录当前位置作为起点，因此支持动画中途反向。
     pub fn start_playlist_slide(&mut self, target_x: i16) {
         if self.playlist_slide_x == target_x && self.playlist_slide_target_x == target_x {
@@ -610,32 +663,34 @@ impl AppState {
         }
         self.playlist_slide_from_x = self.playlist_slide_x;
         self.playlist_slide_target_x = target_x;
-        // 起始时刻留给下一次 tick 填，避免这里再取一次 Instant::now()。
-        self.playlist_slide_started_at = None;
+        let mut motion = Transition::new(f32::from(self.playlist_slide_x));
+        motion.retarget(
+            f32::from(target_x),
+            Instant::now(),
+            SIDEBAR_ANIM_DURATION,
+            Curve::EaseOut,
+        );
+        self.playlist_slide_motion = motion;
     }
 
     fn tick_playlist_slide(&mut self, now: Instant) {
-        if self.playlist_slide_x == self.playlist_slide_target_x {
-            self.playlist_slide_started_at = None;
+        if self.playlist_slide_x == self.playlist_slide_target_x
+            && !self.playlist_slide_motion.is_running()
+        {
             return;
         }
-
-        let started_at = *self.playlist_slide_started_at.get_or_insert(now);
-        let elapsed = now.saturating_duration_since(started_at);
-        let t = if elapsed >= SIDEBAR_ANIM_DURATION {
-            1.0
-        } else {
-            elapsed.as_secs_f32() / SIDEBAR_ANIM_DURATION.as_secs_f32()
-        };
-
-        let eased = cubic_bezier_y(t, 0.0, 0.7);
-        let from = f32::from(self.playlist_slide_from_x);
-        let target = f32::from(self.playlist_slide_target_x);
-        self.playlist_slide_x = (from + (target - from) * eased).round() as i16;
-
-        if t >= 1.0 {
+        if !self.playlist_slide_motion.is_running() {
+            self.playlist_slide_motion.retarget(
+                f32::from(self.playlist_slide_target_x),
+                now,
+                SIDEBAR_ANIM_DURATION,
+                Curve::EaseOut,
+            );
+        }
+        self.playlist_slide_motion.tick(now);
+        self.playlist_slide_x = self.playlist_slide_motion.sample(now).round() as i16;
+        if !self.playlist_slide_motion.is_running() {
             self.playlist_slide_x = self.playlist_slide_target_x;
-            self.playlist_slide_started_at = None;
         }
     }
 
@@ -679,7 +734,9 @@ impl AppState {
             return true;
         }
 
-        if self.playlist_slide_x != self.playlist_slide_target_x {
+        if self.playlist_slide_x != self.playlist_slide_target_x
+            || self.playlist_slide_motion.is_running()
+        {
             return true;
         }
 
@@ -735,7 +792,7 @@ impl AppState {
     }
 
     pub fn close_overlay(&mut self) {
-        self.overlay = Overlay::None;
+        self.begin_overlay_close();
     }
 }
 
@@ -947,5 +1004,23 @@ mod tests {
                 slow.value()
             );
         }
+    }
+    #[test]
+    fn settings_overlay_keeps_content_during_open_and_close_transition() {
+        let mut app = AppState::new(
+            Config::default(),
+            crate::ui::theme::Theme::default(),
+            Language::En,
+        );
+        let now = Instant::now();
+        app.overlay = Overlay::SettingsModal;
+        app.sync_overlay_transition(now);
+        assert_eq!(app.overlay_progress(), 0.0);
+        app.tick(now + Duration::from_millis(90));
+        assert!(app.overlay_progress() > 0.0 && app.overlay_progress() < 1.0);
+        app.begin_overlay_close();
+        assert_eq!(app.overlay, Overlay::SettingsModal);
+        app.tick(Instant::now() + Duration::from_millis(220));
+        assert_eq!(app.overlay, Overlay::None);
     }
 }
