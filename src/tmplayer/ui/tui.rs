@@ -102,241 +102,7 @@ impl Tui {
             return Ok(layout_out);
         }
 
-        self.terminal.draw(|f| {
-            let size = f.area();
-            layout_out.full = size;
-
-            // small terminal: keep stable, hide secondary panels
-            if size.width < 50 || size.height < 12 {
-                f.render_widget(ratatui::widgets::Clear, size);
-
-                let mut base_style = Style::default().fg(app.theme.color_text());
-                if !app.config.transparent_background {
-                    base_style = base_style.bg(app.theme.color_base());
-                }
-                f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
-                f.render_widget(
-                    ratatui::widgets::Paragraph::new(lang_text(
-                        app,
-                        "终端窗口过小",
-                        "Terminal too small",
-                    ))
-                    .style(Style::default().fg(app.theme.color_subtext())),
-                    size,
-                );
-                return;
-            }
-
-            // 提示不再独占一行：否则开关"显示提示"会把整页挤上去一行。
-            // 内容区占满，提示以 `┤…├` 嵌进左面板底边框（那一行本就是 `─`）。
-            let content_area = size;
-            let bottom_row = if content_area.height > 0 {
-                Rect {
-                    x: content_area.x,
-                    y: content_area.y + content_area.height - 1,
-                    width: content_area.width,
-                    height: 1,
-                }
-            } else {
-                Rect::default()
-            };
-
-            // 「关闭」档位把右侧区（可视化 + 歌词）整块收起，歌曲信息区独占整宽。
-            let show_right = app.config.visualize != crate::data::config::VisualizeMode::Hidden;
-            let (left, right) = if show_right {
-                let cols = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(33), Constraint::Percentage(67)])
-                    .split(content_area);
-                (cols[0], cols[1])
-            } else {
-                (content_area, Rect::default())
-            };
-            layout_out.left = left;
-            layout_out.right = right;
-            layout_out.left_width = left.width;
-
-            // 右栏的两行（歌词 / 可视化）；收起时保持零矩形。
-            let mut lyric_row = Rect::default();
-            let mut spectrum_row = Rect::default();
-            if show_right {
-                // right: lyrics (10%) + spectrum (rest)
-                let lyric_h = ((right.height as f32) * 0.10).round() as u16;
-                let lyric_h = lyric_h.clamp(3, right.height.saturating_sub(6));
-                let rows = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(lyric_h), Constraint::Min(1)])
-                    .split(right);
-                lyric_row = rows[0];
-                spectrum_row = rows[1];
-
-                // Mirror visual panel inner layout for auto bar count.
-                let outer = Rect {
-                    x: rows[0].x,
-                    y: rows[0].y,
-                    width: rows[0].width,
-                    height: rows[0].height.saturating_add(rows[1].height),
-                };
-                let inner = outer.inner(ratatui::layout::Margin {
-                    horizontal: 1,
-                    vertical: 1,
-                });
-                let lyric_h_inner = rows[0].height.saturating_sub(2).min(inner.height);
-                layout_out.spectrum_rect = Rect {
-                    x: inner.x,
-                    y: inner.y + lyric_h_inner,
-                    width: inner.width,
-                    height: inner.height.saturating_sub(lyric_h_inner),
-                };
-            }
-
-            let info_l = info_panel::layout(left, size.width);
-            layout_out.info_progress = info_l.progress;
-            layout_out.info_volume = info_l.volume;
-            layout_out.info_controls = info_l.controls;
-            layout_out.info_meta = if info_panel::core_rows_visible(&info_l) {
-                info_l.meta
-            } else {
-                Rect::default()
-            };
-
-            // base styling
-            f.render_widget(ratatui::widgets::Clear, size);
-
-            let mut base_style = Style::default().fg(app.theme.color_text());
-            if !app.config.transparent_background {
-                base_style = base_style.bg(app.theme.color_base());
-            }
-            f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
-
-            let sliding_playlist = app.overlay == Overlay::Playlist
-                || app.playlist_slide_x != app.playlist_slide_target_x;
-            let mut cover_ready = false;
-            let mut cover_hidden = false;
-            if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
-                && !sliding_playlist
-                && let (Some(bytes), Some(hash)) = (
-                    app.player.track.cover.as_deref(),
-                    app.player.track.cover_hash,
-                )
-            {
-                match self.halfblocks.status(
-                    info_panel::cover_content_rect(info_l.cover),
-                    hash,
-                    bytes,
-                ) {
-                    CoverStatus::Ready => cover_ready = true,
-                    CoverStatus::Hidden => cover_hidden = true,
-                    CoverStatus::Loading => {}
-                }
-            }
-            info_panel::render(f, left, size.width, app, cover_ready, cover_hidden);
-            if show_right {
-                visual_panel::render(f, lyric_row, spectrum_row, app);
-            }
-            if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
-                && app.overlay != Overlay::Playlist
-                && app.playlist_slide_x == app.playlist_slide_target_x
-            {
-                paint_halfblock_cover(f.buffer_mut(), &mut self.halfblocks, info_l.cover, app);
-            }
-
-            // playlist overlay slides in/out over left
-            if app.overlay == Overlay::Playlist
-                || app.playlist_slide_x != app.playlist_slide_target_x
-            {
-                let collapsing = app.overlay != Overlay::Playlist
-                    && app.playlist_slide_x > app.playlist_slide_target_x;
-
-                // 动画推进在 AppState::tick 里完成，渲染只读取当前进度。
-                // Slide effect via visible width growth/shrink (x stays at left edge)
-                let full_w = left.width as i16;
-                let visible_w = (full_w + app.playlist_slide_x).clamp(0, full_w) as u16;
-                if visible_w > 0 {
-                    let r = Rect {
-                        x: left.x,
-                        y: left.y,
-                        width: visible_w,
-                        height: left.height,
-                    };
-                    layout_out.playlist_rect = r;
-
-                    if collapsing {
-                        // Closing animation only needs the panel shell; skip expensive list/cover rendering.
-                        f.render_widget(ratatui::widgets::Clear, r);
-                        f.render_widget(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_set(crate::tmplayer::ui::borders::SOLID_BORDER)
-                                .style(
-                                    Style::default()
-                                        .fg(app.theme.color_subtext())
-                                        .bg(app.theme.color_surface()),
-                                ),
-                            r,
-                        );
-                    } else {
-                        let pl_layout = playlist_panel::compute_layout(r, app);
-                        layout_out.playlist_inner = pl_layout.inner;
-                        layout_out.playlist_list_inner = pl_layout.list_inner;
-                        playlist_panel::render(f, r, app);
-                        if app.config.graphics_protocol
-                            == crate::data::config::GraphicsProtocol::Halfblocks
-                            && let (Some(bytes), Some(hash)) =
-                                (app.playlist_cover.as_deref(), app.playlist_cover_hash)
-                        {
-                            self.halfblocks.paint_segment(
-                                f.buffer_mut(),
-                                pl_layout.cover_rect,
-                                r,
-                                0,
-                                hash,
-                                bytes,
-                            );
-                        }
-                    }
-                }
-            }
-
-            // toast
-            if let Some((msg, _)) = &app.toast {
-                let area = Rect {
-                    x: size.x,
-                    y: size.y,
-                    width: size.width,
-                    height: 1,
-                };
-                f.render_widget(
-                    ratatui::widgets::Paragraph::new(msg.as_str())
-                        .style(Style::default().fg(app.theme.color_accent3())),
-                    area,
-                );
-            }
-
-            if app.config.show_hints {
-                Self::render_hint_in_border(f, app, bottom_row, layout_out.left);
-            }
-
-            // modals (top-most)
-            match app.overlay {
-                Overlay::SettingsModal => {
-                    render_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::BarSettingsModal => {
-                    render_bar_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::LyricsSettingsModal => {
-                    render_lyrics_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::DownloadSettingsModal | Overlay::DownloadPathEditModal => {
-                    render_download_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::AboutModal => render_about_modal(f, size, app),
-                Overlay::HelpModal => render_help_modal(f, size, app, &mut layout_out.modal_rows),
-                Overlay::EqModal => render_eq_modal(f, size, app),
-                _ => {}
-            }
-        })?;
+        layout_out = draw_page(&mut self.terminal, app, &mut self.halfblocks)?;
 
         Ok(layout_out)
     }
@@ -397,6 +163,241 @@ impl Tui {
             .set_string(seg.x, seg.y, &content, border_style);
     }
 }
+
+fn draw_page<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    halfblocks: &mut crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+) -> std::result::Result<UiLayout, B::Error> {
+    let mut layout_out = UiLayout::default();
+    terminal.draw(|f| {
+        let size = f.area();
+        layout_out.full = size;
+
+        // small terminal: keep stable, hide secondary panels
+        if size.width < 50 || size.height < 12 {
+            f.render_widget(ratatui::widgets::Clear, size);
+
+            let mut base_style = Style::default().fg(app.theme.color_text());
+            if !app.config.transparent_background {
+                base_style = base_style.bg(app.theme.color_base());
+            }
+            f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
+            f.render_widget(
+                ratatui::widgets::Paragraph::new(lang_text(
+                    app,
+                    "终端窗口过小",
+                    "Terminal too small",
+                ))
+                .style(Style::default().fg(app.theme.color_subtext())),
+                size,
+            );
+            return;
+        }
+
+        // 提示不再独占一行：否则开关"显示提示"会把整页挤上去一行。
+        // 内容区占满，提示以 `┤…├` 嵌进左面板底边框（那一行本就是 `─`）。
+        let content_area = size;
+        let bottom_row = if content_area.height > 0 {
+            Rect {
+                x: content_area.x,
+                y: content_area.y + content_area.height - 1,
+                width: content_area.width,
+                height: 1,
+            }
+        } else {
+            Rect::default()
+        };
+
+        // 「关闭」档位把右侧区（可视化 + 歌词）整块收起，歌曲信息区独占整宽。
+        let show_right = app.config.visualize != crate::data::config::VisualizeMode::Hidden;
+        let (left, right) = if show_right {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(33), Constraint::Percentage(67)])
+                .split(content_area);
+            (cols[0], cols[1])
+        } else {
+            (content_area, Rect::default())
+        };
+        layout_out.left = left;
+        layout_out.right = right;
+        layout_out.left_width = left.width;
+
+        // 右栏的两行（歌词 / 可视化）；收起时保持零矩形。
+        let mut lyric_row = Rect::default();
+        let mut spectrum_row = Rect::default();
+        if show_right {
+            // right: lyrics (10%) + spectrum (rest)
+            let lyric_h = ((right.height as f32) * 0.10).round() as u16;
+            let lyric_h = lyric_h.clamp(3, right.height.saturating_sub(6));
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(lyric_h), Constraint::Min(1)])
+                .split(right);
+            lyric_row = rows[0];
+            spectrum_row = rows[1];
+
+            // Mirror visual panel inner layout for auto bar count.
+            let outer = Rect {
+                x: rows[0].x,
+                y: rows[0].y,
+                width: rows[0].width,
+                height: rows[0].height.saturating_add(rows[1].height),
+            };
+            let inner = outer.inner(ratatui::layout::Margin {
+                horizontal: 1,
+                vertical: 1,
+            });
+            let lyric_h_inner = rows[0].height.saturating_sub(2).min(inner.height);
+            layout_out.spectrum_rect = Rect {
+                x: inner.x,
+                y: inner.y + lyric_h_inner,
+                width: inner.width,
+                height: inner.height.saturating_sub(lyric_h_inner),
+            };
+        }
+
+        let info_l = info_panel::layout(left, size.width);
+        layout_out.info_progress = info_l.progress;
+        layout_out.info_volume = info_l.volume;
+        layout_out.info_controls = info_l.controls;
+        layout_out.info_meta = if info_panel::core_rows_visible(&info_l) {
+            info_l.meta
+        } else {
+            Rect::default()
+        };
+
+        // base styling
+        f.render_widget(ratatui::widgets::Clear, size);
+
+        let mut base_style = Style::default().fg(app.theme.color_text());
+        if !app.config.transparent_background {
+            base_style = base_style.bg(app.theme.color_base());
+        }
+        f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
+
+        let mut cover_ready = false;
+        let mut cover_hidden = false;
+        if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
+            && let (Some(bytes), Some(hash)) = (
+                app.player.track.cover.as_deref(),
+                app.player.track.cover_hash,
+            )
+        {
+            match halfblocks.status(info_panel::cover_content_rect(info_l.cover), hash, bytes) {
+                CoverStatus::Ready => cover_ready = true,
+                CoverStatus::Hidden => cover_hidden = true,
+                CoverStatus::Loading => {}
+            }
+        }
+        info_panel::render(f, left, size.width, app, cover_ready, cover_hidden);
+        if show_right {
+            visual_panel::render(f, lyric_row, spectrum_row, app);
+        }
+        if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks {
+            // Paint the full cached song cover first; the sidebar below occludes it.
+            // Its exposed cells retain chafa glyphs/colors during both slide directions.
+            paint_halfblock_cover(f.buffer_mut(), halfblocks, info_l.cover, app);
+        }
+
+        // playlist overlay slides in/out over left
+        if app.overlay == Overlay::Playlist || app.playlist_slide_x != app.playlist_slide_target_x {
+            let collapsing = app.overlay != Overlay::Playlist
+                && app.playlist_slide_x > app.playlist_slide_target_x;
+
+            // 动画推进在 AppState::tick 里完成，渲染只读取当前进度。
+            // Slide effect via visible width growth/shrink (x stays at left edge)
+            let full_w = left.width as i16;
+            let visible_w = (full_w + app.playlist_slide_x).clamp(0, full_w) as u16;
+            if visible_w > 0 {
+                let r = Rect {
+                    x: left.x,
+                    y: left.y,
+                    width: visible_w,
+                    height: left.height,
+                };
+                layout_out.playlist_rect = r;
+
+                if collapsing {
+                    // Closing animation only needs the panel shell; skip expensive list/cover rendering.
+                    f.render_widget(ratatui::widgets::Clear, r);
+                    f.render_widget(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_set(crate::tmplayer::ui::borders::SOLID_BORDER)
+                            .style(
+                                Style::default()
+                                    .fg(app.theme.color_subtext())
+                                    .bg(app.theme.color_surface()),
+                            ),
+                        r,
+                    );
+                } else {
+                    let pl_layout = playlist_panel::compute_layout(r, app);
+                    layout_out.playlist_inner = pl_layout.inner;
+                    layout_out.playlist_list_inner = pl_layout.list_inner;
+                    playlist_panel::render(f, r, app);
+                    if app.config.graphics_protocol
+                        == crate::data::config::GraphicsProtocol::Halfblocks
+                        && let (Some(bytes), Some(hash)) =
+                            (app.playlist_cover.as_deref(), app.playlist_cover_hash)
+                    {
+                        halfblocks.paint_segment(
+                            f.buffer_mut(),
+                            pl_layout.cover_rect,
+                            r,
+                            0,
+                            hash,
+                            bytes,
+                        );
+                    }
+                }
+            }
+        }
+
+        // toast
+        if let Some((msg, _)) = &app.toast {
+            let area = Rect {
+                x: size.x,
+                y: size.y,
+                width: size.width,
+                height: 1,
+            };
+            f.render_widget(
+                ratatui::widgets::Paragraph::new(msg.as_str())
+                    .style(Style::default().fg(app.theme.color_accent3())),
+                area,
+            );
+        }
+
+        if app.config.show_hints {
+            Tui::render_hint_in_border(f, app, bottom_row, layout_out.left);
+        }
+
+        // modals (top-most)
+        match app.overlay {
+            Overlay::SettingsModal => {
+                render_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::BarSettingsModal => {
+                render_bar_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::LyricsSettingsModal => {
+                render_lyrics_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::DownloadSettingsModal | Overlay::DownloadPathEditModal => {
+                render_download_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::AboutModal => render_about_modal(f, size, app),
+            Overlay::HelpModal => render_help_modal(f, size, app, &mut layout_out.modal_rows),
+            Overlay::EqModal => render_eq_modal(f, size, app),
+            _ => {}
+        }
+    })?;
+    Ok(layout_out)
+}
+
 fn paint_halfblock_cover(
     target: &mut ratatui::buffer::Buffer,
     halfblocks: &mut crate::tmplayer::render::halfblock_cover::HalfblockCovers,
@@ -2233,6 +2234,90 @@ mod tests {
                     actual, expected,
                     "slide must preserve every chafa glyph/color and clip to the cover"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn sidebar_slides_preserve_exposed_song_chafa_cells() {
+        use crate::data::config::GraphicsProtocol;
+        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
+        use ratatui::backend::TestBackend;
+        use std::io::Cursor;
+        use std::time::{Duration, Instant};
+
+        let mut app = state(Overlay::None);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        app.config.show_hints = false;
+        let image = image::RgbImage::from_fn(32, 32, |x, y| {
+            image::Rgb([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8])
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        app.player.track.cover = Some(encoded.into_inner());
+        app.player.track.cover_hash = Some(42);
+        let mut halfblocks = HalfblockCovers::new();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let layout = draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+        let loading = terminal.backend().buffer().clone();
+
+        // Without polling the worker, Halfblocks must keep the existing ASCII fallback.
+        app.config.graphics_protocol = GraphicsProtocol::Off;
+        draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+        assert_eq!(terminal.backend().buffer(), &loading);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        let content = info_panel::cover_content_rect(
+            info_panel::layout(layout.left, layout.full.width).cover,
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while halfblocks.status(content, 42, app.player.track.cover.as_deref().unwrap())
+            != CoverStatus::Ready
+        {
+            assert!(
+                Instant::now() < deadline,
+                "song cover preparation timed out"
+            );
+            halfblocks.poll();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+        let closed = terminal.backend().buffer().clone();
+        assert_ne!(closed, loading, "fixture must distinguish chafa from ASCII");
+
+        for opening in [true, false] {
+            app.overlay = if opening {
+                Overlay::Playlist
+            } else {
+                Overlay::None
+            };
+            app.playlist_slide_target_x = if opening {
+                0
+            } else {
+                -(layout.left.width as i16)
+            };
+            for visible in [1, 8, 16, 24, 32, 39, 40] {
+                app.playlist_slide_x = visible - layout.left.width as i16;
+                let frame = draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+                let buffer = terminal.backend().buffer();
+                for y in content.top()..content.bottom() {
+                    for x in content.left()..content.right() {
+                        if !contains(frame.playlist_rect, x, y) {
+                            assert_eq!(
+                                buffer[(x, y)],
+                                closed[(x, y)],
+                                "exposed song cell ({x}, {y}), opening={opening}, visible={visible}"
+                            );
+                        } else {
+                            assert_ne!(
+                                buffer[(x, y)],
+                                closed[(x, y)],
+                                "sidebar must occlude the song image"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
