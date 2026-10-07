@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::data::config::Config;
+use ratatui::buffer::Buffer;
 #[derive(Debug, Clone)]
 pub struct FullscreenPlaylistItemSeed {
     pub id: Option<String>,
@@ -138,6 +139,7 @@ pub trait HostPlaybackBridge {
 pub async fn run_fullscreen(
     host_config: &Config,
     bootstrap: FullscreenBootstrap,
+    host_snapshot: Buffer,
     host_bridge: &mut impl HostPlaybackBridge,
 ) -> Result<FullscreenExit> {
     let config = host_config.clone();
@@ -151,7 +153,7 @@ pub async fn run_fullscreen(
 
     apply_bootstrap(&mut app, bootstrap);
 
-    app::event_loop::run(&mut app, host_bridge).await
+    app::event_loop::run(&mut app, host_snapshot, host_bridge).await
 }
 
 fn apply_bootstrap(app: &mut app::state::AppState, bootstrap: FullscreenBootstrap) {

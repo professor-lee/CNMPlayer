@@ -24,7 +24,9 @@ use directories::BaseDirs;
 use ftail::Ftail;
 use futures::{FutureExt, Stream, StreamExt, select_biased};
 use ratatui::Terminal;
+use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
+use ratatui::buffer::Buffer;
 use see::unsync::Receiver;
 use std::future::pending;
 use std::io::{self, Stdout};
@@ -459,24 +461,23 @@ async fn launch_tmplayer_fullscreen(
     app: &mut App,
     bootstrap: tmplayer::FullscreenBootstrap,
 ) -> Result<()> {
+    let host_snapshot = capture_host_snapshot(terminal, app)?;
     app.suspend_main_cava_for_fullscreen().await;
     restore_terminal(terminal)?;
+    present_host_snapshot(terminal, &host_snapshot)?;
 
     let config = app.config.clone();
     let mut bridge = AppFullscreenBridge { app };
-    let (exit, status_text) = match tmplayer::run_fullscreen(&config, bootstrap, &mut bridge).await
-    {
-        Ok(exit) => (Some(exit), String::new()),
-        Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
-    };
-
+    let (exit, status_text) =
+        match tmplayer::run_fullscreen(&config, bootstrap, host_snapshot, &mut bridge).await {
+            Ok(exit) => (Some(exit), String::new()),
+            Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
+        };
     *terminal = init_terminal()?;
     app.resume_main_cava_after_fullscreen();
     if !status_text.is_empty() {
         app.set_runtime_status(status_text);
     }
-
-    // 全屏页里的点击交给宿主接着做：宿主在自己的页面上打开对应页面。
     match exit {
         Some(tmplayer::FullscreenExit::BackToHostOpenSettings) => {
             app.open_settings_from_fullscreen()
@@ -489,5 +490,34 @@ async fn launch_tmplayer_fullscreen(
         }
         Some(tmplayer::FullscreenExit::BackToHost) | None => {}
     }
+    Ok(())
+}
+
+fn capture_host_snapshot(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+) -> Result<Buffer> {
+    let mut snapshot = None;
+    terminal.draw(|frame| {
+        ui::draw(frame, app);
+        ui::draw_settings(frame, app);
+        snapshot = Some(frame.buffer_mut().clone());
+    })?;
+    app.covers.prepare();
+    snapshot.ok_or_else(|| anyhow::anyhow!("host snapshot frame was not produced"))
+}
+
+fn present_host_snapshot(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    snapshot: &Buffer,
+) -> Result<()> {
+    terminal.backend_mut().clear()?;
+    let area = snapshot.area;
+    terminal.backend_mut().draw(
+        area.positions()
+            .map(|position| (position.x, position.y, &snapshot[position])),
+    )?;
+    terminal.backend_mut().hide_cursor()?;
+    terminal.backend_mut().flush()?;
     Ok(())
 }

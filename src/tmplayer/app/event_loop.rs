@@ -354,10 +354,11 @@ fn tick_visual_state(app: &mut AppState, now: Instant) -> bool {
 
 pub async fn run(
     app: &mut AppState,
+    host_snapshot: ratatui::buffer::Buffer,
     host_bridge: &mut impl HostPlaybackBridge,
 ) -> Result<crate::tmplayer::FullscreenExit> {
     enable_raw_mode()?;
-    let mut tui = Tui::new(host_bridge.wake_signal())?;
+    let mut tui = Tui::new(host_bridge.wake_signal(), host_snapshot)?;
     tui.enter()?;
     play_page_transition(&mut tui, app, host_bridge, true).await?;
 

@@ -45,6 +45,7 @@ pub struct Tui {
     pub should_quit: bool,
     covers: CoverPipeline,
     sidebar: PlaylistDrawer,
+    host_snapshot: Buffer,
 }
 
 #[derive(Default)]
@@ -53,7 +54,7 @@ struct PlaylistDrawer {
 }
 
 impl Tui {
-    pub fn new(wake: WakeSignal) -> Result<Self> {
+    pub fn new(wake: WakeSignal, host_snapshot: Buffer) -> Result<Self> {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
@@ -62,6 +63,7 @@ impl Tui {
             should_quit: false,
             covers: CoverPipeline::new(wake),
             sidebar: PlaylistDrawer::default(),
+            host_snapshot,
         })
     }
 
@@ -116,11 +118,12 @@ impl Tui {
         Ok(layout_out)
     }
     pub fn draw_reveal(&mut self, app: &mut AppState, progress: f32) -> Result<UiLayout> {
-        draw_page_reveal(
+        draw_page_reveal_with_snapshot(
             &mut self.terminal,
             app,
             &mut self.covers,
             &mut self.sidebar,
+            &self.host_snapshot,
             progress,
         )
         .map_err(Into::into)
@@ -199,6 +202,18 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
     sidebar: &mut PlaylistDrawer,
     progress: f32,
 ) -> std::result::Result<UiLayout, B::Error> {
+    let host_snapshot = Buffer::empty(terminal.get_frame().area());
+    draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, &host_snapshot, progress)
+}
+
+fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    covers: &mut CoverPipeline,
+    sidebar: &mut PlaylistDrawer,
+    host_snapshot: &Buffer,
+    progress: f32,
+) -> std::result::Result<UiLayout, B::Error> {
     let mut layout_out = UiLayout::default();
     terminal.autoresize()?;
     // Fixed target preparation is outside the terminal drawing closure.
@@ -254,7 +269,7 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
                 .style(Style::default().fg(app.theme.color_subtext())),
                 size,
             );
-            slide_page_from_bottom(f.buffer_mut(), progress);
+            slide_page_from_bottom(f.buffer_mut(), progress, host_snapshot);
             return;
         }
 
@@ -419,33 +434,38 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
         }
         // Draw at the final geometry, then move the whole page as one drawer.
         // Cover preparation and cache keys are independent of this screen offset.
-        slide_page_from_bottom(f.buffer_mut(), progress);
+        slide_page_from_bottom(f.buffer_mut(), progress, host_snapshot);
     })?;
     Ok(layout_out)
 }
 
-fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32) {
+fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32, host_snapshot: &Buffer) {
     let width = usize::from(buffer.area.width);
     let height = usize::from(buffer.area.height);
     if width == 0 || height == 0 {
         return;
     }
     let visible = (f32::from(buffer.area.height) * progress.clamp(0.0, 1.0)).round() as usize;
-    let offset = height - visible;
+    let offset = height.saturating_sub(visible);
     if offset == 0 {
         return;
     }
-
-    // Copy bottom-to-top so destinations cannot overwrite the remaining source
-    // rows. Reuse the frame's cells: no second full-page buffer or image encoding.
     for source_row in (0..visible).rev() {
         let destination = (source_row + offset) * width;
         let (source, target) = buffer.content.split_at_mut(destination);
         let start = source_row * width;
         target[..width].clone_from_slice(&source[start..start + width]);
     }
-    for cell in &mut buffer.content[..offset * width] {
-        cell.reset();
+    for row in 0..offset {
+        let start = row * width;
+        if host_snapshot.area == buffer.area {
+            buffer.content[start..start + width]
+                .clone_from_slice(&host_snapshot.content[start..start + width]);
+        } else {
+            for cell in &mut buffer.content[start..start + width] {
+                cell.reset();
+            }
+        }
     }
 }
 
@@ -2175,7 +2195,8 @@ mod tests {
             .bg(ratatui::style::Color::Rgb(20, 40, 60));
         buffer.set_string(7, 9, "中AB", style);
         let source = buffer.clone();
-        slide_page_from_bottom(&mut buffer, 0.5);
+        let area = buffer.area;
+        slide_page_from_bottom(&mut buffer, 0.5, &Buffer::empty(area));
         assert_eq!(buffer[(7, 11)].symbol(), "中");
         for x in 7..13 {
             assert_eq!(buffer[(x, 11)], source[(x, 9)]);
@@ -2183,6 +2204,41 @@ mod tests {
             assert_eq!(buffer[(x, 9)], ratatui::buffer::Cell::default());
             assert_eq!(buffer[(x, 10)], ratatui::buffer::Cell::default());
         }
+    }
+
+    #[test]
+    fn fullscreen_drawer_exposes_host_snapshot_before_and_after_slide() {
+        use crate::data::config::VisualizeMode;
+        use ratatui::backend::TestBackend;
+        let mut app = state(Overlay::None);
+        app.config.show_hints = false;
+        app.config.visualize = VisualizeMode::Lyrics;
+        app.player.track.title = "Fullscreen content".into();
+        let mut host = Buffer::empty(Rect::new(0, 0, 120, 40));
+        host.set_string(0, 0, "HOST APPLICATION", Style::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut covers = CoverPipeline::new(WakeSignal::default());
+        let mut drawer = PlaylistDrawer::default();
+        draw_page_reveal_with_snapshot(
+            &mut terminal,
+            &mut app,
+            &mut covers,
+            &mut drawer,
+            &host,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "H");
+        draw_page_reveal_with_snapshot(
+            &mut terminal,
+            &mut app,
+            &mut covers,
+            &mut drawer,
+            &host,
+            1.0,
+        )
+        .unwrap();
+        assert_ne!(terminal.backend().buffer()[(0, 0)].symbol(), "H");
     }
 
     fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
