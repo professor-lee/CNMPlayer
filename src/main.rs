@@ -44,6 +44,13 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
         self.app.fullscreen_tick_playback().await;
     }
 
+    fn host_snapshot<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> std::result::Result<Buffer, B::Error> {
+        capture_host_snapshot(terminal, self.app)
+    }
+
     fn wake_signal(&self) -> crate::render::wake::WakeSignal {
         self.app.wake.clone()
     }
@@ -463,17 +470,16 @@ async fn launch_tmplayer_fullscreen(
 ) -> Result<()> {
     let host_snapshot = capture_host_snapshot(terminal, app)?;
     app.suspend_main_cava_for_fullscreen().await;
-    restore_terminal(terminal)?;
-    present_host_snapshot(terminal, &host_snapshot)?;
 
     let config = app.config.clone();
     let mut bridge = AppFullscreenBridge { app };
     let (exit, status_text) =
-        match tmplayer::run_fullscreen(&config, bootstrap, host_snapshot, &mut bridge).await {
+        match tmplayer::run_fullscreen(terminal, &config, bootstrap, host_snapshot, &mut bridge)
+            .await
+        {
             Ok(exit) => (Some(exit), String::new()),
             Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
         };
-    *terminal = init_terminal()?;
     app.resume_main_cava_after_fullscreen();
     if !status_text.is_empty() {
         app.set_runtime_status(status_text);
@@ -493,31 +499,15 @@ async fn launch_tmplayer_fullscreen(
     Ok(())
 }
 
-fn capture_host_snapshot(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+fn capture_host_snapshot<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut App,
-) -> Result<Buffer> {
-    let mut snapshot = None;
-    terminal.draw(|frame| {
+) -> std::result::Result<Buffer, B::Error> {
+    app.covers.poll();
+    let snapshot = render::snapshot::capture(terminal, |frame| {
         ui::draw(frame, app);
         ui::draw_settings(frame, app);
-        snapshot = Some(frame.buffer_mut().clone());
     })?;
     app.covers.prepare();
-    snapshot.ok_or_else(|| anyhow::anyhow!("host snapshot frame was not produced"))
-}
-
-fn present_host_snapshot(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    snapshot: &Buffer,
-) -> Result<()> {
-    terminal.backend_mut().clear()?;
-    let area = snapshot.area;
-    terminal.backend_mut().draw(
-        area.positions()
-            .map(|position| (position.x, position.y, &snapshot[position])),
-    )?;
-    terminal.backend_mut().hide_cursor()?;
-    terminal.backend_mut().flush()?;
-    Ok(())
+    Ok(snapshot)
 }

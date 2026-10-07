@@ -6,17 +6,14 @@ use crate::tmplayer::ui::panels::info_panel::{download_cells, heart_cells};
 use crate::tmplayer::ui::panels::{info_panel, playlist_panel, visual_panel};
 use crate::tmplayer::utils::input::Action;
 use anyhow::Result;
-use crossterm::execute;
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{event, terminal};
+use crossterm::terminal;
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use std::io::{self, Stdout};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UiLayout {
@@ -40,12 +37,13 @@ pub struct UiLayout {
     pub modal_rows: ModalRows,
 }
 
-pub struct Tui {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+/// Fullscreen rendering resources only. The Host owns terminal modes and the
+/// sole double-buffered output surface; snapshots live in transition calls.
+pub struct Tui<'a, B: Backend> {
+    terminal: &'a mut Terminal<B>,
     pub should_quit: bool,
     covers: CoverPipeline,
     sidebar: PlaylistDrawer,
-    host_snapshot: Buffer,
 }
 
 #[derive(Default)]
@@ -53,38 +51,26 @@ struct PlaylistDrawer {
     buffer: Buffer,
 }
 
-impl Tui {
-    pub fn new(wake: WakeSignal, host_snapshot: Buffer) -> Result<Self> {
-        let stdout = io::stdout();
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
-        Ok(Self {
+impl<'a, B: Backend> Tui<'a, B>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    pub fn new(terminal: &'a mut Terminal<B>, wake: WakeSignal) -> Self {
+        Self {
             terminal,
             should_quit: false,
             covers: CoverPipeline::new(wake),
             sidebar: PlaylistDrawer::default(),
-            host_snapshot,
-        })
+        }
     }
 
-    pub fn enter(&mut self) -> Result<()> {
-        execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            event::EnableMouseCapture
-        )?;
-        terminal::enable_raw_mode()?;
-        Ok(())
+    pub fn terminal_mut(&mut self) -> &mut Terminal<B> {
+        self.terminal
     }
 
-    pub fn exit(&mut self) -> Result<()> {
-        terminal::disable_raw_mode()?;
-        execute!(
-            io::stdout(),
-            event::DisableMouseCapture,
-            LeaveAlternateScreen
-        )?;
-        Ok(())
+    pub fn area(&mut self) -> std::result::Result<Rect, B::Error> {
+        self.terminal.autoresize()?;
+        Ok(self.terminal.get_frame().area())
     }
     pub fn poll_cover_frames(&mut self) -> bool {
         self.covers.poll()
@@ -113,22 +99,29 @@ impl Tui {
             return Ok(layout_out);
         }
 
-        layout_out = draw_page(&mut self.terminal, app, &mut self.covers, &mut self.sidebar)?;
+        layout_out = draw_page(self.terminal, app, &mut self.covers, &mut self.sidebar)?;
 
         Ok(layout_out)
     }
-    pub fn draw_reveal(&mut self, app: &mut AppState, progress: f32) -> Result<UiLayout> {
+    pub fn draw_reveal(
+        &mut self,
+        app: &mut AppState,
+        host_snapshot: &Buffer,
+        progress: f32,
+    ) -> Result<UiLayout> {
         draw_page_reveal_with_snapshot(
-            &mut self.terminal,
+            self.terminal,
             app,
             &mut self.covers,
             &mut self.sidebar,
-            &self.host_snapshot,
+            Some(host_snapshot),
             progress,
         )
         .map_err(Into::into)
     }
+}
 
+impl<B: Backend> Tui<'_, B> {
     /// 把提示以 `┤文字├` 的形式嵌进左侧面板的底边框。
     ///
     /// 该行本身就是面板的 `horizontal_bottom`（`─`）。只重绘左面板那一段，
@@ -192,9 +185,10 @@ fn draw_page<B: ratatui::backend::Backend>(
     covers: &mut CoverPipeline,
     sidebar: &mut PlaylistDrawer,
 ) -> std::result::Result<UiLayout, B::Error> {
-    draw_page_reveal(terminal, app, covers, sidebar, 1.0)
+    draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, None, 1.0)
 }
 
+#[cfg(test)]
 fn draw_page_reveal<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut AppState,
@@ -202,8 +196,7 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
     sidebar: &mut PlaylistDrawer,
     progress: f32,
 ) -> std::result::Result<UiLayout, B::Error> {
-    let host_snapshot = Buffer::empty(terminal.get_frame().area());
-    draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, &host_snapshot, progress)
+    draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, None, progress)
 }
 
 fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
@@ -211,7 +204,7 @@ fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
     app: &mut AppState,
     covers: &mut CoverPipeline,
     sidebar: &mut PlaylistDrawer,
-    host_snapshot: &Buffer,
+    host_snapshot: Option<&Buffer>,
     progress: f32,
 ) -> std::result::Result<UiLayout, B::Error> {
     let mut layout_out = UiLayout::default();
@@ -410,7 +403,7 @@ fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
         }
 
         if app.config.show_hints {
-            Tui::render_hint_in_border(f, app, bottom_row, layout_out.left);
+            Tui::<B>::render_hint_in_border(f, app, bottom_row, layout_out.left);
         }
 
         // modals (top-most)
@@ -439,7 +432,7 @@ fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
     Ok(layout_out)
 }
 
-fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32, host_snapshot: &Buffer) {
+fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32, host_snapshot: Option<&Buffer>) {
     let width = usize::from(buffer.area.width);
     let height = usize::from(buffer.area.height);
     if width == 0 || height == 0 {
@@ -458,9 +451,9 @@ fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32, host_snapshot: &Bu
     }
     for row in 0..offset {
         let start = row * width;
-        if host_snapshot.area == buffer.area {
+        if let Some(snapshot) = host_snapshot.filter(|snapshot| snapshot.area == buffer.area) {
             buffer.content[start..start + width]
-                .clone_from_slice(&host_snapshot.content[start..start + width]);
+                .clone_from_slice(&snapshot.content[start..start + width]);
         } else {
             for cell in &mut buffer.content[start..start + width] {
                 cell.reset();
@@ -2195,8 +2188,7 @@ mod tests {
             .bg(ratatui::style::Color::Rgb(20, 40, 60));
         buffer.set_string(7, 9, "中AB", style);
         let source = buffer.clone();
-        let area = buffer.area;
-        slide_page_from_bottom(&mut buffer, 0.5, &Buffer::empty(area));
+        slide_page_from_bottom(&mut buffer, 0.5, None);
         assert_eq!(buffer[(7, 11)].symbol(), "中");
         for x in 7..13 {
             assert_eq!(buffer[(x, 11)], source[(x, 9)]);
@@ -2207,38 +2199,98 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_drawer_exposes_host_snapshot_before_and_after_slide() {
-        use crate::data::config::VisualizeMode;
+    fn fullscreen_handoff_uses_one_terminal_and_a_fresh_exit_snapshot() {
+        use crate::{data::config::VisualizeMode, render::snapshot};
         use ratatui::backend::TestBackend;
+
+        fn paint_host(frame: &mut ratatui::Frame, label: &str) {
+            for y in frame.area().top()..frame.area().bottom() {
+                let area = frame.area();
+                frame.buffer_mut().set_string(
+                    area.x,
+                    y,
+                    format!("{label} row {y}"),
+                    Style::default(),
+                );
+            }
+        }
+
         let mut app = state(Overlay::None);
         app.config.show_hints = false;
+        app.config.small_window_display = false;
         app.config.visualize = VisualizeMode::Lyrics;
+        app.language = crate::data::config::Language::En;
         app.player.track.title = "Fullscreen content".into();
-        let mut host = Buffer::empty(Rect::new(0, 0, 120, 40));
-        host.set_string(0, 0, "HOST APPLICATION", Style::default());
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let mut covers = CoverPipeline::new(WakeSignal::default());
-        let mut drawer = PlaylistDrawer::default();
-        draw_page_reveal_with_snapshot(
-            &mut terminal,
-            &mut app,
-            &mut covers,
-            &mut drawer,
-            &host,
-            0.0,
-        )
-        .unwrap();
-        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "H");
-        draw_page_reveal_with_snapshot(
-            &mut terminal,
-            &mut app,
-            &mut covers,
-            &mut drawer,
-            &host,
-            1.0,
-        )
-        .unwrap();
-        assert_ne!(terminal.backend().buffer()[(0, 0)].symbol(), "H");
+        terminal
+            .draw(|frame| paint_host(frame, "HOST BEFORE"))
+            .unwrap();
+        let visible_host = terminal.backend().buffer().clone();
+        let host =
+            snapshot::capture(&mut terminal, |frame| paint_host(frame, "HOST BEFORE")).unwrap();
+        assert_eq!(
+            terminal.backend().buffer(),
+            &visible_host,
+            "offscreen capture cannot submit or clear the Host"
+        );
+
+        let mut tui = Tui::new(&mut terminal, WakeSignal::default());
+        tui.draw(&mut app).unwrap();
+        let full = tui.terminal_mut().backend().buffer().clone();
+        for (progress, offset) in [(0.0, 40), (0.2, 32), (0.5, 20), (0.8, 8), (1.0, 0)] {
+            tui.draw_reveal(&mut app, &host, progress).unwrap();
+            let actual = tui.terminal_mut().backend().buffer();
+            for y in 0..40 {
+                for x in 0..120 {
+                    let expected = if y < offset {
+                        &host[(x, y)]
+                    } else {
+                        &full[(x, y - offset)]
+                    };
+                    assert_eq!(
+                        &actual[(x, y)],
+                        expected,
+                        "entry frame {progress}, ({x}, {y})"
+                    );
+                }
+            }
+        }
+        drop(host);
+
+        // The Host changed while Fullscreen was open. Capture it offscreen,
+        // leaving the current Fullscreen frame intact until sliding starts.
+        let exit_host =
+            snapshot::capture(tui.terminal_mut(), |frame| paint_host(frame, "HOST AFTER")).unwrap();
+        assert_eq!(tui.terminal_mut().backend().buffer(), &full);
+        for (progress, offset) in [(1.0, 0), (0.8, 8), (0.5, 20), (0.2, 32), (0.0, 40)] {
+            tui.draw_reveal(&mut app, &exit_host, progress).unwrap();
+            let actual = tui.terminal_mut().backend().buffer();
+            for y in 0..40 {
+                for x in 0..120 {
+                    let expected = if y < offset {
+                        &exit_host[(x, y)]
+                    } else {
+                        &full[(x, y - offset)]
+                    };
+                    assert_eq!(
+                        &actual[(x, y)],
+                        expected,
+                        "exit frame {progress}, ({x}, {y})"
+                    );
+                }
+            }
+        }
+        drop(exit_host);
+        drop(tui);
+        terminal
+            .draw(|frame| paint_host(frame, "HOST RESUMED"))
+            .unwrap();
+        for (x, ch) in "HOST RESUMED row 0".chars().enumerate() {
+            assert_eq!(
+                terminal.backend().buffer()[(x as u16, 0)].symbol(),
+                ch.to_string()
+            );
+        }
     }
 
     fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::data::config::Config;
 use ratatui::buffer::Buffer;
+use ratatui::{Terminal, backend::Backend};
 #[derive(Debug, Clone)]
 pub struct FullscreenPlaylistItemSeed {
     pub id: Option<String>,
@@ -116,6 +117,11 @@ pub trait HostPlaybackBridge {
     /// 宿主播放链路上的 PCM 抽头环，示波器由此取真实波形。
     fn pcm_ring(&self) -> Arc<crate::tmplayer::audio::pcm_tap::PcmRing>;
     fn snapshot(&mut self) -> HostPlaybackSnapshot;
+    /// Prepare the current Host view offscreen, with no terminal submission.
+    fn host_snapshot<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> std::result::Result<Buffer, B::Error>;
     /// Monotonic host configuration revision; fullscreen only snapshots when it changes.
     fn config_signature(&self) -> u64;
     fn config_snapshot(&self) -> Config;
@@ -136,12 +142,16 @@ pub trait HostPlaybackBridge {
     fn download_current(&mut self);
 }
 
-pub async fn run_fullscreen(
+pub async fn run_fullscreen<B: Backend>(
+    terminal: &mut Terminal<B>,
     host_config: &Config,
     bootstrap: FullscreenBootstrap,
     host_snapshot: Buffer,
     host_bridge: &mut impl HostPlaybackBridge,
-) -> Result<FullscreenExit> {
+) -> Result<FullscreenExit>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let config = host_config.clone();
     let theme = crate::data::theme_loader::ThemeLoader::load_async(&host_config.theme)
         .await
@@ -153,7 +163,7 @@ pub async fn run_fullscreen(
 
     apply_bootstrap(&mut app, bootstrap);
 
-    app::event_loop::run(&mut app, host_snapshot, host_bridge).await
+    app::event_loop::run(terminal, &mut app, host_snapshot, host_bridge).await
 }
 
 fn apply_bootstrap(app: &mut app::state::AppState, bootstrap: FullscreenBootstrap) {

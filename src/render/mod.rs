@@ -7,4 +7,5 @@ pub mod mascot;
 #[cfg(feature = "easter-egg")]
 pub mod mascot_frames;
 pub(crate) mod motion;
+pub(crate) mod snapshot;
 pub(crate) mod wake;

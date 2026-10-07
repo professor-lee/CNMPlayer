@@ -11,7 +11,7 @@ use crate::tmplayer::{
 };
 use anyhow::Result;
 use crossterm::event::{self, Event};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::{Terminal, backend::Backend};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
@@ -352,15 +352,19 @@ fn tick_visual_state(app: &mut AppState, now: Instant) -> bool {
     scope_before != app.scope_gain.value() || app.should_continuous_redraw()
 }
 
-pub async fn run(
+pub async fn run<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut AppState,
     host_snapshot: ratatui::buffer::Buffer,
     host_bridge: &mut impl HostPlaybackBridge,
-) -> Result<crate::tmplayer::FullscreenExit> {
-    enable_raw_mode()?;
-    let mut tui = Tui::new(host_bridge.wake_signal(), host_snapshot)?;
-    tui.enter()?;
-    play_page_transition(&mut tui, app, host_bridge, true).await?;
+) -> Result<crate::tmplayer::FullscreenExit>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    // No screen-mode changes here. Tui owns only fullscreen rendering resources.
+    let mut tui = Tui::new(terminal, host_bridge.wake_signal());
+    app.pcm_ring = Some(host_bridge.pcm_ring());
+    play_page_transition(&mut tui, app, host_bridge, true, host_snapshot).await?;
 
     // Prefer cava for system-wide visualization (keeps our renderer/style; cava only provides bars).
     // If cava isn't installed, we leave the spectrum empty.
@@ -374,9 +378,6 @@ pub async fn run(
     let mut clock = FrameClock::new(app.idle_render_fps(), Instant::now());
 
     let mut last_layout = UiLayout::default();
-
-    // 示波器始终读取宿主播放链路上的 PCM 抽头环。
-    app.pcm_ring = Some(host_bridge.pcm_ring());
 
     let desired = desired_cava_config(app, &last_layout);
     cava.set_desired(desired);
@@ -507,18 +508,18 @@ pub async fn run(
     .await;
 
     let transition_result = if loop_result.is_ok() {
-        play_page_transition(&mut tui, app, host_bridge, false).await
+        async {
+            let snapshot = host_bridge.host_snapshot(tui.terminal_mut())?;
+            play_page_transition(&mut tui, app, host_bridge, false, snapshot).await
+        }
+        .await
     } else {
         Ok(())
     };
-    let exit_result = tui.exit();
-    let raw_result = disable_raw_mode();
     let cava_result = compio::runtime::spawn_blocking(move || cava.shutdown_blocking())
         .await
         .map_err(|_| anyhow::anyhow!("cava shutdown task panicked"));
     loop_result?;
-    exit_result?;
-    raw_result?;
     cava_result?;
     transition_result?;
 
@@ -532,20 +533,21 @@ pub async fn run(
     Ok(exit)
 }
 
-async fn play_page_transition(
-    tui: &mut Tui,
+async fn play_page_transition<B: Backend>(
+    tui: &mut Tui<'_, B>,
     app: &mut AppState,
     host: &mut impl HostPlaybackBridge,
     opening: bool,
-) -> Result<()> {
+    mut host_snapshot: ratatui::buffer::Buffer,
+) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     use crate::render::motion::{Curve, Transition};
-    let mut motion = Transition::new(if opening { 0.0 } else { 1.0 });
-    motion.retarget(
-        if opening { 1.0 } else { 0.0 },
-        Instant::now(),
-        Duration::from_millis(220),
-        Curve::EaseOut,
-    );
+    let start_value = if opening { 0.0 } else { 1.0 };
+    let target = if opening { 1.0 } else { 0.0 };
+    let mut motion = Transition::new(start_value);
+    let mut started = false;
     let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
     let mut metadata = None;
     loop {
@@ -556,15 +558,29 @@ async fn play_page_transition(
             sync_from_host_snapshot(app, host.snapshot());
             metadata = Some(signature);
         }
+        if host_snapshot.area != tui.area()? {
+            host_snapshot = host.host_snapshot(tui.terminal_mut())?;
+        }
         let now = Instant::now();
         app.tick(now);
         motion.tick(now);
         tui.poll_cover_frames();
         clock.mark_dirty();
         if clock.due(now) {
-            tui.draw_reveal(app, motion.value())?;
-            clock.presented(Instant::now());
-            if !motion.is_running() {
+            tui.draw_reveal(app, &host_snapshot, motion.value())?;
+            let presented = Instant::now();
+            clock.presented(presented);
+            if !started {
+                // Initialization and snapshot work must not consume the visible
+                // animation duration. Its initial endpoint is submitted first.
+                motion.retarget(
+                    target,
+                    presented,
+                    Duration::from_millis(220),
+                    Curve::EaseOut,
+                );
+                started = true;
+            } else if !motion.is_running() {
                 break;
             }
         }
@@ -574,6 +590,7 @@ async fn play_page_transition(
             .saturating_duration_since(Instant::now());
         compio::time::sleep(wait).await;
     }
+    // Snapshot ownership ends here, before stable Fullscreen or Host resumes.
     Ok(())
 }
 
