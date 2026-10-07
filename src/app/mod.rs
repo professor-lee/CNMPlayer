@@ -8994,7 +8994,9 @@ impl App {
             .iter_mut()
             .find(|tile| tile.title == "私人漫游")
         {
-            tile.cover.load(self.api.clone(), url);
+            if tile.cover.url.as_deref() != Some(url.as_str()) {
+                tile.cover.load(self.api.clone(), url);
+            }
         }
     }
 

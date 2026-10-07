@@ -42,6 +42,19 @@ impl CoverValidationGate {
             }
         }
     }
+
+    async fn acquire(&self, timeout: Duration) -> Result<CoverValidationPermit<'_>> {
+        compio::time::timeout(timeout, async {
+            loop {
+                if let Ok(permit) = self.try_acquire() {
+                    break permit;
+                }
+                compio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("cover decoder admission timed out"))
+    }
 }
 
 #[derive(Debug)]
@@ -537,7 +550,7 @@ impl ApiState {
 
         // Blocking decoders cannot be cancelled. The closure, not its caller,
         // owns admission until it finishes, even if the awaiting task is dropped.
-        let permit = COVER_VALIDATION_GATE.try_acquire()?;
+        let permit = COVER_VALIDATION_GATE.acquire(timeout).await?;
         let validated = compio::runtime::spawn_blocking(move || -> Result<_> {
             let _permit = permit;
             // Decoders can recover incomplete images. A cache entry must carry
@@ -639,6 +652,25 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[compio::test]
+    async fn busy_cover_decoder_waits_for_capacity_instead_of_losing_image() {
+        static GATE: super::CoverValidationGate = super::CoverValidationGate::new();
+        let first = GATE.try_acquire().unwrap();
+        let second = GATE.try_acquire().unwrap();
+        let release = compio::runtime::spawn(async move {
+            compio::time::sleep(Duration::from_millis(30)).await;
+            drop(first);
+        });
+        let third = GATE.acquire(Duration::from_secs(1)).await.unwrap();
+        assert!(
+            GATE.try_acquire().is_err(),
+            "waiting did not increase decoder concurrency"
+        );
+        drop(third);
+        drop(second);
+        release.await.unwrap();
+    }
 
     #[compio::test]
     async fn cover_network_deadline_is_not_reset_after_headers() {
