@@ -24,7 +24,6 @@ pub enum GraphicsProtocol {
 impl GraphicsProtocol {
     const ALL: [Self; 2] = [Self::Off, Self::Halfblocks];
 
-
     pub fn cycle(self, delta: i32) -> Self {
         if delta == 0 {
             return self;

@@ -4,8 +4,8 @@ mod render;
 mod tmplayer;
 mod ui;
 
-use crate::tmplayer::audio::cava::MiniCavaState;
 use crate::render::frame_clock::FrameClock;
+use crate::tmplayer::audio::cava::MiniCavaState;
 use anyhow::Result;
 use app::App;
 use compio::fs::{create_dir_all, remove_file};
@@ -427,7 +427,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             clock.presented(Instant::now());
         }
 
-        let wait_until = clock.next_deadline().unwrap_or_else(|| Instant::now() + Duration::from_secs(1));
+        let wait_until = clock
+            .next_deadline()
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(1));
         let wait = wait_until.saturating_duration_since(Instant::now());
         select_biased! {
             f = input.next().fuse() => if let Some(f) = f {

@@ -9,7 +9,11 @@ pub(crate) struct InputController {
 
 impl Default for InputController {
     fn default() -> Self {
-        Self { search_box_input: String::new(), search_box_cursor: 0, search_motion: Toggle::new(false) }
+        Self {
+            search_box_input: String::new(),
+            search_box_cursor: 0,
+            search_motion: Toggle::new(false),
+        }
     }
 }
 

@@ -1,6 +1,6 @@
-use crate::tmplayer::app::state::{AppState, Overlay};
 use crate::render::cover_pipeline::{CoverKey, CoverPipeline, ImagePhase};
 use crate::render::wake::WakeSignal;
+use crate::tmplayer::app::state::{AppState, Overlay};
 use crate::tmplayer::ui::components::control_buttons;
 use crate::tmplayer::ui::panels::info_panel::{download_cells, heart_cells};
 use crate::tmplayer::ui::panels::{info_panel, playlist_panel, visual_panel};
@@ -111,12 +111,7 @@ impl Tui {
             return Ok(layout_out);
         }
 
-        layout_out = draw_page(
-            &mut self.terminal,
-            app,
-            &mut self.covers,
-            &mut self.sidebar,
-        )?;
+        layout_out = draw_page(&mut self.terminal, app, &mut self.covers, &mut self.sidebar)?;
 
         Ok(layout_out)
     }
@@ -199,15 +194,20 @@ fn draw_page<B: ratatui::backend::Backend>(
         let content = info_panel::cover_content_rect(info_panel::layout(left, size.width).cover);
         if let Some(anim) = &app.cover_anim {
             for snapshot in [&anim.from, &anim.to] {
-                if let (Some(bytes), Some(hash)) = (snapshot.cover.as_deref(), snapshot.cover_hash) {
+                if let (Some(bytes), Some(hash)) = (snapshot.cover.as_deref(), snapshot.cover_hash)
+                {
                     covers.request_bytes(cover_key(content, hash), bytes, ImagePhase::Moving);
                 }
             }
-        } else if let (Some(bytes), Some(hash)) = (app.player.track.cover.as_deref(), app.player.track.cover_hash) {
+        } else if let (Some(bytes), Some(hash)) = (
+            app.player.track.cover.as_deref(),
+            app.player.track.cover_hash,
+        ) {
             covers.request_bytes(cover_key(content, hash), bytes, ImagePhase::Stable);
         }
         let sidebar_cover = playlist_panel::compute_layout(left, app).cover_rect;
-        if let (Some(bytes), Some(hash)) = (app.playlist_cover.as_deref(), app.playlist_cover_hash) {
+        if let (Some(bytes), Some(hash)) = (app.playlist_cover.as_deref(), app.playlist_cover_hash)
+        {
             covers.request_bytes(cover_key(sidebar_cover, hash), bytes, ImagePhase::Stable);
         }
     }
@@ -319,7 +319,8 @@ fn draw_page<B: ratatui::backend::Backend>(
         }
         f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
 
-        let halfblocks = app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks;
+        let halfblocks =
+            app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks;
         info_panel::render(f, left, size.width, app);
         if show_right {
             visual_panel::render(f, lyric_row, spectrum_row, app);
@@ -342,8 +343,14 @@ fn draw_page<B: ratatui::backend::Backend>(
                 sidebar.buffer.set_style(left, surface);
                 playlist_panel::render(&mut sidebar.buffer, left, app, !halfblocks);
                 if halfblocks && let Some(hash) = app.playlist_cover_hash {
-                    covers.paint(&mut sidebar.buffer, pl_layout.cover_rect, pl_layout.cover_rect,
-                        0, 0, cover_key(pl_layout.cover_rect, hash));
+                    covers.paint(
+                        &mut sidebar.buffer,
+                        pl_layout.cover_rect,
+                        pl_layout.cover_rect,
+                        0,
+                        0,
+                        cover_key(pl_layout.cover_rect, hash),
+                    );
                 }
                 paint_drawer(f.buffer_mut(), &sidebar.buffer, dx, visible);
                 layout_out.playlist_inner = translated_clip(pl_layout.inner, dx, visible);
@@ -433,17 +440,28 @@ fn paint_halfblock_cover(
     app: &AppState,
 ) {
     let paint_border = |target: &mut Buffer, dx: i16, hash: u64| {
-        if !app.config.album_border || covers.frame(cover_key(info_panel::cover_content_rect(cover), hash)).is_none() {
+        if !app.config.album_border
+            || covers
+                .frame(cover_key(info_panel::cover_content_rect(cover), hash))
+                .is_none()
+        {
             return;
         }
         let content = info_panel::cover_content_rect(cover);
-        if content == cover { return; }
+        if content == cover {
+            return;
+        }
         let border = crate::tmplayer::ui::borders::SOLID_BORDER;
         let clip = translated_clip(cover, dx, cover.intersection(target.area));
         for y in clip.top()..clip.bottom() {
             for x in clip.left()..clip.right() {
                 let sx = (i32::from(x) - i32::from(dx)) as u16;
-                let symbol = match (y == cover.top(), y + 1 == cover.bottom(), sx == cover.left(), sx + 1 == cover.right()) {
+                let symbol = match (
+                    y == cover.top(),
+                    y + 1 == cover.bottom(),
+                    sx == cover.left(),
+                    sx + 1 == cover.right(),
+                ) {
                     (true, _, true, _) => Some(border.top_left),
                     (true, _, _, true) => Some(border.top_right),
                     (_, true, true, _) => Some(border.bottom_left),
@@ -455,7 +473,9 @@ fn paint_halfblock_cover(
                     _ => None,
                 };
                 if let Some(symbol) = symbol {
-                    target[(x, y)].set_symbol(symbol).set_fg(app.theme.color_subtext());
+                    target[(x, y)]
+                        .set_symbol(symbol)
+                        .set_fg(app.theme.color_subtext());
                 }
             }
         }
@@ -481,7 +501,11 @@ fn paint_halfblock_cover(
 }
 
 fn cover_key(area: Rect, hash: u64) -> CoverKey {
-    CoverKey { hash, width: area.width, height: area.height }
+    CoverKey {
+        hash,
+        width: area.width,
+        height: area.height,
+    }
 }
 
 fn centered_rect(size: Rect, width: u16, height: u16) -> Rect {
@@ -2222,7 +2246,9 @@ mod tests {
             image::Rgb([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8])
         }));
         let mut encoded = std::io::Cursor::new(Vec::new());
-        image.write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
         encoded.into_inner()
     }
 
@@ -2230,7 +2256,10 @@ mod tests {
         use crate::render::cover_pipeline::CoverStatus;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while covers.status(key) != CoverStatus::Ready {
-            assert!(std::time::Instant::now() < deadline, "cover preparation timed out");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cover preparation timed out"
+            );
             covers.poll();
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -2250,22 +2279,39 @@ mod tests {
         let cover = info_panel::layout(layout.left, 120).cover;
         let assert_blank = |buffer: &Buffer| {
             for y in cover.top()..cover.bottom() {
-                for x in cover.left()..cover.right() { assert_eq!(buffer[(x, y)].symbol(), " "); }
+                for x in cover.left()..cover.right() {
+                    assert_eq!(buffer[(x, y)].symbol(), " ");
+                }
             }
         };
         assert_blank(terminal.backend().buffer());
         let from = CoverSnapshot::from(&app.player.track);
         app.player.track.cover = Some(encoded_cover());
         app.player.track.cover_hash = Some(42);
-        app.start_cover_anim(from, CoverSnapshot::from(&app.player.track), -1, app.last_frame);
+        app.start_cover_anim(
+            from,
+            CoverSnapshot::from(&app.player.track),
+            -1,
+            app.last_frame,
+        );
         draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
         assert_blank(terminal.backend().buffer());
-        assert!(app.cover_cache.borrow().is_empty(), "Halfblocks must not queue/cache ASCII");
+        assert!(
+            app.cover_cache.borrow().is_empty(),
+            "Halfblocks must not queue/cache ASCII"
+        );
         let content = info_panel::cover_content_rect(cover);
         wait_ready(&mut covers, cover_key(content, 42));
         app.cover_anim = None;
         draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
-        assert!(terminal.backend().buffer().content.iter().any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..))));
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..)))
+        );
     }
 
     #[test]
@@ -2295,10 +2341,13 @@ mod tests {
         let loading = terminal.backend().buffer().clone();
 
         // Before worker results are consumed there is no ASCII fallback.
-        for y in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).top()..
-            info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).bottom() {
-            for x in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).left()..
-                info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).right() {
+        for y in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).top()
+            ..info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).bottom()
+        {
+            for x in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover)
+                .left()
+                ..info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).right()
+            {
                 assert_eq!(loading[(x, y)].symbol(), " ");
             }
         }
@@ -2306,9 +2355,7 @@ mod tests {
             info_panel::layout(layout.left, layout.full.width).cover,
         );
         let deadline = Instant::now() + Duration::from_secs(2);
-        while halfblocks.status(cover_key(content, 42))
-            != CoverStatus::Ready
-        {
+        while halfblocks.status(cover_key(content, 42)) != CoverStatus::Ready {
             assert!(
                 Instant::now() < deadline,
                 "song cover preparation timed out"

@@ -78,7 +78,10 @@ impl Transition {
         let next = self.sample(now);
         let changed = std::mem::take(&mut self.changed) || self.value != next;
         self.value = next;
-        if self.started.is_some_and(|started| now.saturating_duration_since(started) >= self.duration) {
+        if self
+            .started
+            .is_some_and(|started| now.saturating_duration_since(started) >= self.duration)
+        {
             self.started = None;
         }
         changed
@@ -106,7 +109,8 @@ impl Toggle {
     }
 
     pub fn set(&mut self, on: bool, now: Instant, duration: Duration, curve: Curve) {
-        self.0.retarget(if on { 1.0 } else { 0.0 }, now, duration, curve);
+        self.0
+            .retarget(if on { 1.0 } else { 0.0 }, now, duration, curve);
     }
 
     pub fn tick(&mut self, now: Instant) -> bool {
@@ -136,10 +140,21 @@ pub(crate) struct Trail {
 
 impl Trail {
     pub fn new(value: f32) -> Self {
-        Self { motion: Transition::new(value), waiting: None, target: value }
+        Self {
+            motion: Transition::new(value),
+            waiting: None,
+            target: value,
+        }
     }
 
-    pub fn follow(&mut self, target: f32, now: Instant, delay: Duration, duration: Duration, curve: Curve) {
+    pub fn follow(
+        &mut self,
+        target: f32,
+        now: Instant,
+        delay: Duration,
+        duration: Duration,
+        curve: Curve,
+    ) {
         if self.target == target {
             return;
         }
@@ -184,7 +199,12 @@ mod tests {
         motion.retarget(10.0, now, Duration::from_millis(200), Curve::EaseInOut);
         motion.tick(now + Duration::from_millis(100));
         assert_eq!(motion.value(), 5.0);
-        motion.retarget(0.0, now + Duration::from_millis(100), Duration::from_millis(200), Curve::EaseOut);
+        motion.retarget(
+            0.0,
+            now + Duration::from_millis(100),
+            Duration::from_millis(200),
+            Curve::EaseOut,
+        );
         assert_eq!(motion.value(), 5.0);
         assert!(motion.tick(now + Duration::from_millis(400)));
         assert_eq!(motion.value(), 0.0);
@@ -201,7 +221,12 @@ mod tests {
         assert_eq!(toggle.value(), 0.0);
         toggle.tick(now + Duration::from_millis(60));
         assert!((toggle.value() - 0.3).abs() < 0.00001);
-        toggle.set(false, now + Duration::from_millis(60), Duration::ZERO, Curve::Linear);
+        toggle.set(
+            false,
+            now + Duration::from_millis(60),
+            Duration::ZERO,
+            Curve::Linear,
+        );
         assert!(toggle.tick(now + Duration::from_millis(60)));
         assert_eq!(toggle.value(), 0.0);
         assert!(!toggle.on());
@@ -212,7 +237,13 @@ mod tests {
         let now = Instant::now();
         let mut trail = Trail::new(0.0);
         for offset in [0, 20, 80] {
-            trail.follow(1.0, now + Duration::from_millis(offset), Duration::from_millis(100), Duration::from_millis(200), Curve::Linear);
+            trail.follow(
+                1.0,
+                now + Duration::from_millis(offset),
+                Duration::from_millis(100),
+                Duration::from_millis(200),
+                Curve::Linear,
+            );
         }
         assert!(!trail.tick(now + Duration::from_millis(99)));
         assert_eq!(trail.value(), 0.0);

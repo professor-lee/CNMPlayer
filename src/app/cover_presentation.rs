@@ -13,7 +13,10 @@ pub(crate) struct CoverPresentation {
 
 impl CoverPresentation {
     pub fn new(wake: WakeSignal) -> Self {
-        Self { pipeline: CoverPipeline::new(wake), demands: Vec::new() }
+        Self {
+            pipeline: CoverPipeline::new(wake),
+            demands: Vec::new(),
+        }
     }
 
     pub fn begin_frame(&mut self) {
@@ -21,12 +24,23 @@ impl CoverPresentation {
         self.pipeline.begin_frame();
     }
 
-    pub fn show(&mut self, frame: &mut Frame, key: CoverKey, image: &Arc<DynamicImage>, area: Rect, source_row: u16) {
+    pub fn show(
+        &mut self,
+        frame: &mut Frame,
+        key: CoverKey,
+        image: &Arc<DynamicImage>,
+        area: Rect,
+        source_row: u16,
+    ) {
         self.pipeline.observe(key);
-        if matches!(self.pipeline.status(key), CoverStatus::Loading | CoverStatus::Preview) {
+        if matches!(
+            self.pipeline.status(key),
+            CoverStatus::Loading | CoverStatus::Preview
+        ) {
             self.demands.push((key, image.clone()));
         }
-        self.pipeline.paint(frame.buffer_mut(), area, area, 0, source_row, key);
+        self.pipeline
+            .paint(frame.buffer_mut(), area, area, 0, source_row, key);
     }
 
     pub fn prepare(&mut self) {

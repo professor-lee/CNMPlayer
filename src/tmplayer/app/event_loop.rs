@@ -1,5 +1,6 @@
 use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
+use crate::render::frame_clock::FrameClock;
 use crate::tmplayer::app::state::{AppState, Overlay, PlaybackState, RepeatMode};
 use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, CavaService};
 use crate::tmplayer::ui::tui::{Tui, UiLayout};
@@ -14,7 +15,6 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
-use crate::render::frame_clock::FrameClock;
 
 /// 子页的上一级：挂在设置弹窗下面的这些弹窗，Esc 应该回到设置弹窗，
 /// 而不是直接关掉整个弹窗。`None` 表示没有上一级。
@@ -394,7 +394,13 @@ pub async fn run(
             let frame_start = Instant::now();
             let mut state_changed = false;
             if wake.take() || last_host_sync.elapsed() >= Duration::from_millis(50) {
-                state_changed |= sync_from_host_bridge(app, host_bridge, &mut last_host_metadata_signature, &mut last_host_config_signature).await;
+                state_changed |= sync_from_host_bridge(
+                    app,
+                    host_bridge,
+                    &mut last_host_metadata_signature,
+                    &mut last_host_config_signature,
+                )
+                .await;
                 last_host_sync = frame_start;
             }
             while event::poll(Duration::ZERO)? {
@@ -448,14 +454,17 @@ pub async fn run(
                     let mut mono = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
                     if app.config.bar_channels == BarChannels::Stereo {
                         let _ = snapshot.copy_stereo_into(&mut left, &mut right);
-                        app.spectrum_left_smoother.apply_in_place(&left[..bars], &mut app.spectrum.bars_left);
-                        app.spectrum_right_smoother.apply_in_place(&right[..bars], &mut app.spectrum.bars_right);
+                        app.spectrum_left_smoother
+                            .apply_in_place(&left[..bars], &mut app.spectrum.bars_left);
+                        app.spectrum_right_smoother
+                            .apply_in_place(&right[..bars], &mut app.spectrum.bars_right);
                     } else {
                         app.spectrum.bars_left.fill(0.0);
                         app.spectrum.bars_right.fill(0.0);
                     }
                     let _ = snapshot.mono_into(&mut mono);
-                    app.spectrum_bar_smoother.apply_in_place(&mono[..bars], &mut app.spectrum.bars);
+                    app.spectrum_bar_smoother
+                        .apply_in_place(&mono[..bars], &mut app.spectrum.bars);
                 }
             } else if has_spectrum_data(app) {
                 clear_spectrum(app);
@@ -466,19 +475,29 @@ pub async fn run(
             if state_changed || app.should_continuous_redraw() {
                 clock.mark_dirty();
             }
-            let target_fps = if app.should_continuous_redraw() { app.active_render_fps() } else { app.idle_render_fps() };
+            let target_fps = if app.should_continuous_redraw() {
+                app.active_render_fps()
+            } else {
+                app.idle_render_fps()
+            };
             clock.set_fps(target_fps, frame_start);
             if clock.due(frame_start) {
                 last_layout = tui.draw(app)?;
                 clock.presented(Instant::now());
             }
-            let maintenance_wait = Duration::from_millis(50).saturating_sub(last_host_sync.elapsed());
-            let frame_wait = clock.next_deadline().map(|deadline| deadline.saturating_duration_since(Instant::now())).unwrap_or(Duration::from_secs(1));
+            let maintenance_wait =
+                Duration::from_millis(50).saturating_sub(last_host_sync.elapsed());
+            let frame_wait = clock
+                .next_deadline()
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(Duration::from_secs(1));
             let wait = maintenance_wait.min(frame_wait);
             if !wait.is_zero() {
                 compio::time::sleep(wait).await;
             }
-            if tui.should_quit { break; }
+            if tui.should_quit {
+                break;
+            }
         }
         Ok(())
     }
@@ -1404,7 +1423,6 @@ fn max_display_bars(width_cells: u16, gap: bool) -> usize {
         (w / 2).max(1)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

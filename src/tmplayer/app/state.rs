@@ -1,8 +1,8 @@
-use crate::app::cubic_bezier_y;
 use crate::app::SIDEBAR_ANIM_DURATION;
-use crate::render::motion::{Curve, Transition};
+use crate::app::cubic_bezier_y;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
+use crate::render::motion::{Curve, Transition};
 use crate::tmplayer::audio::smoother::Ema;
 use crate::tmplayer::data::playlist::Playlist;
 use crate::tmplayer::render::cover_cache::CoverCache;
@@ -109,7 +109,11 @@ impl CoverAnim {
     pub fn slide_offsets(&self, width: u16, now: Instant) -> (i16, i16) {
         let width = width.min(i16::MAX as u16) as i16;
         let offset = (self.motion.sample(now) * f32::from(width)).round() as i16;
-        if self.dir < 0 { (-offset, width - offset) } else { (offset, -width + offset) }
+        if self.dir < 0 {
+            (-offset, width - offset)
+        } else {
+            (offset, -width + offset)
+        }
     }
 }
 
@@ -740,7 +744,12 @@ impl AppState {
     ) {
         let mut motion = Transition::new(0.0);
         motion.retarget(1.0, now, Duration::from_millis(220), Curve::EaseInOut);
-        self.cover_anim = Some(CoverAnim { from, to, dir, motion });
+        self.cover_anim = Some(CoverAnim {
+            from,
+            to,
+            dir,
+            motion,
+        });
     }
 
     pub fn close_overlay(&mut self) {

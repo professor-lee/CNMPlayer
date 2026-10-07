@@ -67,7 +67,9 @@ mod tests {
         pin_mut!(waiter);
         assert!(waiter.as_mut().now_or_never().is_none());
         let producer = wake.clone();
-        std::thread::spawn(move || producer.notify()).join().unwrap();
+        std::thread::spawn(move || producer.notify())
+            .join()
+            .unwrap();
         assert_eq!(waiter.as_mut().now_or_never(), Some(()));
     }
 }

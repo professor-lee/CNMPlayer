@@ -112,7 +112,11 @@ mod imp {
         }
     }
 
-    fn bind_control_callbacks(player: &Player, event_tx: &Sender<MprisControlEvent>, wake: &WakeSignal) {
+    fn bind_control_callbacks(
+        player: &Player,
+        event_tx: &Sender<MprisControlEvent>,
+        wake: &WakeSignal,
+    ) {
         let tx = event_tx.clone();
         let signal = wake.clone();
         player.connect_play(move |_| {

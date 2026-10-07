@@ -241,8 +241,8 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 | `bar_channel_reverse` | `false` | Draw the right channel on the left (fullscreen spectrum) |
 | `super_smooth_bar` | `false` | Sub-cell smoothed bars instead of density characters |
 | `bars_gap` | `false` | Leave a gap between bars |
-| `ui_fps` | `30` | Fullscreen page frame-rate cap |
-| `spectrum_hz` | `30` (shipped file says `60`) | Spectrum refresh rate; the host clamps its own cava to 1–30 Hz |
+| `ui_fps` | `30` | UI render cap for host and fullscreen (runtime-clamped to 10–60 FPS) |
+| `spectrum_hz` | `30` (shipped file says `60`) | Cava/spectrum data refresh rate; independent from UI rendering |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |
 | `cache.clean_strategy` | `both` | `size`, `age`, `both` |
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
@@ -338,6 +338,7 @@ Fullscreen page:
 - Native audio backends write warnings straight to stderr; CNMPlayer redirects fd 2 into `Player.stderr.log` so those messages cannot smear the TUI.
 - Prebuilt artifacts and AUR packages are produced for Linux `amd64` and `aarch64` only. MPRIS is Linux-only as well.
 - Background page and artwork reads are cancelled when their last UI owner is dropped. API responses and cover downloads have a 30-second deadline covering headers and the complete body; streaming playback also bounds header waiting to 30 seconds. Slow audio bodies remain cooperatively cancellable rather than imposing a total song-download deadline.
+- With `graphics_protocol = "halfblocks"`, covers never fall back to ASCII art: loading uses a transient low-resolution colored halfblock preview, then a bounded final chafa surface; missing or failed art stays blank. Final surfaces are shared only within the fullscreen lifetime and only at currently needed geometries.
 - Cover and lyric workers each run one request and retain only the latest pending request; result mailboxes are bounded. Blocking cover validation admits at most two jobs, and cancellation does not release a job's slot before it actually finishes.
 - One persistence thread keeps at most 32 pending cache writes and four pending keyed snapshots (configuration, login session, playback memory and private roam). New snapshots replace older pending snapshots for the same key; flush barriers preserve ordering. Cache writes rejected at capacity are logged; this optional cache does not prevent displaying a fetched cover.
 - Seeking uses one worker and one latest pending target. Each track owns a separate playback queue, so a stale seek cannot affect the next track. A blocked filesystem/audio operation cannot be forcibly cancelled: it may delay completion or shutdown, but does not admit more workers.

@@ -319,12 +319,7 @@ pub fn download_glyph(app: &AppState) -> Option<char> {
     ))
 }
 
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    window_width: u16,
-    app: &mut AppState,
-) {
+pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) {
     let b = Block::default()
         .borders(Borders::ALL)
         .border_set(SOLID_BORDER)
@@ -335,7 +330,8 @@ pub fn render(
 
     // ASCII artwork is exclusively the Off renderer. Halfblocks paints only
     // prepared colored cells; a missing image leaves this area blank.
-    if l.cover.width > 0 && l.cover.height > 0
+    if l.cover.width > 0
+        && l.cover.height > 0
         && app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Off
     {
         let show_border = app.config.album_border;

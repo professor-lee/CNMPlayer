@@ -103,7 +103,6 @@ impl CoverPipeline {
         }
     }
 
-
     pub fn begin_frame(&mut self) {
         self.needed.clear();
     }
@@ -121,11 +120,21 @@ impl CoverPipeline {
         self.request(key, phase, || Source::Bytes(bytes.to_vec()))
     }
 
-    pub fn request_image(&mut self, key: CoverKey, image: &Arc<DynamicImage>, phase: ImagePhase) -> CoverStatus {
+    pub fn request_image(
+        &mut self,
+        key: CoverKey,
+        image: &Arc<DynamicImage>,
+        phase: ImagePhase,
+    ) -> CoverStatus {
         self.request(key, phase, || Source::Image(image.clone()))
     }
 
-    fn request(&mut self, key: CoverKey, _phase: ImagePhase, source: impl FnOnce() -> Source) -> CoverStatus {
+    fn request(
+        &mut self,
+        key: CoverKey,
+        _phase: ImagePhase,
+        source: impl FnOnce() -> Source,
+    ) -> CoverStatus {
         if key.width == 0 || key.height == 0 {
             return CoverStatus::Hidden;
         }
@@ -144,11 +153,21 @@ impl CoverPipeline {
         self.start_worker();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
-        let request = Request { key, generation, source: source() };
+        let request = Request {
+            key,
+            generation,
+            source: source(),
+        };
         match self.worker.as_ref().unwrap().tx.try_send(request) {
             Ok(()) => {
                 self.jobs.insert((key, generation));
-                self.pending.insert(key, Pending { generation, preview: None });
+                self.pending.insert(
+                    key,
+                    Pending {
+                        generation,
+                        preview: None,
+                    },
+                );
             }
             Err(mpsc::TrySendError::Full(_)) => {}
             Err(mpsc::TrySendError::Disconnected(_)) => {
@@ -170,7 +189,14 @@ impl CoverPipeline {
                 let key = request.key;
                 let generation = request.generation;
                 let send = |result| {
-                    if results.send(ResultFrame { key, generation, result }).is_err() {
+                    if results
+                        .send(ResultFrame {
+                            key,
+                            generation,
+                            result,
+                        })
+                        .is_err()
+                    {
                         return false;
                     }
                     wake.notify();
@@ -208,7 +234,9 @@ impl CoverPipeline {
         };
         let mut changed = false;
         while let Ok(result) = worker.rx.try_recv() {
-            let current = self.pending.get(&result.key)
+            let current = self
+                .pending
+                .get(&result.key)
                 .is_some_and(|pending| pending.generation == result.generation);
             match result.result {
                 Prepared::Preview(frame) if current => {
@@ -237,9 +265,15 @@ impl CoverPipeline {
     }
 
     pub fn end_frame(&mut self) {
-        let sizes: HashSet<_> = self.needed.iter().map(|key| (key.width, key.height)).collect();
-        self.frames.retain(|key, _| sizes.contains(&(key.width, key.height)));
-        self.failures.retain(|key| sizes.contains(&(key.width, key.height)));
+        let sizes: HashSet<_> = self
+            .needed
+            .iter()
+            .map(|key| (key.width, key.height))
+            .collect();
+        self.frames
+            .retain(|key, _| sizes.contains(&(key.width, key.height)));
+        self.failures
+            .retain(|key| sizes.contains(&(key.width, key.height)));
         self.pending.retain(|key, _| self.needed.contains(key));
         self.order.retain(|key| self.frames.contains_key(key));
         let mut bytes: usize = self.frames.values().map(frame_bytes).sum();
@@ -265,7 +299,11 @@ impl CoverPipeline {
             CoverStatus::Ready
         } else if self.failures.contains(&key) {
             CoverStatus::Failed
-        } else if self.pending.get(&key).is_some_and(|pending| pending.preview.is_some()) {
+        } else if self
+            .pending
+            .get(&key)
+            .is_some_and(|pending| pending.preview.is_some())
+        {
             CoverStatus::Preview
         } else {
             CoverStatus::Loading
@@ -273,17 +311,32 @@ impl CoverPipeline {
     }
 
     pub fn frame(&self, key: CoverKey) -> Option<&Buffer> {
-        self.frames.get(&key).or_else(|| self.pending.get(&key)?.preview.as_ref())
+        self.frames
+            .get(&key)
+            .or_else(|| self.pending.get(&key)?.preview.as_ref())
     }
 
     /// Move/crop prepared cells without decoding, sampling, or encoding again.
-    pub fn paint(&self, target: &mut Buffer, area: Rect, clip: Rect, dx: i16, source_row: u16, key: CoverKey) {
-        let Some(frame) = self.frame(key) else { return; };
+    pub fn paint(
+        &self,
+        target: &mut Buffer,
+        area: Rect,
+        clip: Rect,
+        dx: i16,
+        source_row: u16,
+        key: CoverKey,
+    ) {
+        let Some(frame) = self.frame(key) else {
+            return;
+        };
         let clip = clip.intersection(target.area);
         let origin_x = i32::from(area.x) + i32::from(dx);
         let left = i32::from(clip.left()).max(origin_x);
         let right = i32::from(clip.right()).min(origin_x + i32::from(key.width));
-        let bottom = clip.bottom().min(area.bottom()).min(area.y.saturating_add(key.height.saturating_sub(source_row)));
+        let bottom = clip
+            .bottom()
+            .min(area.bottom())
+            .min(area.y.saturating_add(key.height.saturating_sub(source_row)));
         for y in clip.top().max(area.y)..bottom {
             let sy = source_row + y - area.y;
             for x in left..right {
@@ -301,7 +354,10 @@ fn prepare_preview(image: &DynamicImage, width: u16, height: u16) -> Buffer {
     let (x, y, w, h) = cover_viewport(image.width(), image.height(), width, height);
     let pw = u32::from(width.min(16));
     let ph = u32::from(height.min(8)) * 2;
-    let pixels = image.crop_imm(x, y, w, h).resize_exact(pw, ph, FilterType::Triangle).to_rgb8();
+    let pixels = image
+        .crop_imm(x, y, w, h)
+        .resize_exact(pw, ph, FilterType::Triangle)
+        .to_rgb8();
     let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
     for row in 0..height {
         let upper = u32::from(row) * 2 * ph / (u32::from(height) * 2);
@@ -331,7 +387,9 @@ fn prepare_chafa(image: &DynamicImage, width: u16, height: u16) -> Option<Buffer
     let area = Rect::new(0, 0, width, height);
     let mut buffer = Buffer::empty(area);
     let mut protocol = picker.new_resize_protocol(pixels);
-    StatefulImage::default().resize(Resize::Crop(None)).render(area, &mut buffer, &mut protocol);
+    StatefulImage::default()
+        .resize(Resize::Crop(None))
+        .render(area, &mut buffer, &mut protocol);
     protocol.last_encoding_result()?.ok()?;
     Some(buffer)
 }
@@ -342,9 +400,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn image() -> Arc<DynamicImage> {
-        Arc::new(DynamicImage::ImageRgb8(image::RgbImage::from_fn(32, 32, |x, y| {
-            image::Rgb([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8])
-        })))
+        Arc::new(DynamicImage::ImageRgb8(image::RgbImage::from_fn(
+            32,
+            32,
+            |x, y| image::Rgb([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8]),
+        )))
     }
 
     fn wait(covers: &mut CoverPipeline, key: CoverKey) {
@@ -359,20 +419,34 @@ mod tests {
     #[test]
     fn final_cells_reuse_content_and_resize_discards_old_geometry() {
         let mut covers = CoverPipeline::new(WakeSignal::default());
-        let key = CoverKey { hash: 1, width: 6, height: 3 };
+        let key = CoverKey {
+            hash: 1,
+            width: 6,
+            height: 3,
+        };
         covers.begin_frame();
         covers.request_image(key, &image(), ImagePhase::Stable);
         covers.end_frame();
         wait(&mut covers, key);
         assert_eq!(covers.status(key), CoverStatus::Ready);
-        assert!(covers.pending.is_empty(), "preview must end with the loading request");
+        assert!(
+            covers.pending.is_empty(),
+            "preview must end with the loading request"
+        );
         let frame = covers.frame(key).unwrap().clone();
         covers.begin_frame();
-        assert_eq!(covers.request_bytes(key, b"invalid", ImagePhase::Moving), CoverStatus::Ready);
+        assert_eq!(
+            covers.request_bytes(key, b"invalid", ImagePhase::Moving),
+            CoverStatus::Ready
+        );
         covers.end_frame();
         assert_eq!(covers.frame(key), Some(&frame));
         assert!(covers.jobs.is_empty());
-        let resized = CoverKey { width: 4, height: 2, ..key };
+        let resized = CoverKey {
+            width: 4,
+            height: 2,
+            ..key
+        };
         covers.begin_frame();
         covers.request_image(resized, &image(), ImagePhase::Stable);
         covers.end_frame();
@@ -384,13 +458,20 @@ mod tests {
     #[test]
     fn failure_ends_loading_without_retries_and_superseded_preview_stays_absent() {
         let mut covers = CoverPipeline::new(WakeSignal::default());
-        let old = CoverKey { hash: 1, width: 4, height: 2 };
+        let old = CoverKey {
+            hash: 1,
+            width: 4,
+            height: 2,
+        };
         covers.begin_frame();
         covers.request_bytes(old, b"invalid", ImagePhase::Stable);
         covers.end_frame();
         wait(&mut covers, old);
         for _ in 0..4 {
-            assert_eq!(covers.request_bytes(old, b"invalid", ImagePhase::Stable), CoverStatus::Failed);
+            assert_eq!(
+                covers.request_bytes(old, b"invalid", ImagePhase::Stable),
+                CoverStatus::Failed
+            );
         }
         assert!(covers.jobs.is_empty());
         let new = CoverKey { hash: 2, ..old };
@@ -411,13 +492,30 @@ mod tests {
 
     #[test]
     fn preview_is_colored_halfblocks_and_partial_paint_preserves_source_rows() {
-        let key = CoverKey { hash: 1, width: 6, height: 3 };
+        let key = CoverKey {
+            hash: 1,
+            width: 6,
+            height: 3,
+        };
         let preview = prepare_preview(&image(), key.width, key.height);
         assert!(preview.content.iter().all(|cell| cell.symbol() == "▀"));
         let mut covers = CoverPipeline::new(WakeSignal::default());
-        covers.pending.insert(key, Pending { generation: 1, preview: Some(preview.clone()) });
+        covers.pending.insert(
+            key,
+            Pending {
+                generation: 1,
+                preview: Some(preview.clone()),
+            },
+        );
         let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 5));
-        covers.paint(&mut buffer, Rect::new(2, 1, 6, 2), Rect::new(2, 1, 6, 2), -1, 1, key);
+        covers.paint(
+            &mut buffer,
+            Rect::new(2, 1, 6, 2),
+            Rect::new(2, 1, 6, 2),
+            -1,
+            1,
+            key,
+        );
         for y in 1..3 {
             for x in 2..7 {
                 assert_eq!(buffer[(x, y)], preview[(x - 1, y)]);

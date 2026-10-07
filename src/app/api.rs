@@ -79,7 +79,6 @@ impl ApiState {
         self.wake.clone()
     }
 
-
     pub fn session_cookie(&self) -> Option<&str> {
         self.cookie.as_deref()
     }
@@ -463,13 +462,15 @@ impl ApiState {
     }
 
     /// UI consumers keep the one validated decode, reduced off the reactor.
-    pub async fn fetch_cover_image(&self, url: &str) -> Result<std::sync::Arc<image::DynamicImage>> {
+    pub async fn fetch_cover_image(
+        &self,
+        url: &str,
+    ) -> Result<std::sync::Arc<image::DynamicImage>> {
         self.fetch_cover_with_timeout(url, COVER_NETWORK_TIMEOUT, true)
             .await?
             .1
             .ok_or_else(|| anyhow!("cover image URL was empty"))
     }
-
 
     async fn fetch_cover_bytes_with_timeout(
         &self,

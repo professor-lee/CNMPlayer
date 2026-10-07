@@ -1,5 +1,5 @@
-use compio::runtime::JoinHandle;
 use crate::render::wake::WakeSignal;
+use compio::runtime::JoinHandle;
 use futures::{FutureExt, future::Shared};
 use std::pin::Pin;
 use std::rc::Rc;
@@ -65,11 +65,14 @@ mod tests {
         let released = Rc::new(Cell::new(0));
         let (started_tx, started_rx) = oneshot::channel();
         let resource = Released(released.clone());
-        let task = spawn_shared(Box::pin(async move {
-            let _resource = resource;
-            let _ = started_tx.send(());
-            futures::future::pending::<Option<usize>>().await
-        }), WakeSignal::default());
+        let task = spawn_shared(
+            Box::pin(async move {
+                let _resource = resource;
+                let _ = started_tx.send(());
+                futures::future::pending::<Option<usize>>().await
+            }),
+            WakeSignal::default(),
+        );
         let clone = task.clone();
         started_rx.await.unwrap();
         drop(task);

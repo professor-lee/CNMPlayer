@@ -26,8 +26,8 @@ use crate::data::private_roam;
 use crate::data::session;
 use crate::data::theme_loader::ThemeLoader;
 use crate::launch;
-use crate::render::cover_renderer::render_cover_ascii;
 use crate::render::cover_pipeline::CoverKey;
+use crate::render::cover_renderer::render_cover_ascii;
 use crate::render::motion::{Curve, Toggle, Transition};
 use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::LyricLine;
@@ -67,8 +67,8 @@ use crate::data::atomic_file::write_atomic;
 use crate::data::persistence::{PersistenceHandle, PersistenceKey, PersistenceWorker};
 use api::ApiState;
 use browse_controller::BrowseController;
-use cover_presentation::CoverPresentation;
 use controllers::SearchController;
+use cover_presentation::CoverPresentation;
 use download::{
     DownloadEvent, DownloadManager, DownloadRequest, DownloadRow, DownloadRowCache, DownloadState,
     DownloadTarget,
@@ -218,7 +218,6 @@ pub enum FlatPanel {
     Player,
     Lyrics,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginMethod {
@@ -1459,7 +1458,12 @@ impl CoverFetchState {
             if (self.ascii.is_none() || self.size != size)
                 && let Some(bytes) = peek_shared_future(&self.image)
             {
-                self.ascii = Some(make_ascii_future(bytes.clone(), area.width, full_rows, self.wake.clone()));
+                self.ascii = Some(make_ascii_future(
+                    bytes.clone(),
+                    area.width,
+                    full_rows,
+                    self.wake.clone(),
+                ));
                 self.size = size;
             }
             let ascii = match peek_shared_future(&self.ascii) {
@@ -1476,20 +1480,32 @@ impl CoverFetchState {
         }
 
         if let Some(image) = peek_shared_future(&self.image) {
-            covers.show(frame, CoverKey {
-                hash: self.identity,
-                width: area.width,
-                height: full_rows,
-            }, image, area, visible.start);
+            covers.show(
+                frame,
+                CoverKey {
+                    hash: self.identity,
+                    width: area.width,
+                    height: full_rows,
+                },
+                image,
+                area,
+                visible.start,
+            );
         }
     }
 }
 
-
-fn make_ascii_future(image: Arc<DynamicImage>, width: u16, height: u16, wake: WakeSignal) -> AsciiFuture {
+fn make_ascii_future(
+    image: Arc<DynamicImage>,
+    width: u16,
+    height: u16,
+    wake: WakeSignal,
+) -> AsciiFuture {
     let fut = Box::pin(async move {
         compio::runtime::spawn_blocking(move || render_cover_ascii(image, width, height))
-            .await.ok().flatten()
+            .await
+            .ok()
+            .flatten()
     });
     spawn_shared(fut, wake)
 }
@@ -2965,15 +2981,20 @@ async fn loop_cover_fetch(
         let path = cover_cache_path_for_dir(&cache_dir, &req.url)?;
         Some(persist_fetched_cover(&persistence, path, bytes).await)
     };
-    latest_fetch::run_latest(rx, tx, async move |req: CoverFetchRequest| {
-        let bytes = process_fn(&req).await;
-        CoverFetchResult {
-            song_id: req.song_id,
-            url: req.url,
-            generation: req.generation,
-            bytes,
-        }
-    }, wake)
+    latest_fetch::run_latest(
+        rx,
+        tx,
+        async move |req: CoverFetchRequest| {
+            let bytes = process_fn(&req).await;
+            CoverFetchResult {
+                song_id: req.song_id,
+                url: req.url,
+                generation: req.generation,
+                bytes,
+            }
+        },
+        wake,
+    )
     .await;
 }
 
@@ -2992,14 +3013,19 @@ async fn loop_lyric_fetch(
         let lrc = lyric.body.pointer("/lrc/lyric")?.as_str()?;
         parse_lrc(lrc).or_else(|| parse_plain_lyrics(lrc))
     };
-    latest_fetch::run_latest(rx, tx, async move |req: LyricFetchRequest| {
-        let lyrics = process_fn(&req).await;
-        LyricFetchResult {
-            song_id: req.song_id,
-            generation: req.generation,
-            lyrics,
-        }
-    }, wake)
+    latest_fetch::run_latest(
+        rx,
+        tx,
+        async move |req: LyricFetchRequest| {
+            let lyrics = process_fn(&req).await;
+            LyricFetchResult {
+                song_id: req.song_id,
+                generation: req.generation,
+                lyrics,
+            }
+        },
+        wake,
+    )
     .await;
 }
 
@@ -3240,7 +3266,6 @@ impl App {
         };
 
         app.load_private_roam_memory().await;
-
 
         app.sync_cava();
         app.sync_terminal_size();
@@ -3764,14 +3789,15 @@ impl App {
         if self.is_seeking() || self.page_lyrics_grab.is_some() {
             return true;
         }
-        if self.input.search_motion.is_running()
-            || self.browse.home_sidebar.motion.is_running()
-        {
+        if self.input.search_motion.is_running() || self.browse.home_sidebar.motion.is_running() {
             return true;
         }
         if self.downloads.manager.is_active()
             || self.page == Page::Loading
-            || self.flat_switch_anim.as_ref().is_some_and(Transition::is_running)
+            || self
+                .flat_switch_anim
+                .as_ref()
+                .is_some_and(Transition::is_running)
         {
             return true;
         }
@@ -3883,7 +3909,10 @@ impl App {
                     let now = Instant::now();
                     let width = self.term_width.max(1) as f32;
                     let current = self.flat_switch_offset().min(width);
-                    let target = match self.flat_panel { FlatPanel::Player => 0.0, FlatPanel::Lyrics => width };
+                    let target = match self.flat_panel {
+                        FlatPanel::Player => 0.0,
+                        FlatPanel::Lyrics => width,
+                    };
                     let mut motion = Transition::new(current);
                     motion.retarget(target, now, FLAT_SWITCH_ANIM_DURATION, Curve::EaseOut);
                     self.flat_switch_anim = Some(motion);
@@ -3950,21 +3979,38 @@ impl App {
         self.flat_switch_anim
             .as_ref()
             .map(|anim| anim.sample(Instant::now()))
-            .unwrap_or(match self.flat_panel { FlatPanel::Player => 0.0, FlatPanel::Lyrics => width })
+            .unwrap_or(match self.flat_panel {
+                FlatPanel::Player => 0.0,
+                FlatPanel::Lyrics => width,
+            })
     }
 
     pub fn flat_switch_animating(&self) -> bool {
-        self.flat_switch_anim.as_ref().is_some_and(Transition::is_running)
+        self.flat_switch_anim
+            .as_ref()
+            .is_some_and(Transition::is_running)
     }
 
     pub fn toggle_flat_panel(&mut self) {
-        if self.small_window_mode != Some(SmallWindowMode::Flat) || self.term_height != FLAT_SMALL_HEIGHT { return; }
+        if self.small_window_mode != Some(SmallWindowMode::Flat)
+            || self.term_height != FLAT_SMALL_HEIGHT
+        {
+            return;
+        }
         let now = Instant::now();
         let width = self.term_width.max(1) as f32;
         let current = self.flat_switch_offset().clamp(0.0, width);
         let visually_lyrics = current >= width * 0.5;
-        self.flat_panel = if visually_lyrics { FlatPanel::Player } else { FlatPanel::Lyrics };
-        let target = if self.flat_panel == FlatPanel::Player { 0.0 } else { width };
+        self.flat_panel = if visually_lyrics {
+            FlatPanel::Player
+        } else {
+            FlatPanel::Lyrics
+        };
+        let target = if self.flat_panel == FlatPanel::Player {
+            0.0
+        } else {
+            width
+        };
         let mut anim = Transition::new(current);
         anim.retarget(target, now, FLAT_SWITCH_ANIM_DURATION, Curve::EaseOut);
         self.flat_switch_anim = Some(anim);
@@ -3973,12 +4019,16 @@ impl App {
     fn tick_flat_switch(&mut self, now: Instant) {
         if let Some(anim) = &mut self.flat_switch_anim {
             anim.tick(now);
-            if !anim.is_running() { self.flat_switch_anim = None; }
+            if !anim.is_running() {
+                self.flat_switch_anim = None;
+            }
         }
     }
     fn tick_search_box_animation(&mut self, now: Instant) {
         let open = matches!(self.overlay, Some(Overlay::SearchBox));
-        self.input.search_motion.set(open, now, SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
+        self.input
+            .search_motion
+            .set(open, now, SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
         self.input.search_motion.tick(now);
     }
 
@@ -3994,7 +4044,6 @@ impl App {
             Curve::EaseOut,
         );
     }
-
 
     fn tick_vu_meter(&mut self, now: Instant) {
         if self.small_window_mode != Some(SmallWindowMode::Narrow) {
@@ -4761,7 +4810,12 @@ impl App {
                 self.playlist_return_page = Page::Home;
                 self.playlist_section_return_snapshot = None;
                 self.browse.home_sidebar.expanded = false;
-                self.browse.home_sidebar.motion.set(false, Instant::now(), SIDEBAR_ANIM_DURATION, Curve::EaseOut);
+                self.browse.home_sidebar.motion.set(
+                    false,
+                    Instant::now(),
+                    SIDEBAR_ANIM_DURATION,
+                    Curve::EaseOut,
+                );
                 self.page = Page::Playlist;
                 self.browse.home.status_line =
                     format!("{} {}", self.lang_text("已打开", "Opened"), title);
@@ -5576,9 +5630,11 @@ impl App {
 
         let fut = like_song_request(self.api.clone(), song_id.clone(), target);
         let fut: LikeToggleTask = Box::pin(async move { Some(fut.await) });
-        self.playback
-            .like_machine
-            .begin_toggle(song_id, target, spawn_shared(fut, self.wake.clone()));
+        self.playback.like_machine.begin_toggle(
+            song_id,
+            target,
+            spawn_shared(fut, self.wake.clone()),
+        );
     }
 
     async fn tick_audio(&mut self) {
@@ -6549,7 +6605,7 @@ impl App {
 
         let visible_h = ((self.input.search_motion.value()
             * f32::from(crate::ui::search_box::TARGET_HEIGHT))
-            .round() as u16)
+        .round() as u16)
             .min(term_h);
         if visible_h < crate::ui::search_box::TARGET_HEIGHT {
             return;
@@ -7564,7 +7620,6 @@ impl App {
         }
     }
 
-
     /// 推进 about 彩蛋的蓄力/迸发阶段（time-based，与帧率解耦）。
     #[cfg(feature = "easter-egg")]
     fn tick_about_easter_egg(&mut self) {
@@ -7614,8 +7669,6 @@ impl App {
     fn finish_startup_loading(&mut self) {
         self.startup.finish();
     }
-
-
 
     fn tick_startup_loading(&mut self) {
         if self.page == Page::Loading
@@ -7794,15 +7847,27 @@ impl App {
     }
 
     fn open_search_box(&mut self) {
-        if self.page != Page::Search { self.search_return_page = Page::Home; }
+        if self.page != Page::Search {
+            self.search_return_page = Page::Home;
+        }
         self.input.set_text(self.search.query.clone());
-        self.input.search_motion.set(true, Instant::now(), SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
+        self.input.search_motion.set(
+            true,
+            Instant::now(),
+            SEARCH_BOX_ANIM_DURATION,
+            Curve::EaseOut,
+        );
         self.overlay = Some(Overlay::SearchBox);
     }
 
     fn close_overlay(&mut self) {
         self.overlay = None;
-        self.input.search_motion.set(false, Instant::now(), SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
+        self.input.search_motion.set(
+            false,
+            Instant::now(),
+            SEARCH_BOX_ANIM_DURATION,
+            Curve::EaseOut,
+        );
         self.settings.last_click = None;
         self.settings.cancel_download_path_edit();
         self.clear_settings_item_hits();
@@ -11147,7 +11212,6 @@ mod tests {
             (String::new(), SearchScope::Author)
         );
     }
-
 
     fn search_item(kind: SearchItemKind, label: &str) -> SearchItem {
         SearchItem {
