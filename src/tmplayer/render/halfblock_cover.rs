@@ -4,8 +4,15 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::StatefulWidget;
 use ratatui_image::{Resize, StatefulImage, picker::Picker};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::collections::{HashMap, VecDeque};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverStatus {
+    Loading,
+    Ready,
+    Hidden,
+}
 
 #[derive(Debug)]
 struct Request {
@@ -24,9 +31,10 @@ struct ResultFrame {
 pub struct HalfblockCovers {
     tx: SyncSender<Request>,
     rx: Receiver<ResultFrame>,
-    pending: HashSet<CoverKey>,
-    frames: HashMap<CoverKey, Option<Buffer>>,
+    pending: HashMap<CoverKey, u8>,
+    frames: HashMap<CoverKey, Buffer>,
     order: VecDeque<CoverKey>,
+    failures: HashMap<CoverKey, u8>,
 }
 
 impl HalfblockCovers {
@@ -50,26 +58,69 @@ impl HalfblockCovers {
         Self {
             tx,
             rx,
-            pending: HashSet::new(),
+            pending: HashMap::new(),
             frames: HashMap::new(),
             order: VecDeque::new(),
+            failures: HashMap::new(),
         }
     }
 
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(result) = self.rx.try_recv() {
-            self.pending.remove(&result.key);
-            self.frames.insert(result.key, result.frame);
+            let attempts = self.pending.remove(&result.key).unwrap_or(0);
+            match result.frame {
+                Some(frame) => {
+                    self.failures.remove(&result.key);
+                    self.frames.insert(result.key, frame);
+                }
+                None => {
+                    let failures = attempts.saturating_add(1);
+                    self.frames.remove(&result.key);
+                    self.failures.insert(result.key, failures);
+                }
+            }
+            self.order.retain(|key| *key != result.key);
             self.order.push_back(result.key);
             while self.order.len() > 8 {
                 if let Some(old) = self.order.pop_front() {
                     self.frames.remove(&old);
+                    self.failures.remove(&old);
                 }
             }
             changed = true;
         }
         changed
+    }
+
+    /// Queue missing or retryable preparation without doing image work on the UI thread.
+    /// Only completed worker failures count toward hiding a cover.
+    pub fn status(&mut self, area: Rect, hash: u64, bytes: &[u8]) -> CoverStatus {
+        if area.is_empty() {
+            return CoverStatus::Hidden;
+        }
+        let key = CoverKey {
+            hash,
+            width: area.width,
+            height: area.height,
+        };
+        if self.frames.contains_key(&key) {
+            return CoverStatus::Ready;
+        }
+        let failures = self.failures.get(&key).copied().unwrap_or(0);
+        if failures >= 10 {
+            return CoverStatus::Hidden;
+        }
+        if self.pending.len() < 2 && !self.pending.contains_key(&key) {
+            let request = Request {
+                key,
+                bytes: bytes.to_vec(),
+            };
+            if self.tx.try_send(request).is_ok() {
+                self.pending.insert(key, failures);
+            }
+        }
+        CoverStatus::Loading
     }
 
     pub fn paint(&mut self, target: &mut Buffer, area: Rect, hash: u64, bytes: &[u8]) {
@@ -87,7 +138,7 @@ impl HalfblockCovers {
         hash: u64,
         bytes: &[u8],
     ) {
-        if area.is_empty() {
+        if self.status(area, hash, bytes) != CoverStatus::Ready {
             return;
         }
         let key = CoverKey {
@@ -96,36 +147,21 @@ impl HalfblockCovers {
             height: area.height,
         };
         if let Some(frame) = self.frames.get(&key) {
-            if let Some(frame) = frame {
-                let clip = clip.intersection(target.area);
-                for y in 0..area.height {
-                    let dest_y = u32::from(area.y) + u32::from(y);
-                    if dest_y < u32::from(clip.y) || dest_y >= u32::from(clip.bottom()) {
+            let clip = clip.intersection(target.area);
+            for y in 0..area.height {
+                let dest_y = u32::from(area.y) + u32::from(y);
+                if dest_y < u32::from(clip.y) || dest_y >= u32::from(clip.bottom()) {
+                    continue;
+                }
+                for x in 0..area.width {
+                    let dest_x = i32::from(area.x) + i32::from(x) + i32::from(dx);
+                    if dest_x < i32::from(clip.x) || dest_x >= i32::from(clip.right()) {
                         continue;
                     }
-                    for x in 0..area.width {
-                        let dest_x = i32::from(area.x) + i32::from(x) + i32::from(dx);
-                        if dest_x < i32::from(clip.x) || dest_x >= i32::from(clip.right()) {
-                            continue;
-                        }
-                        if let Some(cell) = target.cell_mut((dest_x as u16, dest_y as u16)) {
-                            *cell = frame[(x, y)].clone();
-                        }
+                    if let Some(cell) = target.cell_mut((dest_x as u16, dest_y as u16)) {
+                        *cell = frame[(x, y)].clone();
                     }
                 }
-            }
-            return;
-        }
-        if self.pending.len() < 2 && !self.pending.contains(&key) {
-            let request = Request {
-                key,
-                bytes: bytes.to_vec(),
-            };
-            match self.tx.try_send(request) {
-                Ok(()) => {
-                    self.pending.insert(key);
-                }
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
             }
         }
     }
@@ -158,6 +194,10 @@ fn prepare(bytes: &[u8], width: u16, height: u16) -> Option<Buffer> {
     StatefulImage::default()
         .resize(Resize::Crop(None))
         .render(area, &mut buffer, &mut protocol);
+    // Propagate resize/encoding errors returned by ratatui-image. The linked
+    // chafa backend currently reports success unconditionally; failures inside
+    // its C API that are not reported cannot be distinguished here.
+    protocol.last_encoding_result()?.ok()?;
     Some(buffer)
 }
 
@@ -165,6 +205,169 @@ fn prepare(bytes: &[u8], width: u16, height: u16) -> Option<Buffer> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::time::{Duration, Instant};
+
+    fn image_bytes() -> Vec<u8> {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(5, 3, |x, y| {
+            image::Rgb([(x * 40) as u8, (y * 70) as u8, ((x + y) * 30) as u8])
+        }));
+        let mut encoded = Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        encoded.into_inner()
+    }
+
+    fn wait_for_result(covers: &mut HalfblockCovers) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !covers.poll() {
+            assert!(Instant::now() < deadline, "cover preparation timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn failed_preparation_retries_once_pending_and_recovers_to_cached_ready() {
+        let mut covers = HalfblockCovers::new();
+        let area = Rect::new(2, 1, 4, 2);
+        let key = CoverKey {
+            hash: 1,
+            width: area.width,
+            height: area.height,
+        };
+        let mut target = Buffer::empty(Rect::new(0, 0, 8, 4));
+        let untouched = target.clone();
+        for _ in 0..32 {
+            assert_eq!(covers.status(area, 1, b"invalid"), CoverStatus::Loading);
+            covers.paint(&mut target, area, 1, b"invalid");
+        }
+        assert_eq!(target, untouched);
+        assert_eq!(covers.pending.len(), 1);
+        assert_eq!(covers.pending[&key], 0);
+        assert!(covers.frames.is_empty());
+        wait_for_result(&mut covers);
+        assert_eq!(covers.failures[&key], 1);
+
+        let bytes = image_bytes();
+        assert_eq!(covers.status(area, 1, &bytes), CoverStatus::Loading);
+        wait_for_result(&mut covers);
+        assert_eq!(covers.status(area, 1, &bytes), CoverStatus::Ready);
+        assert_eq!(covers.order.len(), 1);
+        let expected = prepare(&bytes, area.width, area.height).unwrap();
+        for _ in 0..32 {
+            // Invalid bytes would fail if a ready key were prepared again.
+            assert_eq!(covers.status(area, 1, b"invalid"), CoverStatus::Ready);
+            covers.paint(&mut target, area, 1, b"invalid");
+            assert!(covers.pending.is_empty());
+            assert!(!covers.poll());
+        }
+        for y in 0..area.height {
+            for x in 0..area.width {
+                assert_eq!(target[(area.x + x, area.y + y)], expected[(x, y)]);
+            }
+        }
+    }
+
+    #[test]
+    fn tenth_completed_failure_hides_only_that_key_and_stops_preparing() {
+        let mut covers = HalfblockCovers::new();
+        let area = Rect::new(0, 0, 3, 2);
+        let key = CoverKey {
+            hash: 1,
+            width: area.width,
+            height: area.height,
+        };
+        for attempt in 1..=10 {
+            for _ in 0..16 {
+                assert_eq!(covers.status(area, 1, b"invalid"), CoverStatus::Loading);
+            }
+            assert_eq!(covers.pending[&key], attempt - 1);
+            wait_for_result(&mut covers);
+            assert_eq!(covers.failures[&key], attempt);
+            assert!(!covers.frames.contains_key(&key));
+            assert_eq!(covers.order.len(), 1);
+        }
+        let mut target = Buffer::empty(area);
+        let untouched = target.clone();
+        for _ in 0..32 {
+            assert_eq!(covers.status(area, 1, b"invalid"), CoverStatus::Hidden);
+            covers.paint(&mut target, area, 1, b"invalid");
+            assert!(covers.pending.is_empty());
+            assert!(!covers.poll());
+        }
+        assert_eq!(target, untouched);
+        let bytes = image_bytes();
+        assert_eq!(covers.status(area, 2, &bytes), CoverStatus::Loading);
+        let resized = Rect::new(0, 0, 4, 2);
+        assert_eq!(covers.status(resized, 1, &bytes), CoverStatus::Loading);
+        assert_eq!(covers.pending.len(), 2);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !covers.pending.is_empty() {
+            covers.poll();
+            assert!(Instant::now() < deadline, "changed cover keys timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(covers.status(area, 2, &bytes), CoverStatus::Ready);
+        assert_eq!(covers.status(resized, 1, &bytes), CoverStatus::Ready);
+        assert_eq!(covers.status(area, 1, &bytes), CoverStatus::Hidden);
+        assert_eq!(
+            covers.status(Rect::default(), 1, &bytes),
+            CoverStatus::Hidden
+        );
+    }
+
+    #[test]
+    fn cached_segment_translates_and_clips_without_preparing_cropped_images() {
+        let mut covers = HalfblockCovers::new();
+        let bytes = image_bytes();
+        let area = Rect::new(3, 2, 4, 2);
+        assert_eq!(covers.status(area, 1, &bytes), CoverStatus::Loading);
+        wait_for_result(&mut covers);
+        let frame = prepare(&bytes, area.width, area.height).unwrap();
+        let clip = Rect::new(2, 1, 5, 3);
+        for dx in [-5, -2, 0, 2, 5] {
+            let mut target = Buffer::empty(Rect::new(1, 1, 8, 4));
+            let mut expected = target.clone();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    let dest_x = i32::from(area.x + x) + i32::from(dx);
+                    let dest_y = area.y + y;
+                    if dest_x >= i32::from(clip.x)
+                        && dest_x < i32::from(clip.right())
+                        && dest_y >= clip.y
+                        && dest_y < clip.bottom()
+                    {
+                        expected[(dest_x as u16, dest_y)] = frame[(x, y)].clone();
+                    }
+                }
+            }
+            covers.paint_segment(&mut target, area, clip, dx, 1, b"invalid");
+            assert_eq!(target, expected);
+            assert!(covers.pending.is_empty());
+            assert_eq!(covers.frames.len(), 1);
+        }
+    }
+
+    #[test]
+    fn preparation_cache_and_pending_requests_stay_bounded() {
+        let mut covers = HalfblockCovers::new();
+        let area = Rect::new(0, 0, 2, 1);
+        for hash in 0..12 {
+            assert_eq!(covers.status(area, hash, b"invalid"), CoverStatus::Loading);
+            wait_for_result(&mut covers);
+            assert!(covers.frames.len() + covers.failures.len() <= 8);
+            assert_eq!(
+                covers.frames.len() + covers.failures.len(),
+                covers.order.len()
+            );
+        }
+        assert_eq!(covers.failures.len(), 8);
+        for hash in 12..32 {
+            assert_eq!(covers.status(area, hash, b"invalid"), CoverStatus::Loading);
+            assert!(covers.pending.len() <= 2);
+        }
+        assert_eq!(covers.pending.len(), 2);
+    }
 
     #[test]
     fn prepared_cells_match_baseline_stateful_halfblocks_charset_and_colors() {

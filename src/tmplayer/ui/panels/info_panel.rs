@@ -1,5 +1,5 @@
 use crate::data::icons::UiIcons;
-use crate::tmplayer::app::state::{AppState, CoverSnapshot};
+use crate::tmplayer::app::state::{AppState, CoverSnapshot, TrackMetadata};
 use crate::tmplayer::render::cover_cache::CoverKey;
 use crate::tmplayer::ui::borders::SOLID_BORDER;
 use crate::tmplayer::ui::components::{control_buttons, progress_bar, volume_bar};
@@ -12,6 +12,39 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+#[derive(Clone, Copy)]
+struct CoverRef<'a> {
+    title: &'a str,
+    artist: &'a str,
+    album: &'a str,
+    cover: Option<&'a [u8]>,
+    cover_hash: Option<u64>,
+}
+
+impl<'a> From<&'a TrackMetadata> for CoverRef<'a> {
+    fn from(track: &'a TrackMetadata) -> Self {
+        Self {
+            title: &track.title,
+            artist: &track.artist,
+            album: &track.album,
+            cover: track.cover.as_deref(),
+            cover_hash: track.cover_hash,
+        }
+    }
+}
+
+impl<'a> From<&'a CoverSnapshot> for CoverRef<'a> {
+    fn from(snapshot: &'a CoverSnapshot) -> Self {
+        Self {
+            title: &snapshot.title,
+            artist: &snapshot.artist,
+            album: &snapshot.album,
+            cover: snapshot.cover.as_deref(),
+            cover_hash: snapshot.cover_hash,
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct InfoPanelLayout {
@@ -286,7 +319,14 @@ pub fn download_glyph(app: &AppState) -> Option<char> {
     ))
 }
 
-pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) {
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    window_width: u16,
+    app: &mut AppState,
+    skip_cached_halfblocks: bool,
+    hidden_cover: bool,
+) {
     let b = Block::default()
         .borders(Borders::ALL)
         .border_set(SOLID_BORDER)
@@ -296,20 +336,20 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
     let l = layout(area, window_width);
 
     // cover (animated as a whole: content + border)
-    if l.cover.width > 0 && l.cover.height > 0 {
+    if l.cover.width > 0 && l.cover.height > 0 && !hidden_cover {
         let show_border = app.config.album_border;
 
         if let Some(anim) = app.cover_anim.take() {
             let (from_dx, to_dx) = anim.slide_offsets(l.cover.width, app.last_frame);
             let (from_box, from_fg) = cover_box_ascii_for_snapshot(
-                &anim.from,
+                CoverRef::from(&anim.from),
                 l.cover.width,
                 l.cover.height,
                 show_border,
                 app,
             );
             let (to_box, to_fg) = cover_box_ascii_for_snapshot(
-                &anim.to,
+                CoverRef::from(&anim.to),
                 l.cover.width,
                 l.cover.height,
                 show_border,
@@ -333,10 +373,9 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
                 l.cover,
             );
             app.cover_anim = Some(anim);
-        } else {
-            let snap = CoverSnapshot::from(&app.player.track);
+        } else if !skip_cached_halfblocks {
             let (ascii, fg) = cover_box_ascii_for_snapshot(
-                &snap,
+                CoverRef::from(&app.player.track),
                 l.cover.width,
                 l.cover.height,
                 show_border,
@@ -479,11 +518,11 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
 }
 
 fn cover_box_ascii_for_snapshot(
-    snap: &CoverSnapshot,
+    snap: CoverRef<'_>,
     width: u16,
     height: u16,
     show_border: bool,
-    app: &mut AppState,
+    app: &AppState,
 ) -> (String, ratatui::style::Color) {
     if width == 0 || height == 0 {
         return (String::new(), app.theme.color_subtext());
@@ -542,7 +581,7 @@ fn cover_box_ascii_for_snapshot(
     (out, fg)
 }
 
-fn hash_snapshot_seed(s: &CoverSnapshot) -> u64 {
+fn hash_snapshot_seed(s: CoverRef<'_>) -> u64 {
     let mut h = DefaultHasher::new();
     s.title.hash(&mut h);
     s.artist.hash(&mut h);
@@ -551,12 +590,12 @@ fn hash_snapshot_seed(s: &CoverSnapshot) -> u64 {
 }
 
 fn cover_ascii_for_snapshot(
-    snap: &CoverSnapshot,
+    snap: CoverRef<'_>,
     width: u16,
     height: u16,
-    app: &mut AppState,
+    app: &AppState,
 ) -> (String, ratatui::style::Color) {
-    if let (Some(bytes), Some(hash)) = (snap.cover.as_deref(), snap.cover_hash) {
+    if let (Some(bytes), Some(hash)) = (snap.cover, snap.cover_hash) {
         let key = CoverKey {
             hash,
             width,
