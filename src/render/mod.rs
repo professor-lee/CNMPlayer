@@ -1,3 +1,7 @@
+pub(crate) mod cover_pipeline;
+pub(crate) mod frame_clock;
+pub(crate) mod motion;
+pub(crate) mod wake;
 pub mod cover_renderer;
 pub mod graphics_overlay;
 #[cfg(feature = "easter-egg")]
