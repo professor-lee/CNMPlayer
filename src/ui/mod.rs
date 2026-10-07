@@ -35,6 +35,7 @@ pub fn draw_settings(frame: &mut Frame, app: &mut App) {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.covers.begin_frame();
     let size = frame.area();
     app.set_terminal_size(size.width, size.height);
 

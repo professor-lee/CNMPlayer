@@ -111,6 +111,15 @@ impl CoverPipeline {
         self.needed.clear();
     }
 
+    /// Layout may declare an already prepared surface without submitting work.
+    pub fn observe(&mut self, key: CoverKey) {
+        self.needed.insert(key);
+        if self.frames.contains_key(&key) {
+            self.order.retain(|entry| *entry != key);
+            self.order.push_back(key);
+        }
+    }
+
     pub fn request_bytes(&mut self, key: CoverKey, bytes: &[u8], phase: ImagePhase) -> CoverStatus {
         self.request(key, phase, || Source::Bytes(bytes.to_vec()))
     }
@@ -273,12 +282,12 @@ impl CoverPipeline {
     /// Move/crop prepared cells without decoding, sampling, or encoding again.
     pub fn paint(&self, target: &mut Buffer, area: Rect, clip: Rect, dx: i16, source_row: u16, key: CoverKey) {
         let Some(frame) = self.frame(key) else { return; };
-        let clip = clip.intersection(target.area).intersection(Rect::new(area.x, area.y, area.width, area.height));
+        let clip = clip.intersection(target.area);
         let origin_x = i32::from(area.x) + i32::from(dx);
         let left = i32::from(clip.left()).max(origin_x);
         let right = i32::from(clip.right()).min(origin_x + i32::from(key.width));
-        let bottom = clip.bottom().min(area.y.saturating_add(key.height.saturating_sub(source_row)));
-        for y in clip.top()..bottom {
+        let bottom = clip.bottom().min(area.bottom()).min(area.y.saturating_add(key.height.saturating_sub(source_row)));
+        for y in clip.top().max(area.y)..bottom {
             let sy = source_row + y - area.y;
             for x in left..right {
                 target[(x as u16, y)].clone_from(&frame[((x - origin_x) as u16, sy)]);

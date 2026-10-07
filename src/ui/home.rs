@@ -196,7 +196,7 @@ fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             app.browse.home.tiles[index].cover.render(
                 frame,
-                &mut app.graphics_picker,
+                &mut app.covers,
                 cover_rect,
                 text_style,
                 None,

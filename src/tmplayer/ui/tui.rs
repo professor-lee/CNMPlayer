@@ -1,5 +1,6 @@
 use crate::tmplayer::app::state::{AppState, Overlay};
-use crate::tmplayer::render::halfblock_cover::CoverStatus;
+use crate::render::cover_pipeline::{CoverKey, CoverPipeline, ImagePhase};
+use crate::render::wake::WakeSignal;
 use crate::tmplayer::ui::components::control_buttons;
 use crate::tmplayer::ui::panels::info_panel::{download_cells, heart_cells};
 use crate::tmplayer::ui::panels::{info_panel, playlist_panel, visual_panel};
@@ -42,33 +43,24 @@ pub struct UiLayout {
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     pub should_quit: bool,
-    halfblocks: crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+    covers: CoverPipeline,
     sidebar: PlaylistDrawer,
 }
 
+#[derive(Default)]
 struct PlaylistDrawer {
     buffer: Buffer,
-    covers: crate::tmplayer::render::halfblock_cover::HalfblockCovers,
-}
-
-impl Default for PlaylistDrawer {
-    fn default() -> Self {
-        Self {
-            buffer: Buffer::default(),
-            covers: crate::tmplayer::render::halfblock_cover::HalfblockCovers::new(),
-        }
-    }
 }
 
 impl Tui {
-    pub fn new() -> Result<Self> {
+    pub fn new(wake: WakeSignal) -> Result<Self> {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self {
             terminal,
             should_quit: false,
-            halfblocks: crate::tmplayer::render::halfblock_cover::HalfblockCovers::new(),
+            covers: CoverPipeline::new(wake),
             sidebar: PlaylistDrawer::default(),
         })
     }
@@ -93,7 +85,7 @@ impl Tui {
         Ok(())
     }
     pub fn poll_cover_frames(&mut self) -> bool {
-        self.halfblocks.poll() | self.sidebar.covers.poll()
+        self.covers.poll()
     }
 
     pub fn draw(&mut self, app: &mut AppState) -> Result<UiLayout> {
@@ -122,7 +114,7 @@ impl Tui {
         layout_out = draw_page(
             &mut self.terminal,
             app,
-            &mut self.halfblocks,
+            &mut self.covers,
             &mut self.sidebar,
         )?;
 
@@ -189,10 +181,37 @@ impl Tui {
 fn draw_page<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut AppState,
-    halfblocks: &mut crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+    covers: &mut CoverPipeline,
     sidebar: &mut PlaylistDrawer,
 ) -> std::result::Result<UiLayout, B::Error> {
     let mut layout_out = UiLayout::default();
+    terminal.autoresize()?;
+    // Fixed target preparation is outside the terminal drawing closure.
+    let size = terminal.get_frame().area();
+    let show_right = app.config.visualize != crate::data::config::VisualizeMode::Hidden;
+    let left = if show_right {
+        Layout::horizontal([Constraint::Percentage(33), Constraint::Percentage(67)]).split(size)[0]
+    } else {
+        size
+    };
+    covers.begin_frame();
+    if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks {
+        let content = info_panel::cover_content_rect(info_panel::layout(left, size.width).cover);
+        if let Some(anim) = &app.cover_anim {
+            for snapshot in [&anim.from, &anim.to] {
+                if let (Some(bytes), Some(hash)) = (snapshot.cover.as_deref(), snapshot.cover_hash) {
+                    covers.request_bytes(cover_key(content, hash), bytes, ImagePhase::Moving);
+                }
+            }
+        } else if let (Some(bytes), Some(hash)) = (app.player.track.cover.as_deref(), app.player.track.cover_hash) {
+            covers.request_bytes(cover_key(content, hash), bytes, ImagePhase::Stable);
+        }
+        let sidebar_cover = playlist_panel::compute_layout(left, app).cover_rect;
+        if let (Some(bytes), Some(hash)) = (app.playlist_cover.as_deref(), app.playlist_cover_hash) {
+            covers.request_bytes(cover_key(sidebar_cover, hash), bytes, ImagePhase::Stable);
+        }
+    }
+    covers.end_frame();
     terminal.draw(|f| {
         let size = f.area();
         layout_out.full = size;
@@ -300,41 +319,17 @@ fn draw_page<B: ratatui::backend::Backend>(
         }
         f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
 
-        let mut cover_ready = false;
-        let mut cover_hidden = false;
-        if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
-            && let (Some(bytes), Some(hash)) = (
-                app.player.track.cover.as_deref(),
-                app.player.track.cover_hash,
-            )
-        {
-            match halfblocks.status(info_panel::cover_content_rect(info_l.cover), hash, bytes) {
-                CoverStatus::Ready => cover_ready = true,
-                CoverStatus::Hidden => cover_hidden = true,
-                CoverStatus::Loading => {}
-            }
-        }
-        info_panel::render(f, left, size.width, app, cover_ready, cover_hidden);
+        let halfblocks = app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks;
+        info_panel::render(f, left, size.width, app);
         if show_right {
             visual_panel::render(f, lyric_row, spectrum_row, app);
         }
-        if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks {
-            // Paint the full cached song cover first; the sidebar below occludes it.
-            // Its exposed cells retain chafa glyphs/colors during both slide directions.
-            paint_halfblock_cover(f.buffer_mut(), halfblocks, info_l.cover, app);
+        if halfblocks {
+            // Song cells remain behind the drawer; translation only clips cells.
+            paint_halfblock_cover(f.buffer_mut(), covers, info_l.cover, app);
         }
 
-        // Prepare the sidebar cover at its final size even while the drawer is closed.
-        // This does not change the song cover path above.
         let pl_layout = playlist_panel::compute_layout(left, app);
-        let mut sidebar_cover = CoverStatus::Loading;
-        if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
-            && !pl_layout.cover_rect.is_empty()
-            && let (Some(bytes), Some(hash)) =
-                (app.playlist_cover.as_deref(), app.playlist_cover_hash)
-        {
-            sidebar_cover = sidebar.covers.status(pl_layout.cover_rect, hash, bytes);
-        }
 
         if app.overlay == Overlay::Playlist || app.playlist_slide_x != app.playlist_slide_target_x {
             let dx = app.playlist_slide_x.clamp(-(left.width as i16), 0);
@@ -345,19 +340,10 @@ fn draw_page<B: ratatui::backend::Backend>(
                 sidebar.buffer.reset();
                 let surface = Style::default().bg(app.theme.color_surface());
                 sidebar.buffer.set_style(left, surface);
-                playlist_panel::render(
-                    &mut sidebar.buffer,
-                    left,
-                    app,
-                    sidebar_cover == CoverStatus::Loading,
-                );
-                if sidebar_cover == CoverStatus::Ready
-                    && let (Some(bytes), Some(hash)) =
-                        (app.playlist_cover.as_deref(), app.playlist_cover_hash)
-                {
-                    sidebar
-                        .covers
-                        .paint(&mut sidebar.buffer, pl_layout.cover_rect, hash, bytes);
+                playlist_panel::render(&mut sidebar.buffer, left, app, !halfblocks);
+                if halfblocks && let Some(hash) = app.playlist_cover_hash {
+                    covers.paint(&mut sidebar.buffer, pl_layout.cover_rect, pl_layout.cover_rect,
+                        0, 0, cover_key(pl_layout.cover_rect, hash));
                 }
                 paint_drawer(f.buffer_mut(), &sidebar.buffer, dx, visible);
                 layout_out.playlist_inner = translated_clip(pl_layout.inner, dx, visible);
@@ -442,24 +428,60 @@ fn paint_drawer(target: &mut Buffer, source: &Buffer, dx: i16, clip: Rect) {
 
 fn paint_halfblock_cover(
     target: &mut ratatui::buffer::Buffer,
-    halfblocks: &mut crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+    covers: &CoverPipeline,
     cover: Rect,
     app: &AppState,
 ) {
+    let paint_border = |target: &mut Buffer, dx: i16, hash: u64| {
+        if !app.config.album_border || covers.frame(cover_key(info_panel::cover_content_rect(cover), hash)).is_none() {
+            return;
+        }
+        let content = info_panel::cover_content_rect(cover);
+        if content == cover { return; }
+        let border = crate::tmplayer::ui::borders::SOLID_BORDER;
+        let clip = translated_clip(cover, dx, cover.intersection(target.area));
+        for y in clip.top()..clip.bottom() {
+            for x in clip.left()..clip.right() {
+                let sx = (i32::from(x) - i32::from(dx)) as u16;
+                let symbol = match (y == cover.top(), y + 1 == cover.bottom(), sx == cover.left(), sx + 1 == cover.right()) {
+                    (true, _, true, _) => Some(border.top_left),
+                    (true, _, _, true) => Some(border.top_right),
+                    (_, true, true, _) => Some(border.bottom_left),
+                    (_, true, _, true) => Some(border.bottom_right),
+                    (true, _, _, _) => Some(border.horizontal_top),
+                    (_, true, _, _) => Some(border.horizontal_bottom),
+                    (_, _, true, _) => Some(border.vertical_left),
+                    (_, _, _, true) => Some(border.vertical_right),
+                    _ => None,
+                };
+                if let Some(symbol) = symbol {
+                    target[(x, y)].set_symbol(symbol).set_fg(app.theme.color_subtext());
+                }
+            }
+        }
+    };
     let content = info_panel::cover_content_rect(cover);
     if let Some(anim) = &app.cover_anim {
         let (from_dx, to_dx) = anim.slide_offsets(cover.width, app.last_frame);
         for (snapshot, dx) in [(&anim.from, from_dx), (&anim.to, to_dx)] {
             if let (Some(bytes), Some(hash)) = (snapshot.cover.as_deref(), snapshot.cover_hash) {
-                halfblocks.paint_segment(target, content, cover, dx, hash, bytes);
+                let _ = bytes;
+                paint_border(target, dx, hash);
+                covers.paint(target, content, cover, dx, 0, cover_key(content, hash));
             }
         }
     } else if let (Some(bytes), Some(hash)) = (
         app.player.track.cover.as_deref(),
         app.player.track.cover_hash,
     ) {
-        halfblocks.paint(target, content, hash, bytes);
+        let _ = bytes;
+        paint_border(target, 0, hash);
+        covers.paint(target, content, cover, 0, 0, cover_key(content, hash));
     }
+}
+
+fn cover_key(area: Rect, hash: u64) -> CoverKey {
+    CoverKey { hash, width: area.width, height: area.height }
 }
 
 fn centered_rect(size: Rect, width: u16, height: u16) -> Rect {
@@ -2120,7 +2142,7 @@ mod tests {
                 app.player.track.title = "Title".to_string();
                 app.download_state = download;
                 let (_, buf) = render_to_buffer_sized(120, 40, &mut app, |f, app, _| {
-                    info_panel::render(f, f.area(), 120, app, false, false);
+                    info_panel::render(f, f.area(), 120, app);
                 });
                 let meta = info_panel::layout(rect(0, 0, 120, 40), 120).meta;
                 let layout = UiLayout {
@@ -2195,95 +2217,61 @@ mod tests {
         assert_eq!(download_cells(rect(0, 0, width + 1, 1), &app), None);
     }
 
+    fn encoded_cover() -> Vec<u8> {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(32, 32, |x, y| {
+            image::Rgb([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8])
+        }));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        encoded.into_inner()
+    }
+
+    fn wait_ready(covers: &mut CoverPipeline, key: CoverKey) {
+        use crate::render::cover_pipeline::CoverStatus;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while covers.status(key) != CoverStatus::Ready {
+            assert!(std::time::Instant::now() < deadline, "cover preparation timed out");
+            covers.poll();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     #[test]
-    fn halfblock_cover_slides_keep_both_cached_images_colored_and_clipped() {
+    fn halfblocks_loading_missing_and_transition_never_emit_ascii_art() {
+        use crate::data::config::GraphicsProtocol;
         use crate::tmplayer::app::state::CoverSnapshot;
-        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
-        use ratatui::buffer::Buffer;
-        use ratatui::style::Color;
-        use std::io::Cursor;
-        use std::time::{Duration, Instant};
-
-        let encode = |rgb| {
-            let image = image::RgbImage::from_pixel(4, 4, image::Rgb(rgb));
-            let mut bytes = Cursor::new(Vec::new());
-            image::DynamicImage::ImageRgb8(image)
-                .write_to(&mut bytes, image::ImageFormat::Png)
-                .unwrap();
-            bytes.into_inner()
-        };
+        use ratatui::backend::TestBackend;
         let mut app = state(Overlay::None);
-        app.config.graphics_protocol = crate::data::config::GraphicsProtocol::Halfblocks;
-        let cover = info_panel::layout(rect(0, 0, 120, 40), 120).cover;
-        let red = Color::Rgb(255, 0, 0);
-        let blue = Color::Rgb(0, 0, 255);
-        let mut halfblocks = HalfblockCovers::new();
-        let mut from = CoverSnapshot::from(&app.player.track);
-        from.cover = Some(encode([255, 0, 0]));
-        from.cover_hash = Some(1);
-        let mut to = from.clone();
-        to.cover = Some(encode([0, 0, 255]));
-        to.cover_hash = Some(2);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut covers = CoverPipeline::new(WakeSignal::default());
+        let mut drawer = PlaylistDrawer::default();
+        let layout = draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        let cover = info_panel::layout(layout.left, 120).cover;
+        let assert_blank = |buffer: &Buffer| {
+            for y in cover.top()..cover.bottom() {
+                for x in cover.left()..cover.right() { assert_eq!(buffer[(x, y)].symbol(), " "); }
+            }
+        };
+        assert_blank(terminal.backend().buffer());
+        let from = CoverSnapshot::from(&app.player.track);
+        app.player.track.cover = Some(encoded_cover());
+        app.player.track.cover_hash = Some(42);
+        app.start_cover_anim(from, CoverSnapshot::from(&app.player.track), -1, app.last_frame);
+        draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        assert_blank(terminal.backend().buffer());
+        assert!(app.cover_cache.borrow().is_empty(), "Halfblocks must not queue/cache ASCII");
         let content = info_panel::cover_content_rect(cover);
-        let mut first = Buffer::empty(rect(0, 0, 120, 40));
-        let mut second = first.clone();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            halfblocks.poll();
-            halfblocks.paint(&mut first, content, 1, from.cover.as_deref().unwrap());
-            halfblocks.paint(&mut second, content, 2, to.cover.as_deref().unwrap());
-            let first_cell = &first[(content.x, content.y)];
-            let second_cell = &second[(content.x, content.y)];
-            if (first_cell.fg == red || first_cell.bg == red)
-                && (second_cell.fg == blue || second_cell.bg == blue)
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "color cover worker did not finish"
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
-        for border in [false, true] {
-            app.config.album_border = border;
-            for dir in [-1, 1] {
-                let started_at = Instant::now();
-                app.start_cover_anim(from.clone(), to.clone(), dir, started_at);
-                app.last_frame = started_at + Duration::from_millis(110);
-                let (_, original) = render_to_buffer_sized(120, 40, &mut app, |f, app, _| {
-                    info_panel::render(f, f.area(), 120, app, false, false);
-                });
-                let mut expected = original.clone();
-                let anim = app.cover_anim.as_ref().unwrap();
-                let (from_dx, to_dx) = anim.slide_offsets(cover.width, app.last_frame);
-                for (source, dx) in [(&first, from_dx), (&second, to_dx)] {
-                    for y in content.top()..content.bottom() {
-                        for x in content.left()..content.right() {
-                            let dest_x = i32::from(x) + i32::from(dx);
-                            if dest_x >= i32::from(cover.left())
-                                && dest_x < i32::from(cover.right())
-                            {
-                                expected[(dest_x as u16, y)] = source[(x, y)].clone();
-                            }
-                        }
-                    }
-                }
-                let mut actual = original;
-                paint_halfblock_cover(&mut actual, &mut halfblocks, cover, &app);
-                assert_eq!(
-                    actual, expected,
-                    "slide must preserve every chafa glyph/color and clip to the cover"
-                );
-            }
-        }
+        wait_ready(&mut covers, cover_key(content, 42));
+        app.cover_anim = None;
+        draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        assert!(terminal.backend().buffer().content.iter().any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..))));
     }
 
     #[test]
     fn sidebar_slides_preserve_exposed_song_chafa_cells() {
         use crate::data::config::GraphicsProtocol;
-        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
+        use crate::render::cover_pipeline::CoverStatus;
         use ratatui::backend::TestBackend;
         use std::io::Cursor;
         use std::time::{Duration, Instant};
@@ -2300,22 +2288,25 @@ mod tests {
             .unwrap();
         app.player.track.cover = Some(encoded.into_inner());
         app.player.track.cover_hash = Some(42);
-        let mut halfblocks = HalfblockCovers::new();
+        let mut halfblocks = CoverPipeline::new(WakeSignal::default());
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         let mut sidebar = PlaylistDrawer::default();
         let layout = draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
         let loading = terminal.backend().buffer().clone();
 
-        // Without polling the worker, Halfblocks must keep the existing ASCII fallback.
-        app.config.graphics_protocol = GraphicsProtocol::Off;
-        draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
-        assert_eq!(terminal.backend().buffer(), &loading);
-        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        // Before worker results are consumed there is no ASCII fallback.
+        for y in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).top()..
+            info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).bottom() {
+            for x in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).left()..
+                info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).right() {
+                assert_eq!(loading[(x, y)].symbol(), " ");
+            }
+        }
         let content = info_panel::cover_content_rect(
             info_panel::layout(layout.left, layout.full.width).cover,
         );
         let deadline = Instant::now() + Duration::from_secs(2);
-        while halfblocks.status(content, 42, app.player.track.cover.as_deref().unwrap())
+        while halfblocks.status(cover_key(content, 42))
             != CoverStatus::Ready
         {
             assert!(
@@ -2327,7 +2318,7 @@ mod tests {
         }
         draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
         let closed = terminal.backend().buffer().clone();
-        assert_ne!(closed, loading, "fixture must distinguish chafa from ASCII");
+        assert_ne!(closed, loading, "ready image replaces blank loading area");
 
         for opening in [true, false] {
             app.overlay = if opening {
@@ -2370,10 +2361,8 @@ mod tests {
     fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
         use crate::data::config::GraphicsProtocol;
         use crate::tmplayer::data::playlist::PlaylistItem;
-        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
         use ratatui::backend::TestBackend;
         use std::io::Cursor;
-        use std::time::{Duration, Instant};
 
         let mut app = state(Overlay::None);
         app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
@@ -2393,7 +2382,7 @@ mod tests {
                 title: format!("Track {i}"),
             })
             .collect();
-        let mut song_covers = HalfblockCovers::new();
+        let mut song_covers = CoverPipeline::new(WakeSignal::default());
         let mut drawer = PlaylistDrawer::default();
 
         // Resize uses a new final-size cover, not an animation-sized image.
@@ -2406,14 +2395,7 @@ mod tests {
                 draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
             let background = terminal.backend().buffer().clone();
             let final_layout = playlist_panel::compute_layout(closed_layout.left, &app);
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while !drawer.covers.poll() {
-                assert!(
-                    Instant::now() < deadline,
-                    "closed sidebar did not prewarm its cover"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            wait_ready(&mut song_covers, cover_key(final_layout.cover_rect, 91));
             app.overlay = Overlay::Playlist;
             draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
             let fully_open = terminal.backend().buffer().clone();
@@ -2498,64 +2480,36 @@ mod tests {
     }
 
     #[test]
-    fn drawer_cold_cover_uses_fixed_placeholder_then_hides_after_ten_failures() {
+    fn drawer_failed_cover_is_blank_without_ascii_or_retry_loop() {
         use crate::data::config::GraphicsProtocol;
-        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
+        use crate::render::cover_pipeline::CoverStatus;
         use ratatui::backend::TestBackend;
-        use std::time::{Duration, Instant};
-
         let mut app = state(Overlay::Playlist);
         app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
-        app.config.show_hints = false;
         app.playlist_cover = Some(b"invalid image".to_vec());
         app.playlist_cover_hash = Some(19);
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let mut song_covers = HalfblockCovers::new();
+        let mut covers = CoverPipeline::new(WakeSignal::default());
         let mut drawer = PlaylistDrawer::default();
-        let open = draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
-        let cover = playlist_panel::compute_layout(open.left, &app).cover_rect;
-        let loading = terminal.backend().buffer().clone();
-        for y in cover.top()..cover.bottom() {
-            for x in cover.left()..cover.right() {
-                assert_eq!(loading[(x, y)].symbol(), "█");
-            }
-        }
-
-        // Repeated frames without collecting the result remain the same-size placeholder.
-        for dx in [-17, -8, 0] {
-            app.playlist_slide_x = dx;
-            let frame = draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
-            let exposed = translated_clip(cover, dx, frame.playlist_rect);
-            for y in exposed.top()..exposed.bottom() {
-                for x in exposed.left()..exposed.right() {
-                    assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), "█");
-                }
-            }
-        }
-        for _ in 0..10 {
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while !drawer.covers.poll() {
-                assert!(Instant::now() < deadline, "cover failure result timed out");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+        let layout = draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        let cover = playlist_panel::compute_layout(layout.left, &app).cover_rect;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while covers.status(cover_key(cover, 19)) != CoverStatus::Failed {
+            assert!(std::time::Instant::now() < deadline);
+            covers.poll();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         for dx in [0, -8, -17] {
             app.playlist_slide_x = dx;
-            let frame = draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+            let frame = draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
             let exposed = translated_clip(cover, dx, frame.playlist_rect);
             for y in exposed.top()..exposed.bottom() {
                 for x in exposed.left()..exposed.right() {
-                    let cell = &terminal.backend().buffer()[(x, y)];
-                    assert_eq!(
-                        cell.symbol(),
-                        " ",
-                        "failed cover must not keep its ASCII placeholder"
-                    );
-                    assert_eq!(cell.bg, app.theme.color_surface());
+                    assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), " ");
                 }
             }
         }
+        assert!(app.cover_cache.borrow().is_empty());
     }
 
     #[test]

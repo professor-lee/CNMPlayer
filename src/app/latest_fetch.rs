@@ -1,3 +1,4 @@
+use crate::render::wake::WakeSignal;
 use futures::SinkExt;
 use futures::channel::mpsc;
 use see::unsync as watch;
@@ -8,6 +9,7 @@ pub(super) async fn run_latest<Request: Clone, Response>(
     mut requests: watch::Receiver<Option<Request>>,
     mut results: mpsc::Sender<Response>,
     mut process: impl AsyncFnMut(Request) -> Response,
+    wake: WakeSignal,
 ) {
     while requests.changed().await.is_ok() {
         let Some(request) = requests.borrow_and_update().clone() else {
@@ -20,6 +22,7 @@ pub(super) async fn run_latest<Request: Clone, Response>(
         if results.send(response).await.is_err() {
             break;
         }
+        wake.notify();
     }
 }
 
@@ -47,7 +50,7 @@ mod tests {
                 release.take().unwrap().await.unwrap();
             }
             id
-        }));
+        }, WakeSignal::default()));
         tx.send(Some(1)).unwrap();
         started_rx.await.unwrap();
         tx.send(Some(2)).unwrap();
@@ -73,7 +76,7 @@ mod tests {
             started.take().unwrap().send(()).unwrap();
             release.take().unwrap().await.unwrap();
             id
-        }));
+        }, WakeSignal::default()));
         tx.send(Some(1)).unwrap();
         started_rx.await.unwrap();
         tx.send(None).unwrap();

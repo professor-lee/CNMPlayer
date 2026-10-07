@@ -1,5 +1,6 @@
 use super::{PlaybackRuntimeState, PlaybackTrack};
 use crate::data::config::CacheConfig;
+use crate::render::wake::WakeSignal;
 use std::path::Path;
 use std::time::Duration;
 
@@ -24,6 +25,7 @@ pub enum MprisControlEvent {
 
 #[cfg(target_os = "linux")]
 mod imp {
+    use super::WakeSignal;
     use super::{CacheConfig, MprisControlEvent, MprisSyncPayload, Path};
     use crate::app::player::cleanup_cache_dir;
     use crate::launch;
@@ -41,7 +43,7 @@ mod imp {
     }
 
     impl MprisBridge {
-        pub fn new(cache_root: &Path, cache_policy: &CacheConfig) -> Self {
+        pub fn new(cache_root: &Path, cache_policy: &CacheConfig, wake: WakeSignal) -> Self {
             let art_dir = cache_root.join("mpris_art");
 
             let (tx, mut rx) = see::unsync::channel(None);
@@ -76,7 +78,7 @@ mod imp {
                     }
                 };
 
-                bind_control_callbacks(&player, &event_tx);
+                bind_control_callbacks(&player, &event_tx, &wake);
 
                 launch(player.run());
 
@@ -110,45 +112,61 @@ mod imp {
         }
     }
 
-    fn bind_control_callbacks(player: &Player, event_tx: &Sender<MprisControlEvent>) {
+    fn bind_control_callbacks(player: &Player, event_tx: &Sender<MprisControlEvent>, wake: &WakeSignal) {
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_play(move |_| {
             let _ = tx.send(MprisControlEvent::Play);
+            signal.notify();
         });
 
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_pause(move |_| {
             let _ = tx.send(MprisControlEvent::Pause);
+            signal.notify();
         });
 
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_play_pause(move |_| {
             let _ = tx.send(MprisControlEvent::PlayPause);
+            signal.notify();
         });
 
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_stop(move |_| {
             let _ = tx.send(MprisControlEvent::Stop);
+            signal.notify();
         });
 
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_next(move |_| {
             let _ = tx.send(MprisControlEvent::Next);
+            signal.notify();
         });
 
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_previous(move |_| {
             let _ = tx.send(MprisControlEvent::Previous);
+            signal.notify();
         });
 
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_seek(move |_, offset| {
             let _ = tx.send(MprisControlEvent::SeekRelativeMicros(offset.as_micros()));
+            signal.notify();
         });
 
         let tx = event_tx.clone();
+        let signal = wake.clone();
         player.connect_set_position(move |_, _, position| {
             let _ = tx.send(MprisControlEvent::SeekAbsoluteMicros(position.as_micros()));
+            signal.notify();
         });
     }
 
@@ -315,12 +333,13 @@ mod imp {
 
 #[cfg(not(target_os = "linux"))]
 mod imp {
+    use super::WakeSignal;
     use super::{CacheConfig, MprisControlEvent, MprisSyncPayload, Path};
 
     pub struct MprisBridge;
 
     impl MprisBridge {
-        pub fn new(_cache_root: &Path, _cache_policy: &CacheConfig) -> Self {
+        pub fn new(_cache_root: &Path, _cache_policy: &CacheConfig, _wake: WakeSignal) -> Self {
             Self
         }
 

@@ -61,6 +61,7 @@ impl PlaylistPagination {
             return;
         }
         state.attempted_offset = Some(state.cursor.next_offset);
+        let wake = api.wake_signal();
         let future = fetch_playlist_tracks_page(
             api,
             state.cursor.source_id.clone(),
@@ -68,7 +69,7 @@ impl PlaylistPagination {
             state.cursor.total_tracks,
         );
         let future: PlaylistPageTask = Box::pin(async move { Some(future.await) });
-        state.pending = Some(spawn_shared(future));
+        state.pending = Some(spawn_shared(future, wake));
     }
 
     /// A shared response is consumed once; only its original source and offset may advance.
@@ -118,6 +119,7 @@ pub(super) fn apply_page(
 mod tests {
     use super::*;
     use crate::app::{PlaybackTrack, PlaylistState, PlaylistTrack, PlaylistTrackKind};
+    use crate::render::wake::WakeSignal;
 
     fn track(id: &str) -> PlaylistTrack {
         PlaylistTrack {
@@ -150,7 +152,7 @@ mod tests {
             has_more: false,
         };
         let future: PlaylistPageTask = Box::pin(async move { Some(Ok(page)) });
-        pagination.0.borrow_mut().pending = Some(spawn_shared(future));
+        pagination.0.borrow_mut().pending = Some(spawn_shared(future, WakeSignal::default()));
         compio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
 

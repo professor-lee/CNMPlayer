@@ -29,6 +29,10 @@ impl CoverCache {
         Some(val)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
     pub fn contains(&self, key: CoverKey) -> bool {
         self.map.contains_key(&key)
     }

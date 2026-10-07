@@ -44,6 +44,10 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
         self.app.fullscreen_tick_playback().await;
     }
 
+    fn wake_signal(&self) -> crate::render::wake::WakeSignal {
+        self.app.wake.clone()
+    }
+
     fn metadata_signature(&self) -> u64 {
         self.app.fullscreen_metadata_signature()
     }
@@ -395,6 +399,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
 
     loop {
         app.tick().await;
+        app.covers.poll();
 
         if app.consume_fullscreen_launch_request() {
             let bootstrap = app.build_fullscreen_bootstrap();
@@ -410,6 +415,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             ui::draw(frame, app);
             ui::draw_settings(frame, app);
         })?;
+        app.covers.prepare();
 
         // 动画进行中（进度条脉冲、搜索框滑出、启动加载）加快重绘，
         // 其余时间保持 1s 空闲节流（省电、减少终端输出）。

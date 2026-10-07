@@ -324,8 +324,6 @@ pub fn render(
     area: Rect,
     window_width: u16,
     app: &mut AppState,
-    skip_cached_halfblocks: bool,
-    hidden_cover: bool,
 ) {
     let b = Block::default()
         .borders(Borders::ALL)
@@ -335,11 +333,14 @@ pub fn render(
 
     let l = layout(area, window_width);
 
-    // cover (animated as a whole: content + border)
-    if l.cover.width > 0 && l.cover.height > 0 && !hidden_cover {
+    // ASCII artwork is exclusively the Off renderer. Halfblocks paints only
+    // prepared colored cells; a missing image leaves this area blank.
+    if l.cover.width > 0 && l.cover.height > 0
+        && app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Off
+    {
         let show_border = app.config.album_border;
 
-        if let Some(anim) = app.cover_anim.take() {
+        if let Some(anim) = app.cover_anim.as_ref() {
             let (from_dx, to_dx) = anim.slide_offsets(l.cover.width, app.last_frame);
             let (from_box, from_fg) = cover_box_ascii_for_snapshot(
                 CoverRef::from(&anim.from),
@@ -372,8 +373,7 @@ pub fn render(
                 Paragraph::new(composed).style(Style::default().fg(fg)),
                 l.cover,
             );
-            app.cover_anim = Some(anim);
-        } else if !skip_cached_halfblocks {
+        } else {
             let (ascii, fg) = cover_box_ascii_for_snapshot(
                 CoverRef::from(&app.player.track),
                 l.cover.width,

@@ -1,5 +1,6 @@
 mod api;
 pub(crate) mod controllers;
+mod cover_presentation;
 pub(crate) mod download;
 mod latest_fetch;
 mod mpris_bridge;
@@ -26,7 +27,9 @@ use crate::data::session;
 use crate::data::theme_loader::ThemeLoader;
 use crate::launch;
 use crate::render::cover_renderer::render_cover_ascii;
-use crate::render::graphics_overlay::cover_viewport;
+use crate::render::cover_pipeline::CoverKey;
+use crate::render::motion::{Curve, Toggle, Transition};
+use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::LyricLine;
 use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, MiniCavaState};
 use crate::tmplayer::audio::pcm_tap::PcmRing;
@@ -42,14 +45,10 @@ use futures::channel::mpsc as async_mpsc;
 use http::header;
 use image::DynamicImage;
 use ncm_api::ApiResponse;
-use parking_lot::Mutex;
 use ratatui::Frame;
 use ratatui::layout::{Rect, Size};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Paragraph};
-use ratatui_image::StatefulImage;
-use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
 use see::unsync as watch;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -68,6 +67,7 @@ use crate::data::atomic_file::write_atomic;
 use crate::data::persistence::{PersistenceHandle, PersistenceKey, PersistenceWorker};
 use api::ApiState;
 use browse_controller::BrowseController;
+use cover_presentation::CoverPresentation;
 use controllers::SearchController;
 use download::{
     DownloadEvent, DownloadManager, DownloadRequest, DownloadRow, DownloadRowCache, DownloadState,
@@ -1390,35 +1390,26 @@ pub struct CoverFetchState {
     pub image: Option<CoverFuture>,
     ascii: Option<AsciiFuture>,
     size: Size,
-    protocol: Option<Arc<Mutex<StatefulProtocol>>>,
-    /// 协议缓存键：整块图尺寸 + 可见行区间。部分可见时按可见比例裁源图，
-    /// 键包含可见区间，避免缩放时复用错切片。
-    protocol_key: Option<(Size, u16, u16)>,
+    identity: u64,
+    wake: WakeSignal,
 }
 
 impl CoverFetchState {
     pub fn load(&mut self, api: ApiState, url: String) {
+        self.wake = api.wake_signal();
+        self.identity = next_list_generation();
         let cover_url = url.clone();
-        let fut = async move {
-            let bytes = api.fetch_cover_bytes(&cover_url).await.ok();
-            let flatten = bytes.filter(|x| !x.is_empty());
-            let image = flatten.and_then(|x| image::load_from_memory(&x).ok());
-
-            // Downsampling to 500px to save memory.
-            image.map(|x| x.thumbnail(500, 500)).map(Arc::new)
-        };
-        let fut = Box::pin(fut);
-        self.image = Some(spawn_shared(fut));
+        let fut = Box::pin(async move { api.fetch_cover_image(&cover_url).await.ok() });
+        self.image = Some(spawn_shared(fut, self.wake.clone()));
         self.url = Some(url);
         self.size = Size::ZERO;
-        self.protocol = None;
-        self.protocol_key = None;
+        self.ascii = None;
     }
 
     pub fn render(
         &mut self,
         frame: &mut Frame,
-        picker: &mut Picker,
+        covers: &mut CoverPresentation,
         area: Rect,
         text_style: Style,
         bg_style: Option<Style>,
@@ -1426,7 +1417,7 @@ impl CoverFetchState {
     ) {
         self.render_rows(
             frame,
-            picker,
+            covers,
             area,
             area.height,
             0..area.height,
@@ -1436,17 +1427,13 @@ impl CoverFetchState {
         );
     }
 
-    /// 只渲染 `visible` 行（行号相对整块图，`area` 是这些行的落点），其余行不写入。
-    ///
-    /// 部分可见时**按可见比例裁源图**：ASCII 路径取对应的文本行，图形路径先把
-    /// 可见比例换算成 `cover_viewport` 结果里的行切片再生成协议——所以是"裁"而不是
-    /// "压进子矩形"，也不需要画完整块图再擦除。
-    // 参数各管一件事（落点/整块行数/可见区间/三种绘制开关），打包成结构体反而更难读。
+    /// Partial views copy rows of the full-size prepared surface. Scrolling does
+    /// not create additional image geometry, codecs, or cropped cache entries.
     #[allow(clippy::too_many_arguments)]
     pub fn render_rows(
         &mut self,
         frame: &mut Frame,
-        picker: &mut Picker,
+        covers: &mut CoverPresentation,
         area: Rect,
         full_rows: u16,
         visible: Range<u16>,
@@ -1479,7 +1466,7 @@ impl CoverFetchState {
             if (self.ascii.is_none() || self.size != size)
                 && let Some(bytes) = peek_shared_future(&self.image)
             {
-                self.ascii = Some(make_ascii_future(bytes.clone(), area.width, full_rows));
+                self.ascii = Some(make_ascii_future(bytes.clone(), area.width, full_rows, self.wake.clone()));
                 self.size = size;
             }
             let ascii = match peek_shared_future(&self.ascii) {
@@ -1495,49 +1482,23 @@ impl CoverFetchState {
             return;
         }
 
-        let Some(img) = peek_shared_future(&self.image) else {
-            return;
-        };
-
-        let key = (size, visible.start, area.height);
-        if self.protocol_key.as_ref() != Some(&key) {
-            let (crop_x, crop_y, view_w, view_h) =
-                cover_viewport(img.width(), img.height(), area.width, full_rows);
-            let (slice_y, slice_h) =
-                source_rows_for_visible(view_h, full_rows, visible.start, area.height);
-            let slice = img.crop_imm(crop_x, crop_y + slice_y, view_w, slice_h);
-            self.protocol = Some(Arc::new(Mutex::new(picker.new_resize_protocol(slice))));
-            self.protocol_key = Some(key);
-        }
-
-        if let Some(proto) = &self.protocol {
-            let mut proto = proto.lock();
-            let widget = StatefulImage::<StatefulProtocol>::default();
-            frame.render_stateful_widget(widget, area, &mut proto);
+        if let Some(image) = peek_shared_future(&self.image) {
+            covers.show(frame, CoverKey {
+                hash: self.identity,
+                width: area.width,
+                height: full_rows,
+            }, image, area, visible.start);
         }
     }
 }
 
-/// 可见行区间对应的源图行区间（相对 viewport 顶部），按比例取，保证是裁切而非压缩。
-fn source_rows_for_visible(
-    view_h: u32,
-    full_rows: u16,
-    skip: u16,
-    visible_rows: u16,
-) -> (u32, u32) {
-    if view_h == 0 || full_rows == 0 || visible_rows == 0 {
-        return (0, view_h.max(1));
-    }
 
-    let full = u32::from(full_rows);
-    let start = (view_h * u32::from(skip) / full).min(view_h - 1);
-    let end = (view_h * (u32::from(skip) + u32::from(visible_rows)) / full).max(start + 1);
-    (start, end.min(view_h) - start)
-}
-
-fn make_ascii_future(bytes: Arc<DynamicImage>, width: u16, height: u16) -> AsciiFuture {
-    let fut = Box::pin(async move { render_cover_ascii(bytes, width, height) });
-    spawn_shared(fut)
+fn make_ascii_future(image: Arc<DynamicImage>, width: u16, height: u16, wake: WakeSignal) -> AsciiFuture {
+    let fut = Box::pin(async move {
+        compio::runtime::spawn_blocking(move || render_cover_ascii(image, width, height))
+            .await.ok().flatten()
+    });
+    spawn_shared(fut, wake)
 }
 
 pub struct HomeTile {
@@ -2993,6 +2954,7 @@ async fn loop_cover_fetch(
     client: Client,
     cache_dir: PathBuf,
     persistence: PersistenceHandle,
+    wake: WakeSignal,
 ) {
     let Ok(api) = ApiState::new(None, client) else {
         return;
@@ -3024,7 +2986,7 @@ async fn loop_cover_fetch(
             generation: req.generation,
             bytes,
         }
-    })
+    }, wake)
     .await;
 }
 
@@ -3033,6 +2995,7 @@ async fn loop_lyric_fetch(
     tx: async_mpsc::Sender<LyricFetchResult>,
     mut api: ApiState,
 ) {
+    let wake = api.wake_signal();
     let mut process_fn = async move |req: &LyricFetchRequest| {
         if let Some(cookie) = &req.cookie {
             api.set_cookie(cookie.to_string());
@@ -3049,11 +3012,12 @@ async fn loop_lyric_fetch(
             generation: req.generation,
             lyrics,
         }
-    })
+    }, wake)
     .await;
 }
 
 pub struct App {
+    pub(crate) wake: WakeSignal,
     pub config: Config,
     pub theme: Theme,
     pub page: Page,
@@ -3139,7 +3103,7 @@ pub struct App {
     persistence: PersistenceWorker,
     /// 下载任务表（异步后台任务；状态行与图标都从这里读）。
     pub downloads: DownloadController,
-    pub graphics_picker: Picker,
+    pub(crate) covers: CoverPresentation,
 }
 
 impl App {
@@ -3166,11 +3130,13 @@ impl App {
             header::HeaderValue::from_static("https://music.163.com/"),
         );
         let http_client = Client::builder().default_headers(headers).build()?;
+        let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
+        let wake = api.wake_signal();
         let cache_root = resolve_cache_root(&config);
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let download_root =
             crate::app::download::resolve_download_root(config.download_path.as_deref());
-        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache);
+        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache, wake.clone());
         if config.cache.clean_on_startup {
             let startup_dir = cover_cache_dir.clone();
             let startup_policy = config.cache.clone();
@@ -3189,10 +3155,10 @@ impl App {
             http_client.clone(),
             cover_cache_dir.clone(),
             persistence.handle(),
+            wake.clone(),
         );
         launch(worker);
 
-        let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
         // 下载任务全局只有一个：管理器起一次常驻 worker，之后只往队列里塞请求。
         let download_manager = DownloadManager::new(api.clone());
 
@@ -3202,6 +3168,7 @@ impl App {
         launch(worker);
 
         let mut app = Self {
+            wake: wake.clone(),
             config,
             theme,
             page: Page::Login,
@@ -3282,14 +3249,11 @@ impl App {
                 page_kind: PlaylistPageKind::Playlist,
                 pending_intents: Default::default(),
             },
-            graphics_picker: Picker::halfblocks(),
+            covers: CoverPresentation::new(wake),
         };
 
         app.load_private_roam_memory().await;
 
-        if let Some(protocol) = app.config.graphics_protocol.to_ratatui_protocol() {
-            app.graphics_picker.set_protocol_type(protocol);
-        }
 
         app.sync_cava();
         app.sync_terminal_size();
@@ -4565,7 +4529,7 @@ impl App {
             self.browse.home_sidebar.loading = true;
             let fut = fetch_home_sidebar_playlists(self.api.clone(), self.config.language);
             let fut: HomeSidebarTask = Box::pin(async move { Some(fut.await) });
-            self.browse.home_sidebar_fetch = Some(spawn_shared(fut));
+            self.browse.home_sidebar_fetch = Some(spawn_shared(fut, self.wake.clone()));
         }
     }
 
@@ -4705,7 +4669,7 @@ impl App {
             self.config.language,
         );
         let fut: HomeSidebarPageTask = Box::pin(async move { Some(fut.await) });
-        self.browse.home_sidebar_page_fetch = Some(spawn_shared(fut));
+        self.browse.home_sidebar_page_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
     /// 搬运作者页的在途拉取（每帧调用，结果就绪才动状态）。
@@ -5273,7 +5237,7 @@ impl App {
         let fut: LikeVerifyTask = Box::pin(async move { Some(fut.await) });
         self.playback
             .like_machine
-            .begin_verify(song_id, spawn_shared(fut));
+            .begin_verify(song_id, spawn_shared(fut, self.wake.clone()));
     }
 
     /// 当前曲目 id。
@@ -5691,7 +5655,7 @@ impl App {
         let fut: LikeToggleTask = Box::pin(async move { Some(fut.await) });
         self.playback
             .like_machine
-            .begin_toggle(song_id, target, spawn_shared(fut));
+            .begin_toggle(song_id, target, spawn_shared(fut, self.wake.clone()));
     }
 
     async fn tick_audio(&mut self) {
@@ -6480,7 +6444,7 @@ impl App {
             fallback_cover_url,
         );
         let fut: AuthorFetchTask = Box::pin(async move { Some(fut.await) });
-        self.browse.author_fetch = Some(spawn_shared(fut));
+        self.browse.author_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
     /// 搜索页打开专辑：立即落占位歌单页 + 派发后台拉取（结果由 `tick_playlist_fetch` 搬进来）。
@@ -6529,7 +6493,7 @@ impl App {
         self.downloads.page_kind = PlaylistPageKind::Album;
         self.browse.playlist_fetch = Some(PlaylistFetchSlot {
             kind: PlaylistPageKind::Album,
-            future: spawn_shared(fut),
+            future: spawn_shared(fut, self.wake.clone()),
         });
     }
 
@@ -6575,7 +6539,7 @@ impl App {
         self.downloads.page_kind = PlaylistPageKind::Playlist;
         self.browse.playlist_fetch = Some(PlaylistFetchSlot {
             kind: PlaylistPageKind::Playlist,
-            future: spawn_shared(fut),
+            future: spawn_shared(fut, self.wake.clone()),
         });
     }
 
@@ -8075,7 +8039,7 @@ impl App {
             artist_line,
         );
         let fut: AuthorFetchTask = Box::pin(async move { Some(fut.await) });
-        self.browse.author_fetch = Some(spawn_shared(fut));
+        self.browse.author_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
     /// 全屏页点了专辑名：立即落占位专辑页 + 派发后台拉取，结果由 `App::tick_playlist_fetch`
@@ -8121,7 +8085,7 @@ impl App {
         self.downloads.page_kind = PlaylistPageKind::Album;
         self.browse.playlist_fetch = Some(PlaylistFetchSlot {
             kind: PlaylistPageKind::Album,
-            future: spawn_shared(fut),
+            future: spawn_shared(fut, self.wake.clone()),
         });
     }
 
@@ -11332,21 +11296,6 @@ mod tests {
         );
     }
 
-    /// 可见行按比例映射到源图行：整体可见取整段，只露下半就只取下半，绝不压缩。
-    #[test]
-    fn source_rows_follow_visible_proportion() {
-        // 全部可见：整段 viewport。
-        assert_eq!(source_rows_for_visible(8, 4, 0, 4), (0, 8));
-        // 只露第 2 行（占四分之一）：取第二段四分之一。
-        assert_eq!(source_rows_for_visible(8, 4, 1, 1), (2, 2));
-        // 头像形状（2 行）：只露下半 → 取源图下半。
-        assert_eq!(source_rows_for_visible(8, 2, 1, 1), (4, 4));
-        // 最后一个四分之一，且不越界。
-        let (start, len) = source_rows_for_visible(8, 4, 3, 1);
-        assert_eq!((start, len), (6, 2));
-        // 源图比行数还小（退化）：至少 1 行且不越界。
-        assert_eq!(source_rows_for_visible(1, 4, 2, 1), (0, 1));
-    }
 
     fn search_item(kind: SearchItemKind, label: &str) -> SearchItem {
         SearchItem {

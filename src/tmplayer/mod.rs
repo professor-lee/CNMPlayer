@@ -109,6 +109,7 @@ pub enum DownloadIconState {
 
 pub trait HostPlaybackBridge {
     async fn tick(&mut self);
+    fn wake_signal(&self) -> crate::render::wake::WakeSignal;
     fn metadata_signature(&self) -> u64;
     fn runtime_snapshot(&self) -> HostPlaybackRuntimeSnapshot;
     /// 宿主播放链路上的 PCM 抽头环，示波器由此取真实波形。

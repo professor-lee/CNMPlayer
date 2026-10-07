@@ -318,7 +318,7 @@ fn render_artist_card(
         let text_style = Style::default().fg(app.theme.color_text());
         app.search.cover_mut(item_idx).render_rows(
             frame,
-            &mut app.graphics_picker,
+            &mut app.covers,
             avatar_area,
             ARTIST_CARD_AVATAR_HEIGHT,
             (visible_start - avatar_first)..(visible_end - avatar_first),

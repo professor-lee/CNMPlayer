@@ -356,7 +356,7 @@ pub async fn run(
     host_bridge: &mut impl HostPlaybackBridge,
 ) -> Result<crate::tmplayer::FullscreenExit> {
     enable_raw_mode()?;
-    let mut tui = Tui::new()?;
+    let mut tui = Tui::new(host_bridge.wake_signal())?;
     tui.enter()?;
 
     // Prefer cava for system-wide visualization (keeps our renderer/style; cava only provides bars).
