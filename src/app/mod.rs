@@ -11143,6 +11143,86 @@ fn placeholder_cover_ascii(width: u16, height: u16, ch: char) -> String {
 mod tests {
     use super::*;
 
+    #[compio::test]
+    async fn home_cover_loads_and_paints_when_multiple_tiles_complete_together() {
+        use std::io::{Read, Write};
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            24,
+            24,
+            image::Rgb([220, 60, 30]),
+        ));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0; 2048];
+                socket.read(&mut request).unwrap();
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )
+                .unwrap();
+                socket.write_all(&bytes).unwrap();
+            }
+        });
+        let api = ApiState::new(None, Client::builder().no_proxy().build().unwrap()).unwrap();
+        let mut tiles = [
+            CoverFetchState::default(),
+            CoverFetchState::default(),
+            CoverFetchState::default(),
+        ];
+        for (index, cover) in tiles.iter_mut().enumerate() {
+            cover.load(api.clone(), format!("http://{address}/{index}"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while tiles
+            .iter()
+            .any(|cover| peek_shared_future(&cover.image).is_none())
+        {
+            assert!(Instant::now() < deadline);
+            compio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let mut presentation = CoverPresentation::new(api.wake_signal());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(8, 4)).unwrap();
+        loop {
+            presentation.poll();
+            terminal
+                .draw(|frame| {
+                    presentation.begin_frame();
+                    tiles[2].render(
+                        frame,
+                        &mut presentation,
+                        frame.area(),
+                        Style::default(),
+                        None,
+                        false,
+                    );
+                })
+                .unwrap();
+            presentation.prepare();
+            if terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..)))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            compio::time::sleep(Duration::from_millis(1)).await;
+        }
+        server.join().unwrap();
+    }
+
     fn test_artist_album_response(items: &[Value], more: bool) -> ApiResponse {
         ApiResponse {
             status: 200,
