@@ -1,4 +1,5 @@
 use crate::tmplayer::app::state::{AppState, Overlay};
+use crate::tmplayer::render::halfblock_cover::CoverStatus;
 use crate::tmplayer::ui::components::control_buttons;
 use crate::tmplayer::ui::panels::info_panel::{download_cells, heart_cells};
 use crate::tmplayer::ui::panels::{info_panel, playlist_panel, visual_panel};
@@ -208,7 +209,28 @@ impl Tui {
             }
             f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
 
-            info_panel::render(f, left, size.width, app);
+            let sliding_playlist = app.overlay == Overlay::Playlist
+                || app.playlist_slide_x != app.playlist_slide_target_x;
+            let mut cover_ready = false;
+            let mut cover_hidden = false;
+            if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
+                && !sliding_playlist
+                && let (Some(bytes), Some(hash)) = (
+                    app.player.track.cover.as_deref(),
+                    app.player.track.cover_hash,
+                )
+            {
+                match self.halfblocks.status(
+                    info_panel::cover_content_rect(info_l.cover),
+                    hash,
+                    bytes,
+                ) {
+                    CoverStatus::Ready => cover_ready = true,
+                    CoverStatus::Hidden => cover_hidden = true,
+                    CoverStatus::Loading => {}
+                }
+            }
+            info_panel::render(f, left, size.width, app, cover_ready, cover_hidden);
             if show_right {
                 visual_panel::render(f, lyric_row, spectrum_row, app);
             }
@@ -258,6 +280,20 @@ impl Tui {
                         layout_out.playlist_inner = pl_layout.inner;
                         layout_out.playlist_list_inner = pl_layout.list_inner;
                         playlist_panel::render(f, r, app);
+                        if app.config.graphics_protocol
+                            == crate::data::config::GraphicsProtocol::Halfblocks
+                            && let (Some(bytes), Some(hash)) =
+                                (app.playlist_cover.as_deref(), app.playlist_cover_hash)
+                        {
+                            self.halfblocks.paint_segment(
+                                f.buffer_mut(),
+                                pl_layout.cover_rect,
+                                r,
+                                0,
+                                hash,
+                                bytes,
+                            );
+                        }
                     }
                 }
             }
@@ -281,17 +317,6 @@ impl Tui {
                 Self::render_hint_in_border(f, app, bottom_row, layout_out.left);
             }
 
-            if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
-                && app.overlay == Overlay::Playlist
-                && app.playlist_slide_x == 0
-                && app.playlist_slide_target_x == 0
-                && let (Some(bytes), Some(hash)) =
-                    (app.playlist_cover.as_deref(), app.playlist_cover_hash)
-            {
-                let cover =
-                    playlist_panel::compute_layout(layout_out.playlist_rect, app).cover_rect;
-                self.halfblocks.paint(f.buffer_mut(), cover, hash, bytes);
-            }
             // modals (top-most)
             match app.overlay {
                 Overlay::SettingsModal => {
@@ -2052,7 +2077,7 @@ mod tests {
                 app.player.track.title = "Title".to_string();
                 app.download_state = download;
                 let (_, buf) = render_to_buffer_sized(120, 40, &mut app, |f, app, _| {
-                    info_panel::render(f, f.area(), 120, app);
+                    info_panel::render(f, f.area(), 120, app, false, false);
                 });
                 let meta = info_panel::layout(rect(0, 0, 120, 40), 120).meta;
                 let layout = UiLayout {
@@ -2185,7 +2210,7 @@ mod tests {
                 app.start_cover_anim(from.clone(), to.clone(), dir, started_at);
                 app.last_frame = started_at + Duration::from_millis(110);
                 let (_, original) = render_to_buffer_sized(120, 40, &mut app, |f, app, _| {
-                    info_panel::render(f, f.area(), 120, app);
+                    info_panel::render(f, f.area(), 120, app, false, false);
                 });
                 let mut expected = original.clone();
                 let anim = app.cover_anim.as_ref().unwrap();
