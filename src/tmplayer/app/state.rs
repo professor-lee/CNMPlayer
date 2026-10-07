@@ -640,7 +640,12 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
-        if self.player.playback == PlaybackState::Playing && self.config.visualize.needs_cava() {
+        if self.player.playback == PlaybackState::Playing
+            && !matches!(
+                self.config.visualize,
+                VisualizeMode::Hidden | VisualizeMode::Lyrics
+            )
+        {
             return true;
         }
 
