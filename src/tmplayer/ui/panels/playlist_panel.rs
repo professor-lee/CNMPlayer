@@ -1,11 +1,11 @@
 use crate::tmplayer::app::state::AppState;
 use crate::tmplayer::render::cover_cache::CoverKey;
 use crate::tmplayer::ui::borders::SOLID_BORDER;
-use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const MIN_COVER_LAYOUT_WIDTH: u16 = 2;
@@ -108,7 +108,7 @@ fn placeholder(width: u16, height: u16) -> String {
         + "\n"
 }
 
-fn render_album_cover(f: &mut Frame, area: Rect, app: &mut AppState) {
+fn render_album_cover(buf: &mut Buffer, area: Rect, app: &mut AppState) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -127,19 +127,17 @@ fn render_album_cover(f: &mut Frame, area: Rect, app: &mut AppState) {
         app.queue_cover_ascii_render(key, bytes, '█');
         placeholder(cover.width, cover.height)
     });
-    f.render_widget(
-        Paragraph::new(ascii)
-            .style(
-                Style::default()
-                    .fg(app.theme.color_text())
-                    .bg(app.theme.color_surface()),
-            )
-            .wrap(Wrap { trim: false }),
-        cover,
-    );
+    Paragraph::new(ascii)
+        .style(
+            Style::default()
+                .fg(app.theme.color_text())
+                .bg(app.theme.color_surface()),
+        )
+        .wrap(Wrap { trim: false })
+        .render(cover, buf);
 }
 
-fn render_separator(f: &mut Frame, area: Rect, app: &AppState) {
+fn render_separator(buf: &mut Buffer, area: Rect, app: &AppState) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -150,17 +148,16 @@ fn render_separator(f: &mut Frame, area: Rect, app: &AppState) {
         height: area.height,
     };
     let dashes = usize::from(line_area.width).saturating_sub(2);
-    f.render_widget(
-        Paragraph::new(format!("├{}┤", "─".repeat(dashes))).style(
+    Paragraph::new(format!("├{}┤", "─".repeat(dashes)))
+        .style(
             Style::default()
                 .fg(app.theme.color_subtext())
                 .bg(app.theme.color_surface()),
-        ),
-        line_area,
-    );
+        )
+        .render(line_area, buf);
 }
 
-fn render_playlist_list(f: &mut Frame, area: Rect, app: &mut AppState) {
+fn render_playlist_list(buf: &mut Buffer, area: Rect, app: &mut AppState) {
     let footer_rows = 2;
     let list_rows = area.height.saturating_sub(footer_rows);
     let total = app.playlist_view.items.len();
@@ -207,10 +204,9 @@ fn render_playlist_list(f: &mut Frame, area: Rect, app: &mut AppState) {
             ));
         }
     }
-    f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(app.theme.color_surface())),
-        area,
-    );
+    Paragraph::new(lines)
+        .style(Style::default().bg(app.theme.color_surface()))
+        .render(area, buf);
 }
 
 fn clip_with_ellipsis(text: &str, max_width: usize) -> String {
@@ -245,22 +241,21 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
-pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
-    f.render_widget(ratatui::widgets::Clear, area);
-    f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_set(SOLID_BORDER)
-            .style(
-                Style::default()
-                    .fg(app.theme.color_subtext())
-                    .bg(app.theme.color_surface()),
-            )
-            .title(format!("Playlist ({} tracks)", app.playlist_view.len())),
-        area,
-    );
+pub fn render(buf: &mut Buffer, area: Rect, app: &mut AppState, ascii_cover: bool) {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_set(SOLID_BORDER)
+        .style(
+            Style::default()
+                .fg(app.theme.color_subtext())
+                .bg(app.theme.color_surface()),
+        )
+        .title(format!("Playlist ({} tracks)", app.playlist_view.len()))
+        .render(area, buf);
     let layout = compute_layout(area, app);
-    render_album_cover(f, layout.cover_area, app);
-    render_separator(f, layout.separator_area, app);
-    render_playlist_list(f, layout.list_area, app);
+    if ascii_cover {
+        render_album_cover(buf, layout.cover_area, app);
+    }
+    render_separator(buf, layout.separator_area, app);
+    render_playlist_list(buf, layout.list_area, app);
 }

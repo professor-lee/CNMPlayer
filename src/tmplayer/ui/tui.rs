@@ -10,6 +10,7 @@ use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{event, terminal};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -42,6 +43,21 @@ pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     pub should_quit: bool,
     halfblocks: crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+    sidebar: PlaylistDrawer,
+}
+
+struct PlaylistDrawer {
+    buffer: Buffer,
+    covers: crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+}
+
+impl Default for PlaylistDrawer {
+    fn default() -> Self {
+        Self {
+            buffer: Buffer::default(),
+            covers: crate::tmplayer::render::halfblock_cover::HalfblockCovers::new(),
+        }
+    }
 }
 
 impl Tui {
@@ -53,6 +69,7 @@ impl Tui {
             terminal,
             should_quit: false,
             halfblocks: crate::tmplayer::render::halfblock_cover::HalfblockCovers::new(),
+            sidebar: PlaylistDrawer::default(),
         })
     }
 
@@ -76,7 +93,7 @@ impl Tui {
         Ok(())
     }
     pub fn poll_cover_frames(&mut self) -> bool {
-        self.halfblocks.poll()
+        self.halfblocks.poll() | self.sidebar.covers.poll()
     }
 
     pub fn draw(&mut self, app: &mut AppState) -> Result<UiLayout> {
@@ -102,7 +119,12 @@ impl Tui {
             return Ok(layout_out);
         }
 
-        layout_out = draw_page(&mut self.terminal, app, &mut self.halfblocks)?;
+        layout_out = draw_page(
+            &mut self.terminal,
+            app,
+            &mut self.halfblocks,
+            &mut self.sidebar,
+        )?;
 
         Ok(layout_out)
     }
@@ -168,6 +190,7 @@ fn draw_page<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut AppState,
     halfblocks: &mut crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+    sidebar: &mut PlaylistDrawer,
 ) -> std::result::Result<UiLayout, B::Error> {
     let mut layout_out = UiLayout::default();
     terminal.draw(|f| {
@@ -301,58 +324,44 @@ fn draw_page<B: ratatui::backend::Backend>(
             paint_halfblock_cover(f.buffer_mut(), halfblocks, info_l.cover, app);
         }
 
-        // playlist overlay slides in/out over left
+        // Prepare the sidebar cover at its final size even while the drawer is closed.
+        // This does not change the song cover path above.
+        let pl_layout = playlist_panel::compute_layout(left, app);
+        let mut sidebar_cover = CoverStatus::Loading;
+        if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
+            && !pl_layout.cover_rect.is_empty()
+            && let (Some(bytes), Some(hash)) =
+                (app.playlist_cover.as_deref(), app.playlist_cover_hash)
+        {
+            sidebar_cover = sidebar.covers.status(pl_layout.cover_rect, hash, bytes);
+        }
+
         if app.overlay == Overlay::Playlist || app.playlist_slide_x != app.playlist_slide_target_x {
-            let collapsing = app.overlay != Overlay::Playlist
-                && app.playlist_slide_x > app.playlist_slide_target_x;
-
-            // 动画推进在 AppState::tick 里完成，渲染只读取当前进度。
-            // Slide effect via visible width growth/shrink (x stays at left edge)
-            let full_w = left.width as i16;
-            let visible_w = (full_w + app.playlist_slide_x).clamp(0, full_w) as u16;
-            if visible_w > 0 {
-                let r = Rect {
-                    x: left.x,
-                    y: left.y,
-                    width: visible_w,
-                    height: left.height,
-                };
-                layout_out.playlist_rect = r;
-
-                if collapsing {
-                    // Closing animation only needs the panel shell; skip expensive list/cover rendering.
-                    f.render_widget(ratatui::widgets::Clear, r);
-                    f.render_widget(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_set(crate::tmplayer::ui::borders::SOLID_BORDER)
-                            .style(
-                                Style::default()
-                                    .fg(app.theme.color_subtext())
-                                    .bg(app.theme.color_surface()),
-                            ),
-                        r,
-                    );
-                } else {
-                    let pl_layout = playlist_panel::compute_layout(r, app);
-                    layout_out.playlist_inner = pl_layout.inner;
-                    layout_out.playlist_list_inner = pl_layout.list_inner;
-                    playlist_panel::render(f, r, app);
-                    if app.config.graphics_protocol
-                        == crate::data::config::GraphicsProtocol::Halfblocks
-                        && let (Some(bytes), Some(hash)) =
-                            (app.playlist_cover.as_deref(), app.playlist_cover_hash)
-                    {
-                        halfblocks.paint_segment(
-                            f.buffer_mut(),
-                            pl_layout.cover_rect,
-                            r,
-                            0,
-                            hash,
-                            bytes,
-                        );
-                    }
+            let dx = app.playlist_slide_x.clamp(-(left.width as i16), 0);
+            let visible = translated_clip(left, dx, left);
+            layout_out.playlist_rect = visible;
+            if !visible.is_empty() {
+                sidebar.buffer.resize(left);
+                sidebar.buffer.reset();
+                let surface = Style::default().bg(app.theme.color_surface());
+                sidebar.buffer.set_style(left, surface);
+                playlist_panel::render(
+                    &mut sidebar.buffer,
+                    left,
+                    app,
+                    sidebar_cover == CoverStatus::Loading,
+                );
+                if sidebar_cover == CoverStatus::Ready
+                    && let (Some(bytes), Some(hash)) =
+                        (app.playlist_cover.as_deref(), app.playlist_cover_hash)
+                {
+                    sidebar
+                        .covers
+                        .paint(&mut sidebar.buffer, pl_layout.cover_rect, hash, bytes);
                 }
+                paint_drawer(f.buffer_mut(), &sidebar.buffer, dx, visible);
+                layout_out.playlist_inner = translated_clip(pl_layout.inner, dx, visible);
+                layout_out.playlist_list_inner = translated_clip(pl_layout.list_inner, dx, visible);
             }
         }
 
@@ -396,6 +405,39 @@ fn draw_page<B: ratatui::backend::Backend>(
         }
     })?;
     Ok(layout_out)
+}
+
+fn translated_clip(area: Rect, dx: i16, clip: Rect) -> Rect {
+    let x = i32::from(area.x) + i32::from(dx);
+    let start = x.max(i32::from(clip.left()));
+    let end = (x + i32::from(area.width)).min(i32::from(clip.right()));
+    let top = area.top().max(clip.top());
+    let bottom = area.bottom().min(clip.bottom());
+    if start >= end || top >= bottom {
+        return Rect::default();
+    }
+    Rect::new(start as u16, top, (end - start) as u16, bottom - top)
+}
+
+fn paint_drawer(target: &mut Buffer, source: &Buffer, dx: i16, clip: Rect) {
+    use unicode_width::UnicodeWidthStr;
+
+    let clip = translated_clip(source.area, dx, clip.intersection(target.area));
+    for y in clip.top()..clip.bottom() {
+        for x in clip.left()..clip.right() {
+            let source_x = (i32::from(x) - i32::from(dx)) as u16;
+            let cell = &source[(source_x, y)];
+            let dest = &mut target[(x, y)];
+            dest.clone_from(cell);
+            // Never expose half a wide title character at either clipping boundary.
+            let cut_left = x == clip.left()
+                && source_x > source.area.left()
+                && source[(source_x - 1, y)].symbol().width() > 1;
+            if cut_left || usize::from(x) + cell.symbol().width() > usize::from(clip.right()) {
+                dest.set_char(' ');
+            }
+        }
+    }
 }
 
 fn paint_halfblock_cover(
@@ -2260,12 +2302,13 @@ mod tests {
         app.player.track.cover_hash = Some(42);
         let mut halfblocks = HalfblockCovers::new();
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        let layout = draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+        let mut sidebar = PlaylistDrawer::default();
+        let layout = draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
         let loading = terminal.backend().buffer().clone();
 
         // Without polling the worker, Halfblocks must keep the existing ASCII fallback.
         app.config.graphics_protocol = GraphicsProtocol::Off;
-        draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+        draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
         assert_eq!(terminal.backend().buffer(), &loading);
         app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
         let content = info_panel::cover_content_rect(
@@ -2282,7 +2325,7 @@ mod tests {
             halfblocks.poll();
             std::thread::sleep(Duration::from_millis(1));
         }
-        draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+        draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
         let closed = terminal.backend().buffer().clone();
         assert_ne!(closed, loading, "fixture must distinguish chafa from ASCII");
 
@@ -2299,7 +2342,8 @@ mod tests {
             };
             for visible in [1, 8, 16, 24, 32, 39, 40] {
                 app.playlist_slide_x = visible - layout.left.width as i16;
-                let frame = draw_page(&mut terminal, &mut app, &mut halfblocks).unwrap();
+                let frame =
+                    draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
                 let buffer = terminal.backend().buffer();
                 for y in content.top()..content.bottom() {
                     for x in content.left()..content.right() {
@@ -2317,6 +2361,198 @@ mod tests {
                             );
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
+        use crate::data::config::GraphicsProtocol;
+        use crate::tmplayer::data::playlist::PlaylistItem;
+        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
+        use ratatui::backend::TestBackend;
+        use std::io::Cursor;
+        use std::time::{Duration, Instant};
+
+        let mut app = state(Overlay::None);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        app.config.show_hints = false;
+        let image = image::RgbImage::from_fn(24, 24, |x, y| {
+            image::Rgb([(x * 9) as u8, (y * 9) as u8, ((x + y) * 5) as u8])
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        app.playlist_cover = Some(encoded.into_inner());
+        app.playlist_cover_hash = Some(91);
+        app.playlist_view.items = (0..12)
+            .map(|i| PlaylistItem {
+                song_id: Some(i.to_string()),
+                title: format!("Track {i}"),
+            })
+            .collect();
+        let mut song_covers = HalfblockCovers::new();
+        let mut drawer = PlaylistDrawer::default();
+
+        // Resize uses a new final-size cover, not an animation-sized image.
+        for (width, height) in [(120, 40), (90, 30)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            app.overlay = Overlay::None;
+            app.playlist_slide_x = 0;
+            app.playlist_slide_target_x = 0;
+            let closed_layout =
+                draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+            let background = terminal.backend().buffer().clone();
+            let final_layout = playlist_panel::compute_layout(closed_layout.left, &app);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !drawer.covers.poll() {
+                assert!(
+                    Instant::now() < deadline,
+                    "closed sidebar did not prewarm its cover"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            app.overlay = Overlay::Playlist;
+            draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+            let fully_open = terminal.backend().buffer().clone();
+            let cover_cell = &fully_open[(final_layout.cover_rect.x, final_layout.cover_rect.y)];
+            assert_ne!(
+                cover_cell.fg,
+                app.theme.color_text(),
+                "prewarmed chafa is not ASCII"
+            );
+
+            for opening in [true, false] {
+                app.overlay = if opening {
+                    Overlay::Playlist
+                } else {
+                    Overlay::None
+                };
+                app.playlist_slide_target_x = if opening {
+                    0
+                } else {
+                    -(closed_layout.left.width as i16)
+                };
+                for dx in [-(closed_layout.left.width as i16), -17, -8, -1, 0] {
+                    app.playlist_slide_x = dx;
+                    let frame =
+                        draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+                    let actual = terminal.backend().buffer();
+                    for y in closed_layout.left.top()..closed_layout.left.bottom() {
+                        for x in closed_layout.left.left()..closed_layout.left.right() {
+                            if contains(frame.playlist_rect, x, y) {
+                                let source_x = (i32::from(x) - i32::from(dx)) as u16;
+                                assert_eq!(
+                                    actual[(x, y)],
+                                    fully_open[(source_x, y)],
+                                    "drawer cell must translate, not rescale: opening={opening}, dx={dx}"
+                                );
+                            } else {
+                                assert_eq!(
+                                    actual[(x, y)],
+                                    background[(x, y)],
+                                    "outside drawer is unchanged"
+                                );
+                            }
+                        }
+                    }
+                    if !frame.playlist_list_inner.is_empty() {
+                        let hit = hit_test(
+                            &frame,
+                            &app,
+                            frame.playlist_list_inner.x,
+                            frame.playlist_list_inner.y,
+                        );
+                        assert_eq!(hit, Some(Action::PlaylistSelect(app.playlist_list_scroll)),);
+                        assert_eq!(
+                            wheel_over_playlist(
+                                &frame,
+                                &app,
+                                frame.playlist_rect.x,
+                                frame.playlist_rect.y
+                            ),
+                            opening
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drawer_clipping_does_not_expose_half_a_wide_character() {
+        let mut source = Buffer::empty(rect(0, 0, 6, 1));
+        source.set_string(0, 0, "中AB文", Style::default());
+        let mut target = Buffer::empty(rect(0, 0, 6, 1));
+        target.set_string(0, 0, "......", Style::default());
+        paint_drawer(&mut target, &source, -1, rect(0, 0, 3, 1));
+        assert_eq!(line_text(&target, 0), " AB...");
+        paint_drawer(&mut target, &source, 0, rect(0, 0, 1, 1));
+        assert_eq!(
+            target[(0, 0)].symbol(),
+            " ",
+            "right-edge half glyph stays blank"
+        );
+    }
+
+    #[test]
+    fn drawer_cold_cover_uses_fixed_placeholder_then_hides_after_ten_failures() {
+        use crate::data::config::GraphicsProtocol;
+        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
+        use ratatui::backend::TestBackend;
+        use std::time::{Duration, Instant};
+
+        let mut app = state(Overlay::Playlist);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        app.config.show_hints = false;
+        app.playlist_cover = Some(b"invalid image".to_vec());
+        app.playlist_cover_hash = Some(19);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut song_covers = HalfblockCovers::new();
+        let mut drawer = PlaylistDrawer::default();
+        let open = draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+        let cover = playlist_panel::compute_layout(open.left, &app).cover_rect;
+        let loading = terminal.backend().buffer().clone();
+        for y in cover.top()..cover.bottom() {
+            for x in cover.left()..cover.right() {
+                assert_eq!(loading[(x, y)].symbol(), "█");
+            }
+        }
+
+        // Repeated frames without collecting the result remain the same-size placeholder.
+        for dx in [-17, -8, 0] {
+            app.playlist_slide_x = dx;
+            let frame = draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+            let exposed = translated_clip(cover, dx, frame.playlist_rect);
+            for y in exposed.top()..exposed.bottom() {
+                for x in exposed.left()..exposed.right() {
+                    assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), "█");
+                }
+            }
+        }
+        for _ in 0..10 {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !drawer.covers.poll() {
+                assert!(Instant::now() < deadline, "cover failure result timed out");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+        }
+        for dx in [0, -8, -17] {
+            app.playlist_slide_x = dx;
+            let frame = draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+            let exposed = translated_clip(cover, dx, frame.playlist_rect);
+            for y in exposed.top()..exposed.bottom() {
+                for x in exposed.left()..exposed.right() {
+                    let cell = &terminal.backend().buffer()[(x, y)];
+                    assert_eq!(
+                        cell.symbol(),
+                        " ",
+                        "failed cover must not keep its ASCII placeholder"
+                    );
+                    assert_eq!(cell.bg, app.theme.color_surface());
                 }
             }
         }

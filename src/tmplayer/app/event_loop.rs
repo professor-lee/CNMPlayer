@@ -627,7 +627,9 @@ async fn handle_action(
                 }
 
                 app.overlay = Overlay::Playlist;
-                app.playlist_slide_x = -(layout.left_width as i16);
+                if app.playlist_slide_x == app.playlist_slide_target_x {
+                    app.playlist_slide_x = -(layout.left_width as i16);
+                }
                 app.start_playlist_slide(0);
             }
         }
