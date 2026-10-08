@@ -560,11 +560,11 @@ impl AppState {
         });
     }
 
-    pub fn tick(&mut self, now: Instant) {
+    pub fn tick(&mut self, now: Instant) -> bool {
         // 必须在覆盖 last_frame 之前取，否则帧间隔恒为 0。
         let dt = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
-        self.tick_overlay_transition(now);
+        let changed = self.tick_overlay_transition(now);
 
         if !self.cover_render_inflight.borrow().is_empty() {
             loop {
@@ -607,6 +607,7 @@ impl AppState {
             self.player.playback == PlaybackState::Playing,
             dt,
         );
+        changed
     }
 
     pub fn sync_overlay_transition(&mut self, now: Instant) {
@@ -647,13 +648,14 @@ impl AppState {
         );
     }
 
-    fn tick_overlay_transition(&mut self, now: Instant) {
-        self.overlay_motion.tick(now);
+    fn tick_overlay_transition(&mut self, now: Instant) -> bool {
+        let changed = self.overlay_motion.tick(now);
         if self.overlay_close_pending && !self.overlay_motion.is_running() {
             self.overlay = Overlay::None;
             self.overlay_seen = Overlay::None;
             self.overlay_close_pending = false;
         }
+        changed
     }
 
     /// 启动一次侧边栏滑入/滑出。记录当前位置作为起点，因此支持动画中途反向。
@@ -695,6 +697,10 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
+        if self.overlay_motion.is_running() {
+            return true;
+        }
+
         if self.player.playback == PlaybackState::Playing
             && !matches!(
                 self.config.visualize,

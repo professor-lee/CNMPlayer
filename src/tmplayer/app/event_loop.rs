@@ -348,8 +348,8 @@ async fn sync_from_host_bridge(
 
 fn tick_visual_state(app: &mut AppState, now: Instant) -> bool {
     let scope_before = app.scope_gain.value();
-    app.tick(now);
-    scope_before != app.scope_gain.value() || app.should_continuous_redraw()
+    let state_changed = app.tick(now);
+    state_changed || scope_before != app.scope_gain.value() || app.should_continuous_redraw()
 }
 
 pub async fn run<B: Backend>(
@@ -1550,6 +1550,40 @@ mod tests {
         assert!(!tick_visual_state(
             &mut app,
             settled + Duration::from_millis(16)
+        ));
+    }
+    #[test]
+    fn overlay_motion_marks_frames_dirty_without_input() {
+        let mut app = AppState::new(
+            Config::default(),
+            crate::ui::theme::Theme::default(),
+            crate::data::config::Language::En,
+        );
+        let now = Instant::now();
+        app.overlay = Overlay::SettingsModal;
+        app.sync_overlay_transition(now);
+
+        assert!(
+            tick_visual_state(&mut app, now + Duration::from_millis(90)),
+            "opening an overlay must schedule animation frames"
+        );
+        assert!(tick_visual_state(
+            &mut app,
+            now + Duration::from_millis(220)
+        ));
+        assert_eq!(app.overlay_progress(), 1.0);
+        assert!(!app.should_continuous_redraw());
+
+        app.begin_overlay_close();
+        let close_now = Instant::now() + Duration::from_millis(220);
+        assert!(
+            tick_visual_state(&mut app, close_now),
+            "closing an overlay must schedule its final frame"
+        );
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!tick_visual_state(
+            &mut app,
+            close_now + Duration::from_millis(50)
         ));
     }
 
