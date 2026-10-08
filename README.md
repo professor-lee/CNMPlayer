@@ -123,6 +123,7 @@ The flat player bar keeps its mouse targets (previous, play-pause, next, like, r
 - Themes: loaded dynamically from `themes/*.toml` — 20 built-ins (`frappe` by default, plus `system`, the other Catppuccin variants, `ayu_light`, `ayu_mirage`, `ocean`, `everforest_dark`, `everforest_light`, `monokai_pro`, `nord`, `rose_pine_moon`, `solarized_dark`, `solarized_light`, `tomorrow_light`, `tomorrow_night`, `zenburn`, `zinc_dark`, `zinc_light`); drop in your own toml and it joins the cycle. Files that fail validation are skipped, and a broken selected theme falls back to the default
 - UI language: `zh` / `en`
 - Startup: a loading page (ASCII title plus progress bar, no text) appears first; login restore and recommendation fetches run in the background step by step, and an unusable saved session hands over to the login page. Playback-memory restoration is bounded by the same initialization deadline.
+- The host refreshes playback time and progress on its idle maintenance tick even when cava is unavailable or visualization is set to lyrics/hidden.
 - Transparent background, album-cover border and hint lines
 - 22 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
 - About modal with braille art, and a hidden easter egg inside it (the `easter-egg` cargo feature, compiled in by default and removable with `--no-default-features`)
@@ -324,12 +325,12 @@ Fullscreen page:
 
 - The host ignores the entry keybind while the terminal is narrower than 50 columns
 - `P` opens the playlist overlay, `Up` / `Down` select, `Enter` plays, `Esc` closes it
-- `T` opens the settings modal, `Ctrl+K` the keybind list, `About` is reachable from the settings modal
+- `T` opens the settings modal, `Ctrl+K` the keybind list, `About` is reachable from the settings modal; opening and closing animations complete without additional input, including while playback is paused.
 - `E` opens the EQ modal; arrows move and adjust a band, `Alt+R` resets it, `Esc` / `E` closes it
 - `Up` / `Down` adjust the volume, `Left` / `Right` change track, `Space` plays or pauses, `M` cycles the repeat mode, `L` likes the song
 - `Ctrl+F` or `Esc` returns to the host; the mouse clicks the control buttons, the progress bar, the volume bar (click, or press and drag), the like glyph and the playlist rows; clicking an artist name (each name of a multi-artist line is its own target) or the album name leaves the fullscreen page for that artist's or album's page in the host; an open overlay takes the wheel for row focus, and its rows focus on a single click and activate on a double click (the EQ modal sets a band on click)
 - If `small_window_display` is on and the terminal drops below 50 columns or 12 rows, the fullscreen page returns to the host by itself
-- Entering and leaving fullscreen slides the real two-column player layout up from the bottom like a drawer (and back down on exit). Cover preparation starts during entry; its transient preview and final chafa surface belong to the same fullscreen instance.
+- Entering and leaving fullscreen slides the real two-column player layout up from the bottom like a drawer (and back down on exit). Cover preparation starts during entry; its transient preview and final chafa surface belong to the same fullscreen instance. Mouse controls are active as soon as the entry transition finishes.
 - The host and fullscreen page share one Terminal and alternate screen. Uncovered rows show a temporary host snapshot, dropped after entry. A fresh host view is prepared offscreen before exit and dropped when the transition ends; no host frame is written to the original terminal screen.
 
 ## Notes
