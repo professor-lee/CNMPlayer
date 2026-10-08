@@ -364,7 +364,8 @@ where
     // No screen-mode changes here. Tui owns only fullscreen rendering resources.
     let mut tui = Tui::new(terminal, host_bridge.wake_signal());
     app.pcm_ring = Some(host_bridge.pcm_ring());
-    play_page_transition(&mut tui, app, host_bridge, true, host_snapshot).await?;
+    let mut last_layout =
+        play_page_transition(&mut tui, app, host_bridge, true, host_snapshot).await?;
 
     // Prefer cava for system-wide visualization (keeps our renderer/style; cava only provides bars).
     // If cava isn't installed, we leave the spectrum empty.
@@ -376,8 +377,6 @@ where
     let mut last_host_sync = Instant::now() - Duration::from_millis(50);
     let wake = host_bridge.wake_signal();
     let mut clock = FrameClock::new(app.idle_render_fps(), Instant::now());
-
-    let mut last_layout = UiLayout::default();
 
     let desired = desired_cava_config(app, &last_layout);
     cava.set_desired(desired);
@@ -522,7 +521,9 @@ where
     let transition_result = if loop_result.is_ok() {
         async {
             let snapshot = host_bridge.host_snapshot(tui.terminal_mut())?;
-            play_page_transition(&mut tui, app, host_bridge, false, snapshot).await
+            play_page_transition(&mut tui, app, host_bridge, false, snapshot)
+                .await
+                .map(|_| ())
         }
         .await
     } else {
@@ -551,7 +552,7 @@ async fn play_page_transition<B: Backend>(
     host: &mut impl HostPlaybackBridge,
     opening: bool,
     mut host_snapshot: ratatui::buffer::Buffer,
-) -> Result<()>
+) -> Result<UiLayout>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
@@ -562,7 +563,7 @@ where
     let mut started = false;
     let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
     let mut metadata = None;
-    loop {
+    let layout = loop {
         host.tick().await;
         apply_host_runtime_snapshot(app, host.runtime_snapshot());
         let signature = host.metadata_signature();
@@ -579,7 +580,7 @@ where
         tui.poll_cover_frames();
         clock.mark_dirty();
         if clock.due(now) {
-            tui.draw_reveal(app, &host_snapshot, motion.value())?;
+            let layout = tui.draw_reveal(app, &host_snapshot, motion.value())?;
             let presented = Instant::now();
             clock.presented(presented);
             if !started {
@@ -593,7 +594,7 @@ where
                 );
                 started = true;
             } else if !motion.is_running() {
-                break;
+                break layout;
             }
         }
         let wait = clock
@@ -601,9 +602,9 @@ where
             .unwrap_or(now)
             .saturating_duration_since(Instant::now());
         compio::time::sleep(wait).await;
-    }
+    };
     // Snapshot ownership ends here, before stable Fullscreen or Host resumes.
-    Ok(())
+    Ok(layout)
 }
 
 async fn handle_action(
