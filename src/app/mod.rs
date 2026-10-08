@@ -8987,16 +8987,10 @@ impl App {
         let Some(url) = self.browse.private_roam.cover_url.clone() else {
             return;
         };
-        if let Some(tile) = self
-            .browse
-            .home
-            .tiles
-            .iter_mut()
-            .find(|tile| tile.title == "私人漫游")
-        {
-            if tile.cover.url.as_deref() != Some(url.as_str()) {
-                tile.cover.load(self.api.clone(), url);
-            }
+        if let Some(tile) = self.browse.home.tiles.iter_mut().find(|tile| {
+            tile.title == "私人漫游" && tile.cover.url.as_deref() != Some(url.as_str())
+        }) {
+            tile.cover.load(self.api.clone(), url);
         }
     }
 
@@ -11162,7 +11156,7 @@ mod tests {
             for _ in 0..3 {
                 let (mut socket, _) = listener.accept().unwrap();
                 let mut request = [0; 2048];
-                socket.read(&mut request).unwrap();
+                assert!(socket.read(&mut request).unwrap() > 0);
                 write!(
                     socket,
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
