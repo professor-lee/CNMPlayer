@@ -1,7 +1,7 @@
 use crate::app::SIDEBAR_ANIM_DURATION;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
-use crate::render::motion::{Curve, MODAL_ANIM_DURATION, Toggle, Transition};
+use crate::render::motion::{Curve, Transition};
 use crate::tmplayer::audio::smoother::Ema;
 use crate::tmplayer::data::playlist::Playlist;
 use crate::tmplayer::render::cover_cache::CoverCache;
@@ -356,9 +356,6 @@ pub struct AppState {
     cover_render_inflight: RefCell<HashSet<CoverKey>>,
 
     pub overlay: Overlay,
-    pub overlay_motion: Toggle,
-    pub overlay_close_pending: bool,
-    overlay_seen: Overlay,
 
     pub settings_selected: usize,
     pub bar_settings_selected: usize,
@@ -478,9 +475,6 @@ impl AppState {
             cover_render_rx,
             cover_render_inflight: RefCell::new(HashSet::new()),
             overlay: Overlay::None,
-            overlay_motion: Toggle::new(false),
-            overlay_close_pending: false,
-            overlay_seen: Overlay::None,
             settings_selected: 0,
             bar_settings_selected: 0,
             lyrics_settings_selected: 0,
@@ -560,11 +554,10 @@ impl AppState {
         });
     }
 
-    pub fn tick(&mut self, now: Instant) -> bool {
+    pub fn tick(&mut self, now: Instant) {
         // 必须在覆盖 last_frame 之前取，否则帧间隔恒为 0。
         let dt = now.saturating_duration_since(self.last_frame);
         self.last_frame = now;
-        let changed = self.tick_overlay_transition(now);
 
         if !self.cover_render_inflight.borrow().is_empty() {
             loop {
@@ -607,51 +600,6 @@ impl AppState {
             self.player.playback == PlaybackState::Playing,
             dt,
         );
-        changed
-    }
-
-    pub fn sync_overlay_transition(&mut self, now: Instant) {
-        if self.overlay == self.overlay_seen {
-            return;
-        }
-        self.overlay_seen = self.overlay;
-        if self.overlay != Overlay::None {
-            self.overlay_close_pending = false;
-            self.overlay_motion
-                .set(true, now, MODAL_ANIM_DURATION, Curve::EaseOut);
-        } else if !self.overlay_close_pending {
-            self.overlay_motion
-                .set(false, now, MODAL_ANIM_DURATION, Curve::EaseOut);
-        }
-    }
-
-    pub fn overlay_progress(&self) -> f32 {
-        if self.overlay != Overlay::None
-            && self.overlay_seen == Overlay::None
-            && !self.overlay_close_pending
-        {
-            return 1.0;
-        }
-        self.overlay_motion.value().clamp(0.0, 1.0)
-    }
-
-    pub fn begin_overlay_close(&mut self) {
-        if self.overlay == Overlay::None {
-            return;
-        }
-        self.overlay_close_pending = true;
-        self.overlay_motion
-            .set(false, Instant::now(), MODAL_ANIM_DURATION, Curve::EaseInOut);
-    }
-
-    fn tick_overlay_transition(&mut self, now: Instant) -> bool {
-        let changed = self.overlay_motion.tick(now);
-        if self.overlay_close_pending && !self.overlay_motion.is_running() {
-            self.overlay = Overlay::None;
-            self.overlay_seen = Overlay::None;
-            self.overlay_close_pending = false;
-        }
-        changed
     }
 
     /// 启动一次侧边栏滑入/滑出。记录当前位置作为起点，因此支持动画中途反向。
@@ -693,10 +641,6 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
-        if self.overlay_motion.is_running() {
-            return true;
-        }
-
         if self.player.playback == PlaybackState::Playing
             && !matches!(
                 self.config.visualize,
@@ -806,7 +750,7 @@ impl AppState {
     }
 
     pub fn close_overlay(&mut self) {
-        self.begin_overlay_close();
+        self.overlay = Overlay::None;
     }
 }
 
@@ -1019,23 +963,32 @@ mod tests {
             );
         }
     }
+
     #[test]
-    fn settings_overlay_keeps_content_during_open_and_close_transition() {
+    fn settings_close_releases_overlay_immediately() {
         let mut app = AppState::new(
             Config::default(),
             crate::ui::theme::Theme::default(),
             Language::En,
         );
-        let now = Instant::now();
-        app.overlay = Overlay::SettingsModal;
-        app.sync_overlay_transition(now);
-        assert_eq!(app.overlay_progress(), 0.0);
-        app.tick(now + Duration::from_millis(90));
-        assert!(app.overlay_progress() > 0.0 && app.overlay_progress() < 1.0);
-        app.begin_overlay_close();
-        assert_eq!(app.overlay, Overlay::SettingsModal);
-        app.tick(Instant::now() + Duration::from_millis(220));
-        assert_eq!(app.overlay, Overlay::None);
+        for overlay in [
+            Overlay::SettingsModal,
+            Overlay::BarSettingsModal,
+            Overlay::LyricsSettingsModal,
+            Overlay::DownloadSettingsModal,
+            Overlay::DownloadPathEditModal,
+            Overlay::HelpModal,
+            Overlay::AboutModal,
+            Overlay::EqModal,
+        ] {
+            app.overlay = overlay;
+            app.close_overlay();
+            assert_eq!(
+                app.overlay,
+                Overlay::None,
+                "{overlay:?} must close without a tick"
+            );
+        }
     }
 
     #[test]
@@ -1048,22 +1001,10 @@ mod tests {
         for parent in [Overlay::None, Overlay::SettingsModal] {
             app.overlay = parent;
             app.toggle_help_modal();
-            let now = Instant::now();
-            app.sync_overlay_transition(now);
-            app.tick(now + MODAL_ANIM_DURATION);
             assert_eq!(app.overlay, Overlay::HelpModal);
 
             app.toggle_help_modal();
-            assert_eq!(
-                app.overlay,
-                Overlay::HelpModal,
-                "keep content for the closing animation"
-            );
-            assert!(app.overlay_close_pending);
-            app.toggle_help_modal();
-            app.tick(Instant::now() + MODAL_ANIM_DURATION);
             assert_eq!(app.overlay, Overlay::None);
-            assert!(!app.overlay_close_pending);
         }
     }
 }

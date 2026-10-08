@@ -1,6 +1,5 @@
 use crate::app::{App, HitRect, Overlay};
 use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
-use crate::render::motion::reveal_centered_rect;
 use crate::tmplayer::data::about::{BrailleImage, about_info};
 use crate::tmplayer::ui::borders::SOLID_BORDER;
 use ratatui::Frame;
@@ -21,10 +20,7 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let area = reveal_centered_rect(centered_rect(70, 20, size), app.settings.motion.value());
-    if area.is_empty() {
-        return;
-    }
+    let area = centered_rect(70, 20, size);
 
     frame.render_widget(Clear, area);
 
@@ -772,10 +768,7 @@ fn scrolled_rows(total: usize, visible_rows: usize, scroll: usize) -> Vec<(usize
 }
 
 fn draw_about_modal(frame: &mut Frame, app: &mut App, size: Rect) {
-    let area = reveal_centered_rect(centered_rect(70, 22, size), app.settings.motion.value());
-    if area.is_empty() {
-        return;
-    }
+    let area = centered_rect(70, 22, size);
     frame.render_widget(Clear, area);
 
     let block = Block::default()

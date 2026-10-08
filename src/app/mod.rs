@@ -207,12 +207,6 @@ pub enum Overlay {
     SearchBox,
 }
 
-impl Overlay {
-    pub(crate) fn is_settings(self) -> bool {
-        !matches!(self, Self::SearchBox)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmallWindowMode {
     Flat,
@@ -3303,7 +3297,7 @@ impl App {
     pub fn flush_persistence(&self) -> Result<()> {
         self.persistence.flush().map_err(anyhow::Error::msg)
     }
-    pub async fn tick(&mut self) -> bool {
+    pub async fn tick(&mut self) {
         if let Some(error) = self.persistence.pending_error() {
             self.set_runtime_status(format!(
                 "{}: {error}",
@@ -3320,7 +3314,6 @@ impl App {
         self.tick_vu_meter(now);
         self.tick_search_box_animation(now);
         self.tick_home_sidebar_animation(now);
-        let settings_changed = self.tick_settings_animation(now);
         self.tick_home_sidebar_fetch();
         self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
@@ -3335,20 +3328,19 @@ impl App {
 
         if self.page == Page::Login && self.login.method == LoginMethod::Qr {
             if self.login.qr_key.trim().is_empty() {
-                return settings_changed;
+                return;
             }
 
             let now = Instant::now();
             if let Some(last) = self.qr_last_poll_at
                 && now.duration_since(last) < Duration::from_millis(1400)
             {
-                return settings_changed;
+                return;
             }
 
             self.qr_last_poll_at = Some(now);
             self.check_qr_status_and_login().await;
         }
-        settings_changed
     }
 
     pub async fn handle_key(&mut self, key: KeyEvent) {
@@ -3365,10 +3357,6 @@ impl App {
 
         if self.is_small_window_context() {
             self.handle_small_window_key(key).await;
-            return;
-        }
-
-        if self.settings.close_pending {
             return;
         }
 
@@ -3448,10 +3436,6 @@ impl App {
         // （卡住会让 should_continuous_redraw 一直按高帧率重绘）。
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
             self.page_lyrics_release();
-            return;
-        }
-
-        if self.settings.close_pending {
             return;
         }
 
@@ -3807,9 +3791,6 @@ impl App {
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
     pub fn should_continuous_redraw(&self) -> bool {
-        if self.settings.motion.is_running() {
-            return true;
-        }
         if self.is_seeking() || self.page_lyrics_grab.is_some() {
             return true;
         }
@@ -3992,7 +3973,7 @@ impl App {
     /// 进入小窗口时关闭设置/搜索等弹窗与侧边栏，并清理隐藏页面的命中区域。
     fn close_panels_for_small_window(&mut self) {
         if self.overlay.is_some() {
-            self.dismiss_overlay();
+            self.close_overlay();
         }
         self.browse.home_sidebar.expanded = false;
         self.browse.home_sidebar.motion = Toggle::new(false);
@@ -4070,17 +4051,6 @@ impl App {
     fn tick_home_sidebar_animation(&mut self, now: Instant) {
         self.browse.home_sidebar.motion.tick(now);
         self.browse.home_sidebar.trail.tick(now);
-    }
-
-    fn tick_settings_animation(&mut self, now: Instant) -> bool {
-        let changed = self
-            .settings
-            .tick_motion(self.overlay.is_some_and(Overlay::is_settings), now);
-        if self.settings.close_pending && !self.settings.motion.is_running() {
-            self.dismiss_overlay();
-            return true;
-        }
-        changed
     }
 
     fn animate_home_sidebar(&mut self) {
@@ -6606,7 +6576,6 @@ impl App {
     fn open_settings(&mut self) {
         self.settings.selected = 0;
         self.settings.keybind_rebinding = None;
-        self.settings.open_motion(Instant::now());
         self.overlay = Some(Overlay::Settings);
     }
 
@@ -6614,7 +6583,6 @@ impl App {
         self.settings.keybind_selected = 0;
         self.settings.keybind_rebinding = None;
         self.settings.keybind_scroll = 0;
-        self.settings.open_motion(Instant::now());
         self.overlay = Some(Overlay::SettingsKeybinds);
     }
 
@@ -7720,7 +7688,7 @@ impl App {
 
     fn begin_startup_loading(&mut self, target: Page) {
         self.page = Page::Loading;
-        self.dismiss_overlay();
+        self.close_overlay();
         self.startup.begin(target);
     }
     fn finish_startup_loading(&mut self) {
@@ -7915,23 +7883,10 @@ impl App {
             Curve::EaseOut,
         );
         self.overlay = Some(Overlay::SearchBox);
-        self.settings.reset_motion();
     }
 
     fn close_overlay(&mut self) {
-        if self.overlay.is_some_and(Overlay::is_settings) {
-            self.settings.begin_close(Instant::now());
-            self.settings.keybind_rebinding = None;
-            self.settings.last_click = None;
-            self.clear_settings_item_hits();
-        } else {
-            self.dismiss_overlay();
-        }
-    }
-
-    fn dismiss_overlay(&mut self) {
         self.overlay = None;
-        self.settings.reset_motion();
         self.settings.keybind_rebinding = None;
         self.input.search_motion.set(
             false,
@@ -8384,7 +8339,7 @@ impl App {
 
     async fn logout_to_login(&mut self) {
         self.downloads.pending_intents.invalidate_session();
-        self.dismiss_overlay();
+        self.close_overlay();
         self.page = Page::Login;
         self.search_return_page = Page::Home;
         self.input.search_box_input.clear();
