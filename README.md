@@ -124,6 +124,7 @@ The flat player bar keeps its mouse targets (previous, play-pause, next, like, r
 - UI language: `zh` / `en`
 - Startup: a loading page (ASCII title plus progress bar, no text) appears first; login restore and recommendation fetches run in the background step by step, and an unusable saved session hands over to the login page. Playback-memory restoration is bounded by the same initialization deadline.
 - The host refreshes playback time and progress on its idle maintenance tick even when cava is unavailable or visualization is set to lyrics/hidden.
+- Host settings and their subpages share fullscreen's 180 ms center-expansion opening and closing animations. Closing keeps the modal visible until its final frame, then restores the page beneath it.
 - Transparent background, album-cover border and hint lines
 - 22 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
 - About modal with braille art, and a hidden easter egg inside it (the `easter-egg` cargo feature, compiled in by default and removable with `--no-default-features`)
@@ -291,7 +292,7 @@ The fullscreen-only slots are inert in the host: there they fall through to page
 
 - `Esc` — close the current overlay, or go back from the current page
 - `Ctrl+C` — quit from any state
-- `Ctrl+K` — open the keybind list
+- `Ctrl+K` — open the keybind list; press it again inside the list to close the whole modal on either UI, not return to settings. `Esc` retains its parent-navigation behavior.
 - `Ctrl+Up` / `Ctrl+Down` — switch the sidebar playlist section (Created / Collected) while the sidebar is open
 - `Ctrl+Alt+R` — restore the default keybinds (inside the keybind modal)
 - `F1` / `F2` / `F3` — login method (QR / account / phone)
@@ -319,7 +320,7 @@ Settings modal:
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` move, `Left` / `Right` / `Enter` change a value, `Esc` steps back
 - Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the lyrics subpage, where a single click flips the switch
-- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input
+- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding.
 
 Fullscreen page:
 
