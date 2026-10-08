@@ -67,6 +67,9 @@ where
     pub fn terminal_mut(&mut self) -> &mut Terminal<B> {
         self.terminal
     }
+    pub fn request_quit(&mut self) {
+        self.should_quit = true;
+    }
 
     pub fn area(&mut self) -> std::result::Result<Rect, B::Error> {
         self.terminal.autoresize()?;
@@ -77,10 +80,6 @@ where
     }
 
     pub fn draw(&mut self, app: &mut AppState) -> Result<UiLayout> {
-        if app.toast.as_ref().map(|(m, _)| m.as_str()) == Some("Bye") {
-            self.should_quit = true;
-        }
-
         // 点击作者名/专辑名这类"退出后交给宿主"的请求：请求一旦写下就退出。
         // 退出判定只在 draw 里做一次，避免每条事件分支各自记一遍。
         if app.exit_request.is_some() {

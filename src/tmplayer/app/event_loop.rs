@@ -410,12 +410,20 @@ where
                 match event::read()? {
                     Event::Key(k) => {
                         let action = map_key(k, app.overlay, &app.config);
+                        let exits_fullscreen = matches!(action, Action::Quit);
                         handle_action(app, host_bridge, action, &last_layout).await?;
+                        if exits_fullscreen || app.exit_request.is_some() {
+                            tui.request_quit();
+                        }
                         state_changed = true;
                     }
                     Event::Mouse(m) => {
                         let action = map_mouse(m);
+                        let exits_fullscreen = matches!(action, Action::Quit);
                         handle_action(app, host_bridge, action, &last_layout).await?;
+                        if exits_fullscreen || app.exit_request.is_some() {
+                            tui.request_quit();
+                        }
                         state_changed = true;
                     }
                     Event::Resize(_, _) => state_changed = true,
@@ -608,10 +616,7 @@ async fn handle_action(
         return Ok(());
     }
     match action {
-        Action::Quit => {
-            // handled by tui flag
-            app.set_toast("Bye");
-        }
+        Action::Quit => {}
         Action::OpenSettingsModal => {
             app.settings_selected = app.settings_selected.min(12);
             app.overlay = Overlay::SettingsModal;
