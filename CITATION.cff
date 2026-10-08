@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use CNMPlayer in your work, please cite this repository."
 title: "CNMPlayer (Customized Netease Music Player)"
-version: "0.6.2"
+version: "0.6.3"
 license: "AGPL-3.0-only"
 authors:
   - name: "Bingcheng Li"
