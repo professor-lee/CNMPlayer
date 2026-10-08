@@ -581,18 +581,7 @@ fn centered_rect(size: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn animated_centered_rect(size: Rect, width: u16, height: u16, progress: f32) -> Rect {
-    let full = centered_rect(size, width, height);
-    let progress = progress.clamp(0.0, 1.0);
-    let visible_height = ((f32::from(full.height) * progress).round() as u16).min(full.height);
-    if visible_height == 0 {
-        return Rect::default();
-    }
-    Rect {
-        x: full.x,
-        y: full.y + (full.height - visible_height) / 2,
-        width: full.width,
-        height: visible_height,
-    }
+    crate::render::motion::reveal_centered_rect(centered_rect(size, width, height), progress)
 }
 
 /// 当前弹窗里可点击的条目行，按条目序号逐行登记。
@@ -1501,7 +1490,7 @@ pub fn help_items(app: &AppState) -> Vec<(String, String)> {
             "Sidebar Playlist Section Switch",
             "Ctrl+Up/Down",
         ),
-        item("按键绑定", "Keybinds", "Ctrl+K"),
+        item("按键绑定开关", "Toggle Keybinds", "Ctrl+K"),
     ]
 }
 
@@ -1583,8 +1572,8 @@ fn render_help_modal(
     f.render_widget(
         Paragraph::new(lang_text(
             app,
-            "Up/Down 浏览  Esc 关闭（仅查看）",
-            "Up/Down browse  Esc close (view only, no rebinding)",
+            "Up/Down 浏览  Ctrl+K 关闭  Esc 返回（仅查看）",
+            "Up/Down browse  Ctrl+K close  Esc back (view only)",
         ))
         .style(Style::default().fg(app.theme.color_subtext())),
         rows[2],

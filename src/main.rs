@@ -408,8 +408,8 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
     loop {
         let now = Instant::now();
         clock.set_fps(app.config.ui_fps, now);
-        app.tick().await;
-        if app.covers.poll() || app.should_continuous_redraw() {
+        let settings_changed = app.tick().await;
+        if settings_changed || app.covers.poll() || app.should_continuous_redraw() {
             clock.mark_dirty();
         }
 
@@ -431,6 +431,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             })?;
             app.covers.prepare();
             clock.presented(Instant::now());
+            if app.settings.motion.is_running() {
+                clock.mark_dirty();
+            }
         }
 
         let wait_until = if clock.is_dirty() {

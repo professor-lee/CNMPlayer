@@ -1,7 +1,7 @@
 use crate::app::SIDEBAR_ANIM_DURATION;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
-use crate::render::motion::{Curve, Toggle, Transition};
+use crate::render::motion::{Curve, MODAL_ANIM_DURATION, Toggle, Transition};
 use crate::tmplayer::audio::smoother::Ema;
 use crate::tmplayer::data::playlist::Playlist;
 use crate::tmplayer::render::cover_cache::CoverCache;
@@ -618,10 +618,10 @@ impl AppState {
         if self.overlay != Overlay::None {
             self.overlay_close_pending = false;
             self.overlay_motion
-                .set(true, now, Duration::from_millis(180), Curve::EaseOut);
+                .set(true, now, MODAL_ANIM_DURATION, Curve::EaseOut);
         } else if !self.overlay_close_pending {
             self.overlay_motion
-                .set(false, now, Duration::from_millis(180), Curve::EaseOut);
+                .set(false, now, MODAL_ANIM_DURATION, Curve::EaseOut);
         }
     }
 
@@ -640,12 +640,8 @@ impl AppState {
             return;
         }
         self.overlay_close_pending = true;
-        self.overlay_motion.set(
-            false,
-            Instant::now(),
-            Duration::from_millis(180),
-            Curve::EaseInOut,
-        );
+        self.overlay_motion
+            .set(false, Instant::now(), MODAL_ANIM_DURATION, Curve::EaseInOut);
     }
 
     fn tick_overlay_transition(&mut self, now: Instant) -> bool {
@@ -795,6 +791,18 @@ impl AppState {
             dir,
             motion,
         });
+    }
+
+    pub fn toggle_help_modal(&mut self) {
+        if self.overlay == Overlay::HelpModal {
+            self.close_overlay();
+        } else {
+            self.help_keybind_selected = self
+                .help_keybind_selected
+                .min(crate::tmplayer::ui::tui::help_item_count(self).saturating_sub(1));
+            self.help_keybind_scroll = 0;
+            self.overlay = Overlay::HelpModal;
+        }
     }
 
     pub fn close_overlay(&mut self) {
@@ -1028,5 +1036,34 @@ mod tests {
         assert_eq!(app.overlay, Overlay::SettingsModal);
         app.tick(Instant::now() + Duration::from_millis(220));
         assert_eq!(app.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn help_toggle_closes_the_whole_modal_instead_of_opening_settings() {
+        let mut app = AppState::new(
+            Config::default(),
+            crate::ui::theme::Theme::default(),
+            Language::En,
+        );
+        for parent in [Overlay::None, Overlay::SettingsModal] {
+            app.overlay = parent;
+            app.toggle_help_modal();
+            let now = Instant::now();
+            app.sync_overlay_transition(now);
+            app.tick(now + MODAL_ANIM_DURATION);
+            assert_eq!(app.overlay, Overlay::HelpModal);
+
+            app.toggle_help_modal();
+            assert_eq!(
+                app.overlay,
+                Overlay::HelpModal,
+                "keep content for the closing animation"
+            );
+            assert!(app.overlay_close_pending);
+            app.toggle_help_modal();
+            app.tick(Instant::now() + MODAL_ANIM_DURATION);
+            assert_eq!(app.overlay, Overlay::None);
+            assert!(!app.overlay_close_pending);
+        }
     }
 }

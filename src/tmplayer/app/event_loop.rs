@@ -613,7 +613,7 @@ async fn handle_action(
     action: Action,
     layout: &UiLayout,
 ) -> Result<()> {
-    if app.overlay_close_pending && !matches!(action, Action::CloseOverlay) {
+    if app.overlay_close_pending {
         return Ok(());
     }
     match action {
@@ -622,13 +622,7 @@ async fn handle_action(
             app.settings_selected = app.settings_selected.min(12);
             app.overlay = Overlay::SettingsModal;
         }
-        Action::OpenHelpModal => {
-            app.help_keybind_selected = app
-                .help_keybind_selected
-                .min(crate::tmplayer::ui::tui::help_item_count(app).saturating_sub(1));
-            app.help_keybind_scroll = 0;
-            app.overlay = Overlay::HelpModal;
-        }
+        Action::ToggleHelpModal => app.toggle_help_modal(),
         Action::OpenEqModal => {
             app.overlay = Overlay::EqModal;
             app.eq_selected = 0;

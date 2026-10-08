@@ -26,7 +26,7 @@ pub enum Action {
     CloseOverlay,
 
     OpenSettingsModal,
-    OpenHelpModal,
+    ToggleHelpModal,
 
     OpenEqModal,
 
@@ -169,7 +169,7 @@ pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
         if ev.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(ev.code, KeyCode::Char('k') | KeyCode::Char('K'))
         {
-            return Action::CloseOverlay;
+            return Action::ToggleHelpModal;
         }
         return match ev.code {
             KeyCode::Esc => Action::CloseOverlay,
@@ -207,7 +207,7 @@ pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
     if ev.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(ev.code, KeyCode::Char('k') | KeyCode::Char('K'))
     {
-        return Action::OpenHelpModal;
+        return Action::ToggleHelpModal;
     }
 
     if overlay == Overlay::Playlist {

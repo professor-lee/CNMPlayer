@@ -1,5 +1,6 @@
 use crate::app::{App, HitRect, Overlay};
 use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
+use crate::render::motion::reveal_centered_rect;
 use crate::tmplayer::data::about::{BrailleImage, about_info};
 use crate::tmplayer::ui::borders::SOLID_BORDER;
 use ratatui::Frame;
@@ -20,7 +21,10 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let area = centered_rect(70, 20, size);
+    let area = reveal_centered_rect(centered_rect(70, 20, size), app.settings.motion.value());
+    if area.is_empty() {
+        return;
+    }
 
     frame.render_widget(Clear, area);
 
@@ -644,7 +648,11 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     lines.push(Line::from(Span::styled(
         format!(
             "  {}",
-            l(app, "按键绑定弹窗（Ctrl+K）", "Open Keybinds (Ctrl+K)")
+            l(
+                app,
+                "按键绑定弹窗开关（Ctrl+K）",
+                "Toggle Keybinds (Ctrl+K)"
+            )
         ),
         Style::default().fg(app.theme.color_subtext()),
     )));
@@ -695,8 +703,8 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     } else {
         l(
             app,
-            "Enter 重绑  Ctrl+Alt+R 重置  Esc 返回",
-            "Enter rebind  Ctrl+Alt+R reset  Esc back",
+            "Enter 重绑  Ctrl+Alt+R 重置  Ctrl+K 关闭  Esc 返回",
+            "Enter rebind  Ctrl+Alt+R reset  Ctrl+K close  Esc back",
         )
         .to_string()
     };
@@ -764,7 +772,10 @@ fn scrolled_rows(total: usize, visible_rows: usize, scroll: usize) -> Vec<(usize
 }
 
 fn draw_about_modal(frame: &mut Frame, app: &mut App, size: Rect) {
-    let area = centered_rect(70, 22, size);
+    let area = reveal_centered_rect(centered_rect(70, 22, size), app.settings.motion.value());
+    if area.is_empty() {
+        return;
+    }
     frame.render_widget(Clear, area);
 
     let block = Block::default()

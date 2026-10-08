@@ -1,5 +1,22 @@
 //! Monotonic-time UI motion, independent of event frequency and rendering FPS.
+use ratatui::layout::Rect;
 use std::time::{Duration, Instant};
+
+pub(crate) const MODAL_ANIM_DURATION: Duration = Duration::from_millis(180);
+
+/// Reveal a modal around its vertical center without changing its final width.
+pub(crate) fn reveal_centered_rect(full: Rect, progress: f32) -> Rect {
+    let progress = progress.clamp(0.0, 1.0);
+    let height = ((f32::from(full.height) * progress).round() as u16).min(full.height);
+    if height == 0 {
+        return Rect::default();
+    }
+    Rect {
+        y: full.y + (full.height - height) / 2,
+        height,
+        ..full
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Curve {
