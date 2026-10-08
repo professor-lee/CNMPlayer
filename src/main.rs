@@ -448,7 +448,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             },
             _ = wait_cava_event(&mut app.cava).fuse() => clock.mark_dirty(),
             _ = app.wake.wait().fuse() => clock.mark_dirty(),
-            _ = sleep(wait).fuse() => (),
+            _ = sleep(wait).fuse() => clock.mark_dirty(),
         }
     }
 }
