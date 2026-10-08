@@ -507,6 +507,10 @@ where
     }
     .await;
 
+    // The close animation is a visual handoff, not a fullscreen toast frame.
+    // Clear the exit/status toast before both the fresh Host snapshot and the
+    // sliding page are rendered; otherwise "Bye" remains accent-red at top.
+    app.toast = None;
     let transition_result = if loop_result.is_ok() {
         async {
             let snapshot = host_bridge.host_snapshot(tui.terminal_mut())?;
