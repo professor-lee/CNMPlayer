@@ -185,7 +185,7 @@ sudo apt install -y build-essential cmake pkg-config \
 
 频谱按 [Cava](https://github.com/karlstav/cava) 的 [`6d43df3b2c7882122585c02c064b20009842a6f8`](https://github.com/karlstav/cava/tree/6d43df3b2c7882122585c02c064b20009842a6f8) 提交忠实移植为 Rust，使用实际播放采样率、左右声道独立 FFT，以及 Cava 的窗口、频带映射、自动灵敏度、回落和 integral 平滑。单声道显示在两声道独立处理并钳位输出后取平均，不在 FFT 前混合 PCM。FFT 后端为纯 Rust 的 `realfft` / `rustfft`，不是复制 FFTW 代码；浮点计算存在差异，因此不宣称与 FFTW 逐位一致。
 
-内部默认值固定为：开启自动灵敏度，降噪系数 `0.77`，截止频率 `50–8000 Hz`（低采样率时适配到 Nyquist 上限），线性缩放，灵敏度 `1`，关闭 Monstercat/waves。这些不是新增用户设置。频谱高度使用 Cava 的八级子格语义，不叠加项目额外的 EMA 或 gamma 曲线。
+内部默认值固定为：开启自动灵敏度，降噪系数 `0.77`，截止频率 `50–8000 Hz`（低采样率时适配到 Nyquist 上限），线性缩放，灵敏度 `1`，**开启 Monstercat 平滑**并关闭 `waves`。这些不是新增用户设置。频谱高度使用 Cava 的八级子格语义，不叠加项目额外的 EMA 或 gamma 曲线。
 
 频谱按共享的 `ui_fps` UI 提交时钟推进，没有独立频谱刷新计时器。暂停时按实际经过时间送入静音，让窗口和平滑尾巴自然衰减，而不是重复分析旧音频。无需外部 `cava`，不再查找可执行文件，也不使用 `TMPLAYER_CAVA` 环境变量。归属与完整许可条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

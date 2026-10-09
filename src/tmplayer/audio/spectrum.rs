@@ -17,6 +17,10 @@ pub(crate) const MINI_BARS: usize = 20;
 // Cava's integral can grow at extremely high FPS. A drained window plus a real
 // second of silence ends DISPLAY tails regardless of FPS, without modifying DSP.
 const TAIL_TIME: Duration = Duration::from_secs(1);
+// Cava's horizontal Monstercat filter is enabled by the project default;
+// `waves` remains disabled. It runs after the core's per-bar DSP state, as in
+// cava.c, so it never feeds back into Cava's peak/integral history.
+const MONSTERCAT_FACTOR: f64 = 1.0;
 const DISPLAY_FLOOR: f64 = 1.0 / 65536.0;
 
 #[derive(Debug)]
@@ -188,6 +192,7 @@ impl Spectrum {
             },
             frames,
         )?;
+        apply_monstercat(core);
         if !core.has_window() {
             let below_floor = core.output[..core.bars * 2]
                 .iter()
@@ -251,5 +256,25 @@ impl Spectrum {
 
     pub(crate) fn has_tail(&self) -> bool {
         self.display_tail
+    }
+}
+
+fn apply_monstercat(core: &mut Core) {
+    let decay = MONSTERCAT_FACTOR * 1.5;
+    for channel in 0..2 {
+        let start = channel * core.bars;
+        for source_bar in 0..core.bars {
+            let source = core.output[start + source_bar];
+            for bar in (0..source_bar).rev() {
+                let distance = (source_bar - bar) as i32;
+                let candidate = source / decay.powi(distance);
+                core.output[start + bar] = core.output[start + bar].max(candidate);
+            }
+            for bar in source_bar + 1..core.bars {
+                let distance = (bar - source_bar) as i32;
+                let candidate = source / decay.powi(distance);
+                core.output[start + bar] = core.output[start + bar].max(candidate);
+            }
+        }
     }
 }

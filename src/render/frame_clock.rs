@@ -6,6 +6,7 @@ pub(crate) struct FrameClock {
     interval: Duration,
     deadline: Instant,
     dirty: bool,
+    continuous: bool,
 }
 
 impl FrameClock {
@@ -14,6 +15,7 @@ impl FrameClock {
             interval: interval(fps),
             deadline: now,
             dirty: true,
+            continuous: false,
         }
     }
 
@@ -29,16 +31,20 @@ impl FrameClock {
         self.dirty = true;
     }
 
+    pub fn set_continuous(&mut self, continuous: bool) {
+        self.continuous = continuous;
+    }
+
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.dirty || self.continuous
     }
 
     pub fn due(&self, now: Instant) -> bool {
-        self.dirty && now >= self.deadline
+        (self.dirty || self.continuous) && now >= self.deadline
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.dirty.then_some(self.deadline)
+        (self.dirty || self.continuous).then_some(self.deadline)
     }
 
     /// Skip expired slots instead of submitting catch-up frames. Input wakeups
@@ -138,5 +144,21 @@ mod tests {
         clock.mark_dirty();
         assert!(!clock.due(start));
         assert!(clock.due(start + Duration::from_nanos(1)));
+    }
+
+    #[test]
+    fn continuous_frames_keep_the_next_deadline_after_presenting() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(60, start);
+        clock.set_continuous(true);
+        assert!(clock.due(start));
+        clock.presented(start);
+        assert!(clock.is_dirty());
+        assert!(!clock.due(start + Duration::from_millis(16)));
+        assert!(clock.due(start + Duration::from_millis(17)));
+        clock.presented(start + Duration::from_millis(17));
+        clock.set_continuous(false);
+        assert!(!clock.is_dirty());
+        assert!(clock.next_deadline().is_none());
     }
 }

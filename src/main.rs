@@ -406,9 +406,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         let now = Instant::now();
         clock.set_fps(app.config.ui_fps, now);
         app.tick().await;
-        if app.covers.poll() || app.should_continuous_redraw() {
+        let continuous = app.should_continuous_redraw();
+        if app.covers.poll() || continuous {
             clock.mark_dirty();
         }
+        clock.set_continuous(continuous);
 
         if app.consume_fullscreen_launch_request() {
             let bootstrap = app.build_fullscreen_bootstrap();

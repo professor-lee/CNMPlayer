@@ -447,10 +447,12 @@ where
             }
             state_changed |= tick_visual_state(app, frame_start);
             state_changed |= tui.poll_cover_frames();
-            if state_changed || app.should_continuous_redraw() {
+            let continuous = app.should_continuous_redraw();
+            if state_changed || continuous {
                 clock.mark_dirty();
             }
             clock.set_fps(app.render_fps(), frame_start);
+            clock.set_continuous(continuous);
             if clock.due(frame_start) {
                 update_spectrum(app, &last_layout, frame_start)?;
                 last_layout = tui.draw(app)?;
