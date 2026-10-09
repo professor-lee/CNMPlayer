@@ -256,7 +256,7 @@ impl VectorState {
         }
     }
 
-    /// 快动画（分散 / 聚集回归）进行中：需要 `spectrum_hz` 高帧率推完。
+    /// 快动画（分散 / 聚集回归）进行中：按统一的 `ui_fps` 推进与重绘。
     pub(crate) fn is_animating(&self) -> bool {
         matches!(self.phase, Phase::Dispersing | Phase::Recovering)
     }
@@ -633,7 +633,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
 
     // 环由宿主持有：先克隆 Arc 再借 state，避免同时借用 app 的两个字段。
     match app.pcm_ring.clone() {
-        Some(ring) => ring.snapshot(&mut app.vector.snapshot),
+        Some(ring) => {
+            ring.snapshot_tail_ms(&mut app.vector.snapshot, VECTOR_WINDOW_MS.ceil() as u32)
+        }
         None => app.vector.snapshot.clear(),
     }
 

@@ -5,7 +5,6 @@ mod tmplayer;
 mod ui;
 
 use crate::render::frame_clock::FrameClock;
-use crate::tmplayer::audio::cava::MiniCavaState;
 use anyhow::Result;
 use app::App;
 use compio::fs::{create_dir_all, remove_file};
@@ -28,7 +27,6 @@ use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use see::unsync::Receiver;
-use std::future::pending;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::pin::pin;
@@ -325,7 +323,6 @@ async fn main() -> Result<()> {
     let mut terminal = init_terminal()?;
     let run_result = run_app(&mut terminal, &mut app).await;
     let restore_result = restore_terminal(&mut terminal);
-    app.suspend_main_cava_for_fullscreen().await;
     let persistence_result = app.flush_persistence();
     run_result?;
     restore_result?;
@@ -409,9 +406,11 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         let now = Instant::now();
         clock.set_fps(app.config.ui_fps, now);
         app.tick().await;
-        if app.covers.poll() || app.should_continuous_redraw() {
+        let continuous = app.should_continuous_redraw();
+        if app.covers.poll() || continuous {
             clock.mark_dirty();
         }
+        clock.set_continuous(continuous);
 
         if app.consume_fullscreen_launch_request() {
             let bootstrap = app.build_fullscreen_bootstrap();
@@ -425,6 +424,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         }
 
         if clock.due(Instant::now()) {
+            app.update_main_spectrum(Instant::now())?;
             terminal.draw(|frame| {
                 ui::draw(frame, app);
                 ui::draw_settings(frame, app);
@@ -446,20 +446,9 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
                 f(app).await;
                 clock.mark_dirty();
             },
-            _ = wait_cava_event(&mut app.cava).fuse() => clock.mark_dirty(),
             _ = app.wake.wait().fuse() => clock.mark_dirty(),
             _ = sleep(wait).fuse() => clock.mark_dirty(),
         }
-    }
-}
-
-async fn wait_cava_event(cava: &mut Option<MiniCavaState>) {
-    match cava {
-        Some(cava) => {
-            let _ = cava.event.changed().await;
-            cava.event.mark_unchanged();
-        }
-        None => pending().await,
     }
 }
 
@@ -469,7 +458,7 @@ async fn launch_tmplayer_fullscreen(
     bootstrap: tmplayer::FullscreenBootstrap,
 ) -> Result<()> {
     let host_snapshot = capture_host_snapshot(terminal, app)?;
-    app.suspend_main_cava_for_fullscreen().await;
+    app.reset_main_spectrum();
 
     let config = app.config.clone();
     let mut bridge = AppFullscreenBridge { app };
@@ -480,7 +469,7 @@ async fn launch_tmplayer_fullscreen(
             Ok(exit) => (Some(exit), String::new()),
             Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
         };
-    app.resume_main_cava_after_fullscreen();
+    app.reset_main_spectrum();
     if !status_text.is_empty() {
         app.set_runtime_status(status_text);
     }

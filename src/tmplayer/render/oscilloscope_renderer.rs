@@ -52,7 +52,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
 
     // 环由宿主持有：先克隆 Arc 再借 scratch，避免同时借用 app 的两个字段。
     match app.pcm_ring.clone() {
-        Some(ring) => ring.snapshot(&mut app.scope.snapshot),
+        Some(ring) => ring.snapshot_tail_ms(
+            &mut app.scope.snapshot,
+            (WINDOW_MS + TRIGGER_SEARCH_MS).ceil() as u32,
+        ),
         None => app.scope.snapshot.clear(),
     }
 

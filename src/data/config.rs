@@ -3,22 +3,25 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-
-const DEFAULT_EQ_BANDS_DB: [f32; crate::tmplayer::app::state::EQ_BANDS] =
-    [0.0; crate::tmplayer::app::state::EQ_BANDS];
+use std::sync::LazyLock;
 const LEGACY_STARTUP_FOLDER_KEY: &str = concat!("default", "_opening", "_folder");
 const LEGACY_STARTUP_FOLDER_KEY_KEBAB: &str = concat!("default", "-opening", "-folder");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphicsProtocol {
     Off,
-    #[default]
     #[serde(alias = "auto")]
     #[serde(alias = "sixel")]
     #[serde(alias = "kitty")]
     #[serde(alias = "iterm2")]
     Halfblocks,
+}
+
+impl Default for GraphicsProtocol {
+    fn default() -> Self {
+        DEFAULT_CONFIG.config.graphics_protocol
+    }
 }
 
 impl GraphicsProtocol {
@@ -49,195 +52,89 @@ impl GraphicsProtocol {
 pub struct Config {
     pub theme: String,
     pub ui_fps: u32,
-    pub spectrum_hz: u32,
-
-    #[serde(default = "default_visualize")]
     pub visualize: VisualizeMode,
-
-    #[serde(default = "default_eq_bands_db")]
     pub eq_bands_db: [f32; crate::tmplayer::app::state::EQ_BANDS],
-
-    #[serde(default)]
     pub transparent_background: bool,
-
-    #[serde(default = "default_album_border")]
     pub album_border: bool,
-
-    #[serde(default)]
     pub graphics_protocol: GraphicsProtocol,
-
-    #[serde(default)]
+    /// Smooth fractional cells for the narrow-window VU meter only.
     pub super_smooth_bar: bool,
-    #[serde(default)]
     pub bars_gap: bool,
-
-    #[serde(default = "default_bar_number")]
     pub bar_number: BarNumber,
-
-    #[serde(default = "default_bar_channels")]
     pub bar_channels: BarChannels,
-
-    #[serde(default)]
     pub bar_channel_reverse: bool,
-
-    #[serde(default)]
     pub default_opening_title: String,
-
-    #[serde(default = "default_language")]
     pub language: Language,
-
-    #[serde(default = "default_page_lyrics")]
     pub page_lyrics: bool,
-
     /// 歌词浮窗是否允许鼠标拖动。
-    #[serde(default = "default_page_lyrics_drag")]
     pub page_lyrics_drag: bool,
-
-    /// 拖动结束后是否吸附到最近的边（左/右/上/下，另一轴保持自由；
-    /// 仅拖动开启时可改）。
-    #[serde(default = "default_page_lyrics_snap")]
+    /// 拖动结束后是否吸附到最近的边。
     pub page_lyrics_snap: bool,
-
-    /// 歌词浮窗左上角在内容区内的归一化位置（0..=1），默认右下角。
-    #[serde(default = "default_page_lyrics_pos_x")]
+    /// 歌词浮窗左上角在内容区内的归一化位置（0..=1）。
     pub page_lyrics_pos_x: f32,
-    #[serde(default = "default_page_lyrics_pos_y")]
     pub page_lyrics_pos_y: f32,
-
-    #[serde(default = "default_audio_quality")]
     pub audio_quality: AudioQuality,
-
-    /// 下载音频的档位：可选值与「播放设置 / 音质」同一套（按会员放开），
-    /// 默认写死为与播放默认档一致的 `exhigh`。
-    #[serde(default = "default_download_audio_quality")]
+    /// 下载音频档位，默认值由内嵌配置模板提供。
     pub download_audio_quality: AudioQuality,
-
-    /// 下载目录（绝对路径，含末尾的 `cnmplayer/`）。`None` = 未自定义，
-    /// 用系统音乐目录下的 `cnmplayer/`；系统没有音乐目录时回退 `~/Music/`。
-    #[serde(default)]
+    /// None 使用系统音乐目录下的 cnmplayer/，无音乐目录时回退 ~/Music/。
     pub download_path: Option<String>,
-
-    #[serde(default)]
     pub playback_memory: bool,
-
-    #[serde(default = "default_show_hints")]
     pub show_hints: bool,
-
-    #[serde(default = "default_small_window_display")]
     pub small_window_display: bool,
-
-    #[serde(default)]
     pub home_more_recommend: bool,
-
-    #[serde(default)]
     pub cache: CacheConfig,
-
-    #[serde(default = "default_keybind_search_box")]
     pub keybind_search_box: String,
-
-    #[serde(default = "default_keybind_fullscreen")]
     pub keybind_fullscreen: String,
-
-    #[serde(default = "default_keybind_settings")]
     pub keybind_settings: String,
-
-    #[serde(default = "default_keybind_sidebar")]
     pub keybind_sidebar: String,
-
-    #[serde(default = "default_keybind_quit")]
     pub keybind_quit: String,
-
-    #[serde(default = "default_keybind_page_up")]
     pub keybind_page_up: String,
-
-    #[serde(default = "default_keybind_page_down")]
     pub keybind_page_down: String,
-
-    #[serde(default = "default_keybind_prev")]
     pub keybind_prev: String,
-
-    #[serde(default = "default_keybind_next")]
     pub keybind_next: String,
-
-    #[serde(default = "default_keybind_toggle_play_pause")]
     pub keybind_toggle_play_pause: String,
-
-    #[serde(default = "default_keybind_toggle_mode")]
     pub keybind_toggle_mode: String,
-
-    #[serde(default = "default_keybind_fullscreen_prev")]
     pub keybind_fullscreen_prev: String,
-
-    #[serde(default = "default_keybind_fullscreen_next")]
     pub keybind_fullscreen_next: String,
-
-    #[serde(default = "default_keybind_fullscreen_toggle_play_pause")]
     pub keybind_fullscreen_toggle_play_pause: String,
-
-    #[serde(default = "default_keybind_fullscreen_toggle_mode")]
     pub keybind_fullscreen_toggle_mode: String,
-
-    #[serde(default = "default_keybind_fullscreen_eq")]
     pub keybind_fullscreen_eq: String,
-
-    #[serde(default = "default_keybind_fullscreen_eq_reset")]
     pub keybind_fullscreen_eq_reset: String,
-
-    #[serde(default = "default_keybind_toggle_like_fullscreen")]
     pub keybind_toggle_like_fullscreen: String,
-
-    #[serde(default = "default_keybind_toggle_like_collapsed")]
     pub keybind_toggle_like_collapsed: String,
-
-    #[serde(default = "default_keybind_small_window_toggle")]
     pub keybind_small_window_toggle: String,
-
-    /// 主应用：下载当前聚焦的单曲（再按一次取消在途下载）。
-    #[serde(default = "default_keybind_download")]
+    /// 主应用：下载当前聚焦的单曲。
     pub keybind_download: String,
-
-    /// 全屏页：下载当前播放的单曲（再按一次取消在途下载）。
-    #[serde(default = "default_keybind_download_fullscreen")]
+    /// 全屏页：下载当前播放的单曲。
     pub keybind_download_fullscreen: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-#[derive(Default)]
 pub enum CacheCleanStrategy {
     Size,
     Age,
-    #[default]
     Both,
+}
+
+impl Default for CacheCleanStrategy {
+    fn default() -> Self {
+        DEFAULT_CONFIG.config.cache.clean_strategy
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConfig {
-    #[serde(default)]
     pub path: Option<String>,
-
-    #[serde(default)]
     pub clean_strategy: CacheCleanStrategy,
-
-    #[serde(default = "default_cache_max_size_mb")]
     pub max_size_mb: u64,
-
-    #[serde(default = "default_cache_max_age_days")]
     pub max_age_days: u64,
-
-    #[serde(default = "default_cache_clean_on_startup")]
     pub clean_on_startup: bool,
 }
 
 impl Default for CacheConfig {
     fn default() -> Self {
-        Self {
-            path: None,
-            clean_strategy: CacheCleanStrategy::default(),
-            max_size_mb: default_cache_max_size_mb(),
-            max_age_days: default_cache_max_age_days(),
-            clean_on_startup: default_cache_clean_on_startup(),
-        }
+        DEFAULT_CONFIG.config.cache.clone()
     }
 }
 
@@ -251,25 +148,12 @@ pub enum VisualizeMode {
     Hidden,
     Bars,
     Oscilloscope,
-    /// 左右声道作 X/Y 的李萨如图（矢量模式）。与示波器同样读 PCM 抽头，不需要 cava。
+    /// 左右声道作 X/Y 的李萨如图（矢量模式），直接读播放链路上的 PCM 抽头。
     Vector,
 }
 
 impl VisualizeMode {
-    /// 该模式是否依赖 cava 的频谱数据。示波器读播放链路上的 PCM 抽头，不需要。
-    pub fn needs_cava(self) -> bool {
-        matches!(self, VisualizeMode::Bars)
-    }
-
-    /// 数据源就绪，可供用户选中。
-    pub fn is_available(self) -> bool {
-        !self.needs_cava() || crate::tmplayer::audio::cava::is_available()
-    }
-
-    /// 切到下一个**可用**模式：数据源缺失的模式被跳过，而不是让整项无法调整。
-    ///
-    /// 数组按「显示内容由少到多」排列；`unwrap_or(1)` 兜到 `Lyrics`，
-    /// 免得理论上找不到自身时把右侧区整个收掉。
+    /// 按「显示内容由少到多」在所有五档之间循环。
     pub fn cycle(self, delta: i32) -> Self {
         const MODES: [VisualizeMode; 5] = [
             VisualizeMode::Hidden,
@@ -279,13 +163,8 @@ impl VisualizeMode {
             VisualizeMode::Vector,
         ];
 
-        let len = MODES.len() as i32;
-        let step = if delta < 0 { -1 } else { 1 };
-        let start = MODES.iter().position(|mode| *mode == self).unwrap_or(1) as i32;
-        (1..=len)
-            .map(|offset| MODES[(start + step * offset).rem_euclid(len) as usize])
-            .find(|mode| mode.is_available())
-            .unwrap_or(self)
+        let index = MODES.iter().position(|mode| *mode == self).unwrap_or(1) as i32;
+        MODES[((index as i64 + delta as i64).rem_euclid(MODES.len() as i64)) as usize]
     }
 }
 
@@ -399,236 +278,61 @@ impl AudioQuality {
     }
 }
 
-fn default_visualize() -> VisualizeMode {
-    if crate::tmplayer::audio::cava::is_available() {
-        VisualizeMode::Bars
-    } else {
-        // 示波器不依赖 cava，比直接关掉可视化更有用。
-        VisualizeMode::Oscilloscope
-    }
-}
-
-fn default_eq_bands_db() -> [f32; crate::tmplayer::app::state::EQ_BANDS] {
-    DEFAULT_EQ_BANDS_DB
-}
-
-fn default_album_border() -> bool {
-    true
-}
-
-fn default_bar_number() -> BarNumber {
-    BarNumber::Auto
-}
-
-fn default_bar_channels() -> BarChannels {
-    BarChannels::Mono
-}
-
-fn default_language() -> Language {
-    Language::Zh
-}
-
-fn default_page_lyrics() -> bool {
-    false
-}
-
-fn default_page_lyrics_drag() -> bool {
-    true
-}
-
-fn default_page_lyrics_snap() -> bool {
-    true
-}
-
-fn default_page_lyrics_pos_x() -> f32 {
-    1.0
-}
-
-fn default_page_lyrics_pos_y() -> f32 {
-    1.0
-}
-
-fn default_audio_quality() -> AudioQuality {
-    AudioQuality::Exhigh
-}
-
-/// 下载音质的默认档与播放默认档同源：两处只留一个真值来源。
-pub fn default_download_audio_quality() -> AudioQuality {
-    default_audio_quality()
-}
-
-fn default_show_hints() -> bool {
-    true
-}
-
-fn default_cache_max_size_mb() -> u64 {
-    500
-}
-
-fn default_cache_max_age_days() -> u64 {
-    7
-}
-
-fn default_cache_clean_on_startup() -> bool {
-    true
-}
-
-fn default_keybind_search_box() -> String {
-    "Ctrl+S".to_string()
-}
-
-fn default_keybind_fullscreen() -> String {
-    "Ctrl+F".to_string()
-}
-
-fn default_keybind_settings() -> String {
-    "T".to_string()
-}
-
-fn default_keybind_sidebar() -> String {
-    "P".to_string()
-}
-
 fn is_legacy_sidebar_default(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase().replace(' ', "");
     normalized == "alt+b"
 }
 
-fn default_keybind_quit() -> String {
-    "Q".to_string()
+struct DefaultConfig {
+    config: Config,
+    table: toml::Table,
 }
 
-fn default_keybind_page_up() -> String {
-    "pageUP".to_string()
-}
-
-fn default_keybind_page_down() -> String {
-    "pageDown".to_string()
-}
-
-fn default_keybind_prev() -> String {
-    "Alt+Left".to_string()
-}
-
-fn default_keybind_next() -> String {
-    "Alt+Right".to_string()
-}
-
-fn default_keybind_toggle_play_pause() -> String {
-    "Alt+Space".to_string()
-}
-
-fn default_keybind_toggle_mode() -> String {
-    "Alt+M".to_string()
-}
-
-fn default_keybind_fullscreen_prev() -> String {
-    "Left".to_string()
-}
-
-fn default_keybind_fullscreen_next() -> String {
-    "Right".to_string()
-}
-
-fn default_keybind_fullscreen_toggle_play_pause() -> String {
-    "Space".to_string()
-}
-
-fn default_keybind_fullscreen_toggle_mode() -> String {
-    "M".to_string()
-}
-
-fn default_keybind_fullscreen_eq() -> String {
-    "E".to_string()
-}
-
-fn default_keybind_fullscreen_eq_reset() -> String {
-    "Alt+R".to_string()
-}
-
-fn default_keybind_toggle_like_fullscreen() -> String {
-    "L".to_string()
-}
-
-fn default_keybind_toggle_like_collapsed() -> String {
-    "Alt+L".to_string()
-}
-
-fn default_small_window_display() -> bool {
-    true
-}
-
-fn default_keybind_small_window_toggle() -> String {
-    "Alt+X".to_string()
-}
-
-fn default_keybind_download() -> String {
-    "Ctrl+Alt+D".to_string()
-}
-
-fn default_keybind_download_fullscreen() -> String {
-    "Ctrl+D".to_string()
-}
+static DEFAULT_CONFIG: LazyLock<DefaultConfig> = LazyLock::new(|| {
+    let table: toml::Table = toml::from_str(assets::DEFAULT_CONFIG_TOML)
+        .expect("invalid embedded config/default.toml: malformed TOML");
+    // Config and CacheConfig have no serde defaults: an incomplete template is
+    // a development error, never a recursive request for Config::default().
+    let config: Config = toml::Value::Table(table.clone())
+        .try_into()
+        .expect("invalid embedded config/default.toml: incomplete or invalid configuration");
+    assert!(
+        config.ui_fps != 0,
+        "invalid embedded config/default.toml: ui_fps must be greater than zero"
+    );
+    DefaultConfig { config, table }
+});
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            theme: "frappe".to_string(),
-            ui_fps: 30,
-            spectrum_hz: 30,
-            visualize: default_visualize(),
-            eq_bands_db: default_eq_bands_db(),
-            transparent_background: true,
-            album_border: default_album_border(),
-            graphics_protocol: GraphicsProtocol::default(),
-            super_smooth_bar: false,
-            bars_gap: false,
-            bar_number: default_bar_number(),
-            bar_channels: default_bar_channels(),
-            bar_channel_reverse: false,
-            default_opening_title: String::new(),
-            language: default_language(),
-            page_lyrics: default_page_lyrics(),
-            page_lyrics_drag: default_page_lyrics_drag(),
-            page_lyrics_snap: default_page_lyrics_snap(),
-            page_lyrics_pos_x: default_page_lyrics_pos_x(),
-            page_lyrics_pos_y: default_page_lyrics_pos_y(),
-            audio_quality: default_audio_quality(),
-            download_audio_quality: default_download_audio_quality(),
-            download_path: None,
-            playback_memory: false,
-            show_hints: default_show_hints(),
-            small_window_display: default_small_window_display(),
-            home_more_recommend: false,
-            cache: CacheConfig::default(),
-            keybind_search_box: default_keybind_search_box(),
-            keybind_fullscreen: default_keybind_fullscreen(),
-            keybind_settings: default_keybind_settings(),
-            keybind_sidebar: default_keybind_sidebar(),
-            keybind_quit: default_keybind_quit(),
-            keybind_page_up: default_keybind_page_up(),
-            keybind_page_down: default_keybind_page_down(),
-            keybind_prev: default_keybind_prev(),
-            keybind_next: default_keybind_next(),
-            keybind_toggle_play_pause: default_keybind_toggle_play_pause(),
-            keybind_toggle_mode: default_keybind_toggle_mode(),
-            keybind_fullscreen_prev: default_keybind_fullscreen_prev(),
-            keybind_fullscreen_next: default_keybind_fullscreen_next(),
-            keybind_fullscreen_toggle_play_pause: default_keybind_fullscreen_toggle_play_pause(),
-            keybind_fullscreen_toggle_mode: default_keybind_fullscreen_toggle_mode(),
-            keybind_fullscreen_eq: default_keybind_fullscreen_eq(),
-            keybind_fullscreen_eq_reset: default_keybind_fullscreen_eq_reset(),
-            keybind_toggle_like_fullscreen: default_keybind_toggle_like_fullscreen(),
-            keybind_toggle_like_collapsed: default_keybind_toggle_like_collapsed(),
-            keybind_small_window_toggle: default_keybind_small_window_toggle(),
-            keybind_download: default_keybind_download(),
-            keybind_download_fullscreen: default_keybind_download_fullscreen(),
+        DEFAULT_CONFIG.config.clone()
+    }
+}
+
+/// Fill only absent keys, recursively; explicit values (including false, empty
+/// strings and invalid types) always win and are validated by deserialization.
+fn complete_missing_fields(user: &mut toml::Table, defaults: &toml::Table) -> bool {
+    let mut changed = false;
+    for (key, default) in defaults {
+        match user.get_mut(key) {
+            None => {
+                user.insert(key.clone(), default.clone());
+                changed = true;
+            }
+            Some(toml::Value::Table(table)) => {
+                if let toml::Value::Table(default_table) = default {
+                    changed |= complete_missing_fields(table, default_table);
+                }
+            }
+            Some(_) => {}
         }
     }
+    changed
 }
 
 impl Config {
     pub fn load_or_default() -> Result<Self> {
+        LazyLock::force(&DEFAULT_CONFIG);
         assets::ensure_assets_ready()?;
         Self::load_from_path(&Self::default_path())
     }
@@ -636,82 +340,42 @@ impl Config {
     fn load_from_path(path: &std::path::Path) -> Result<Self> {
         if !path.exists() {
             let cfg = Self::default();
-            cfg.save_to_path(path)?;
+            atomic_file::write_atomic(path, assets::DEFAULT_CONFIG_TOML.as_bytes())?;
             return Ok(cfg);
         }
 
         let raw = fs::read_to_string(path)?;
-        let legacy_startup_folder_key_present = raw.contains(LEGACY_STARTUP_FOLDER_KEY_KEBAB)
-            || raw.contains(LEGACY_STARTUP_FOLDER_KEY);
-        let graphics_protocol_needs_save = graphics_protocol_needs_save(&raw);
-        let mut cfg: Config =
+        let mut user: toml::Table =
             toml::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+        let legacy_startup_folder_key_present = user.contains_key(LEGACY_STARTUP_FOLDER_KEY_KEBAB)
+            || user.contains_key(LEGACY_STARTUP_FOLDER_KEY);
+        let graphics_protocol_needs_save = matches!(
+            user.get("graphics_protocol").and_then(toml::Value::as_str),
+            Some("auto" | "sixel" | "kitty" | "iterm2")
+        );
+        let completed = complete_missing_fields(&mut user, &DEFAULT_CONFIG.table);
+        let mut cfg: Config = toml::Value::Table(user)
+            .try_into()
+            .with_context(|| format!("parse {}", path.display()))?;
 
-        if cfg.ui_fps == 0 {
-            cfg.ui_fps = 30;
-        }
-        if cfg.spectrum_hz == 0 {
-            cfg.spectrum_hz = 30;
-        }
+        anyhow::ensure!(
+            cfg.ui_fps != 0,
+            "invalid ui_fps in {}: must be greater than zero",
+            path.display()
+        );
 
         cfg.page_lyrics_pos_x = cfg.page_lyrics_pos_x.clamp(0.0, 1.0);
         cfg.page_lyrics_pos_y = cfg.page_lyrics_pos_y.clamp(0.0, 1.0);
 
-        let mut forced_visualize_fallback = false;
-        if !cfg.visualize.is_available() {
-            cfg.visualize = VisualizeMode::Oscilloscope;
-            forced_visualize_fallback = true;
-        }
-
         let mut migrated_legacy_sidebar = false;
         if is_legacy_sidebar_default(&cfg.keybind_sidebar) {
-            cfg.keybind_sidebar = default_keybind_sidebar();
+            cfg.keybind_sidebar
+                .clone_from(&DEFAULT_CONFIG.config.keybind_sidebar);
             migrated_legacy_sidebar = true;
         }
 
-        if !raw.contains("default_opening_title")
-            || !raw.contains("language")
-            || !raw.contains("page_lyrics")
-            || !raw.contains("page_lyrics_drag")
-            || !raw.contains("page_lyrics_snap")
-            || !raw.contains("page_lyrics_pos_x")
-            || !raw.contains("page_lyrics_pos_y")
-            || !raw.contains("eq_bands_db")
-            || !raw.contains("audio_quality")
-            || !raw.contains("playback_memory")
-            || !raw.contains("show_hints")
-            || !raw.contains("home_more_recommend")
-            || !raw.contains("[cache]")
-            || !raw.contains("bar_number")
-            || !raw.contains("bar_channels")
-            || !raw.contains("bar_channel_reverse")
+        if completed
             || graphics_protocol_needs_save
-            || !raw.contains("keybind_search_box")
-            || !raw.contains("keybind_fullscreen")
-            || !raw.contains("keybind_settings")
-            || !raw.contains("keybind_sidebar")
-            || !raw.contains("keybind_quit")
-            || !raw.contains("keybind_page_up")
-            || !raw.contains("keybind_page_down")
-            || !raw.contains("keybind_prev")
-            || forced_visualize_fallback
-            || !raw.contains("keybind_next")
-            || !raw.contains("keybind_toggle_play_pause")
-            || !raw.contains("keybind_toggle_mode")
-            || !raw.contains("keybind_fullscreen_prev")
-            || !raw.contains("keybind_fullscreen_next")
-            || !raw.contains("keybind_fullscreen_toggle_play_pause")
-            || !raw.contains("keybind_fullscreen_toggle_mode")
-            || !raw.contains("keybind_fullscreen_eq")
-            || !raw.contains("keybind_fullscreen_eq_reset")
-            || !raw.contains("keybind_toggle_like_fullscreen")
-            || !raw.contains("keybind_toggle_like_collapsed")
-            || !raw.contains("small_window_display")
-            || !raw.contains("keybind_small_window_toggle")
-            || !raw.contains("download_audio_quality")
-            || !raw.contains("download_path")
-            || !raw.contains("keybind_download")
-            || !raw.contains("keybind_download_fullscreen")
             || legacy_startup_folder_key_present
             || migrated_legacy_sidebar
         {
@@ -734,22 +398,6 @@ impl Config {
     fn default_path() -> PathBuf {
         assets::resolve_config_path()
     }
-}
-
-fn graphics_protocol_needs_save(raw: &str) -> bool {
-    let Some(value) = raw.lines().map(str::trim).find_map(|line| {
-        if line.starts_with('#') || !line.starts_with("graphics_protocol") {
-            return None;
-        }
-
-        let (_, value) = line.split_once('=')?;
-        let value = value.split('#').next()?.trim().trim_matches('"');
-        Some(value)
-    }) else {
-        return true;
-    };
-
-    matches!(value, "auto" | "sixel" | "kitty" | "iterm2")
 }
 
 #[cfg(test)]
@@ -802,6 +450,97 @@ mod tests {
                 toml::from_str(&format!("visualize = \"{}\"", raw)).unwrap();
             assert_eq!(parsed.visualize, expected);
         }
+    }
+
+    #[test]
+    fn visualize_cycles_all_modes_without_external_dependencies() {
+        let modes = [
+            VisualizeMode::Hidden,
+            VisualizeMode::Lyrics,
+            VisualizeMode::Bars,
+            VisualizeMode::Oscilloscope,
+            VisualizeMode::Vector,
+        ];
+        for (index, mode) in modes.iter().copied().enumerate() {
+            assert_eq!(mode.cycle(1), modes[(index + 1) % modes.len()]);
+            assert_eq!(
+                mode.cycle(-1),
+                modes[(index + modes.len() - 1) % modes.len()]
+            );
+            assert_eq!(mode.cycle(0), mode);
+        }
+    }
+
+    #[test]
+    fn fps_loading_rejects_zero_and_preserves_every_positive_u32() {
+        let dir =
+            std::env::temp_dir().join(format!("cnmplayer-fps-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("default.toml");
+        for fps in [0, 2, 144, u32::MAX] {
+            let cfg = super::Config {
+                ui_fps: fps,
+                ..super::Config::default()
+            };
+            let raw = toml::to_string_pretty(&cfg).unwrap();
+            std::fs::write(&path, &raw).unwrap();
+            let loaded = super::Config::load_from_path(&path);
+            if fps == 0 {
+                assert!(loaded.unwrap_err().to_string().contains("ui_fps"));
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+            } else {
+                assert_eq!(loaded.unwrap().ui_fps, fps);
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn partial_user_configuration_preserves_overrides_and_completes_nested_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "cnmplayer-partial-config-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("default.toml");
+        std::fs::write(
+            &path,
+            "ui_fps = 144\ntransparent_background = false\n[cache]\nmax_age_days = 11\n",
+        )
+        .unwrap();
+        let loaded = super::Config::load_from_path(&path).unwrap();
+        assert_eq!(loaded.ui_fps, 144);
+        assert!(!loaded.transparent_background);
+        assert_eq!(loaded.cache.max_age_days, 11);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let reparsed: super::Config = toml::from_str(&saved).unwrap();
+        assert_eq!(reparsed.ui_fps, 144);
+        assert_eq!(reparsed.cache.max_age_days, 11);
+        assert_eq!(
+            toml::to_string(&loaded).unwrap(),
+            toml::to_string(&reparsed).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_user_values_are_rejected_without_defaulting_or_rewriting() {
+        let dir = std::env::temp_dir().join(format!(
+            "cnmplayer-invalid-values-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("default.toml");
+        for raw in [
+            "ui_fps = 'fast'\n",
+            "cache = false\n",
+            "[cache]\nmax_age_days = -1\n",
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(super::Config::load_from_path(&path).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

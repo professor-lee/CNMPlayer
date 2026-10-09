@@ -220,7 +220,7 @@ fn draw_playback_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         ),
         format!(
             "{}: {}",
-            l(app, "超级流畅", "Super Smooth"),
+            l(app, "VU 平滑", "Smooth VU"),
             on_off(app, app.config.super_smooth_bar)
         ),
         format!(
