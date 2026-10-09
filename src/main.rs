@@ -450,7 +450,6 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
     }
 }
 
-
 async fn launch_tmplayer_fullscreen(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,

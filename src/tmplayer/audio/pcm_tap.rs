@@ -208,7 +208,8 @@ impl PcmRing {
         ring.written += count as u64;
     }
 
-    /// 把环线性化进 `out`。渲染线程调用，允许短暂阻塞。
+    #[allow(dead_code)]
+    /// Full non-destructive snapshot retained for diagnostics and PCM tests.
     pub fn snapshot(&self, out: &mut PcmSnapshot) {
         self.snapshot_inner(out, None);
     }

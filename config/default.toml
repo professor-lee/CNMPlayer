@@ -1,9 +1,9 @@
 theme = "frappe"
-ui_fps = 30
-spectrum_hz = 60
+ui_fps = 60
 visualize = "bars"
 transparent_background = true
 album_border = true
+# Fractional-cell smoothing for the narrow-window VU meter only.
 super_smooth_bar = false
 bars_gap = false
 bar_number = "auto"

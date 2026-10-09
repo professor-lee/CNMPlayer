@@ -53,7 +53,8 @@ impl FrameClock {
 }
 
 fn interval(fps: u32) -> Duration {
-    Duration::from_secs_f64(1.0 / f64::from(fps.clamp(10, 60)))
+    assert!(fps != 0, "ui_fps must be greater than zero");
+    Duration::from_secs_f64(1.0 / f64::from(fps)).max(Duration::from_nanos(1))
 }
 
 #[cfg(test)]
@@ -90,5 +91,52 @@ mod tests {
         assert!(clock.is_dirty());
         assert!(!clock.due(start + Duration::from_millis(6)));
         assert!(clock.due(start + Duration::from_millis(34)));
+    }
+
+    #[test]
+    fn two_fps_uses_half_second_intervals_and_coalesces_events() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(2, start);
+        assert_eq!(clock.interval, Duration::from_millis(500));
+        clock.presented(start);
+        for offset in [1, 100, 250, 499] {
+            clock.mark_dirty();
+            assert!(!clock.due(start + Duration::from_millis(offset)));
+        }
+        assert!(clock.due(start + Duration::from_millis(500)));
+        clock.presented(start + Duration::from_millis(500));
+        clock.mark_dirty();
+        assert!(!clock.due(start + Duration::from_millis(999)));
+        assert!(clock.due(start + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn one_hundred_forty_four_fps_is_not_capped_at_sixty() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(144, start);
+        let period = Duration::from_secs_f64(1.0 / 144.0);
+        assert_eq!(clock.interval, period);
+        clock.presented(start);
+        for offset in [1, 1_000, 1_000_000, 6_000_000] {
+            clock.mark_dirty();
+            assert!(!clock.due(start + Duration::from_nanos(offset)));
+        }
+        assert!(!clock.due(start + period - Duration::from_nanos(1)));
+        assert!(clock.due(start + period));
+        clock.presented(start + period);
+        clock.mark_dirty();
+        assert!(!clock.due(start + period));
+        assert!(clock.due(start + period + period));
+    }
+
+    #[test]
+    fn maximum_u32_fps_still_has_a_nonzero_representable_period() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(u32::MAX, start);
+        assert_eq!(clock.interval, Duration::from_nanos(1));
+        clock.presented(start);
+        clock.mark_dirty();
+        assert!(!clock.due(start));
+        assert!(clock.due(start + Duration::from_nanos(1)));
     }
 }

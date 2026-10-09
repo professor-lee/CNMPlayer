@@ -2,9 +2,7 @@ use crate::data::config::BarChannels;
 use crate::tmplayer::app::state::AppState;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::style::Color;
 
 pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
     let h = area.height as usize;
@@ -22,20 +20,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
     let bars_left = &app.spectrum.bars_left;
     let bars_right = &app.spectrum.bars_right;
     let mono_count = bars.len().max(1);
-    if app.spectrum_render_grid.len() != bars_h {
-        app.spectrum_render_grid.resize_with(bars_h, Vec::new);
-    }
-    for row in &mut app.spectrum_render_grid {
-        if row.len() != w {
-            row.resize(w, ' ');
-        } else {
-            row.fill(' ');
-        }
-    }
-
-    let (bar_widths, gap_width, draw_total, x_offset) =
-        compute_bar_layout(w, app.config.bars_gap, mono_count, app.config.bar_channels);
-    if draw_total == 0 || bar_widths.is_empty() {
+    let mut bar_widths = [0; 192];
+    let (gap_width, draw_total, x_offset) = compute_bar_layout(
+        w,
+        app.config.bars_gap,
+        mono_count,
+        app.config.bar_channels,
+        &mut bar_widths,
+    );
+    if draw_total == 0 {
         return;
     }
 
@@ -47,69 +40,47 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
         app.config.bar_channels,
         app.config.bar_channel_reverse,
     );
+    let buf = f.buffer_mut();
+    // Paint directly into the reusable terminal buffer, without row strings.
+    for row in 0..h {
+        let t = if bars_h <= 1 {
+            1.0
+        } else {
+            row.min(bars_h - 1) as f32 / (bars_h - 1) as f32
+        };
+        let fg = vertical_gradient_color(app, t);
+        for x in 0..w {
+            if let Some(cell) = buf.cell_mut((area.x + x as u16, area.y + row as u16)) {
+                cell.set_char(if row == bars_h { '─' } else { ' ' });
+                cell.set_fg(fg);
+            }
+        }
+    }
+
     let mut x_cursor = x_offset.min(w);
     for (i, &val) in draw_vals[..draw_total.min(192)].iter().enumerate() {
         if x_cursor >= w {
             break;
         }
         let bar_width = bar_widths.get(i).copied().unwrap_or(1);
-        let val = apply_height_curve(val);
-        if app.config.super_smooth_bar {
-            let fill = val * bars_h as f32;
-            let full = fill.floor().clamp(0.0, bars_h as f32) as usize;
-            let frac = (fill - full as f32).clamp(0.0, 1.0);
-
-            for y in 0..bars_h {
-                let row = bars_h - 1 - y;
-                let ch = if y < full {
-                    '█'
-                } else if y == full {
-                    smooth_char(frac)
-                } else {
-                    ' '
-                };
-                if ch != ' ' {
-                    for x in x_cursor..(x_cursor + bar_width).min(w) {
-                        app.spectrum_render_grid[row][x] = ch;
-                    }
-                }
+        let units = (val.clamp(0.0, 1.0) * bars_h as f32 * 8.0).floor() as usize;
+        for y in 0..bars_h {
+            let ch = spectrum_char(units, y);
+            if ch == ' ' {
+                break;
             }
-        } else {
-            let bar_h = (val * bars_h as f32).round() as usize;
-            for y in 0..bar_h.min(bars_h) {
-                let row = bars_h - 1 - y;
-                let ch = density_char(y, bar_h.max(1));
-                for x in x_cursor..(x_cursor + bar_width).min(w) {
-                    app.spectrum_render_grid[row][x] = ch;
+            let row = bars_h - 1 - y;
+            for x in x_cursor..(x_cursor + bar_width).min(w) {
+                if let Some(cell) = buf.cell_mut((area.x + x as u16, area.y + row as u16)) {
+                    cell.set_char(ch);
                 }
             }
         }
-
         x_cursor = x_cursor.saturating_add(bar_width);
         if i + 1 < draw_total {
             x_cursor = x_cursor.saturating_add(gap_width);
         }
     }
-
-    // Render per-line vertical gradient using theme colors.
-    let mut lines: Vec<Line> = Vec::with_capacity(bars_h + 1);
-    for (row_idx, row) in app.spectrum_render_grid.iter().enumerate() {
-        let t = if bars_h <= 1 {
-            1.0
-        } else {
-            row_idx as f32 / (bars_h - 1) as f32
-        };
-        let fg = vertical_gradient_color(app, t);
-        let s = row.iter().collect::<String>();
-        lines.push(Line::from(Span::styled(s, Style::default().fg(fg))));
-    }
-
-    // bottom hint bar (same color as bars)
-    let hint = "─".repeat(w);
-    let fg = vertical_gradient_color(app, 1.0);
-    lines.push(Line::from(Span::styled(hint, Style::default().fg(fg))));
-
-    f.render_widget(Paragraph::new(lines), area);
 }
 
 pub(crate) fn compute_bar_layout(
@@ -117,47 +88,41 @@ pub(crate) fn compute_bar_layout(
     gap: bool,
     data_len: usize,
     mode: BarChannels,
-) -> (Vec<usize>, usize, usize, usize) {
+    widths: &mut [usize; 192],
+) -> (usize, usize, usize) {
     if width == 0 {
-        return (Vec::new(), 0, 0, 0);
+        return (0, 0, 0);
     }
-
-    let mut desired_total = match mode {
-        BarChannels::Mono => data_len,
-        BarChannels::Stereo => data_len.saturating_mul(2),
-    };
-
-    // Enforce minimum width per bar when no gap.
     let max_total = if gap {
         width.div_ceil(2).max(1)
     } else {
         (width / 2).max(1)
     };
-    if desired_total > max_total {
-        desired_total = max_total;
+    let mut bars = match mode {
+        BarChannels::Mono => data_len,
+        BarChannels::Stereo => data_len.saturating_mul(2),
     }
-    if mode == BarChannels::Stereo && desired_total % 2 == 1 {
-        desired_total = desired_total.saturating_sub(1).max(2);
+    .min(max_total)
+    .min(widths.len())
+    .max(1);
+    if mode == BarChannels::Stereo && bars % 2 == 1 {
+        bars = bars.saturating_sub(1).max(2);
     }
-
-    let mut bars = desired_total.max(1);
     loop {
         if !gap {
             let bar_w = width / bars;
             if bar_w >= 2 {
-                let used = bars * bar_w;
-                let mut widths = vec![bar_w; bars];
-                let mut remainder = width.saturating_sub(used);
-                for w in &mut widths {
+                widths[..bars].fill(bar_w);
+                let mut remainder = width.saturating_sub(bars * bar_w);
+                for item in &mut widths[..bars] {
                     if remainder == 0 {
                         break;
                     }
-                    *w += 1;
+                    *item += 1;
                     remainder -= 1;
                 }
-                let used = widths.iter().sum::<usize>();
-                let offset = width.saturating_sub(used) / 2;
-                return (widths, 0, bars, offset);
+                let used = widths[..bars].iter().sum::<usize>();
+                return (0, bars, width.saturating_sub(used) / 2);
             }
         } else {
             let mut bar_w = width / bars;
@@ -165,18 +130,18 @@ pub(crate) fn compute_bar_layout(
                 let gap_w = bar_w.div_ceil(2);
                 let needed = bars * bar_w + (bars.saturating_sub(1)) * gap_w;
                 if needed <= width {
-                    let mut widths = vec![bar_w; bars];
+                    widths[..bars].fill(bar_w);
                     let mut remainder = width.saturating_sub(needed);
-                    for w in &mut widths {
+                    for item in &mut widths[..bars] {
                         if remainder == 0 {
                             break;
                         }
-                        *w += 1;
+                        *item += 1;
                         remainder -= 1;
                     }
-                    let used = widths.iter().sum::<usize>() + (bars.saturating_sub(1)) * gap_w;
-                    let offset = width.saturating_sub(used) / 2;
-                    return (widths, gap_w, bars, offset);
+                    let used =
+                        widths[..bars].iter().sum::<usize>() + (bars.saturating_sub(1)) * gap_w;
+                    return (gap_w, bars, width.saturating_sub(used) / 2);
                 }
                 if bar_w == 1 {
                     break;
@@ -184,11 +149,9 @@ pub(crate) fn compute_bar_layout(
                 bar_w -= 1;
             }
         }
-
         if bars <= 1 {
-            let used = width.max(1);
-            let offset = width.saturating_sub(used) / 2;
-            return (vec![used], 0, 1, offset);
+            widths[0] = width.max(1);
+            return (0, 1, 0);
         }
         bars -= 1;
     }
@@ -235,9 +198,18 @@ fn sample_val(data: &[f32], data_len: usize, draw_len: usize, i: usize) -> f32 {
     data.get(idx).copied().unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
-fn apply_height_curve(v: f32) -> f32 {
-    let v = v.clamp(0.0, 1.0);
-    v.powf(0.72)
+/// Cava uses eight subcell levels; the VU meter keeps its own legacy helpers.
+fn spectrum_char(units: usize, y: usize) -> char {
+    const GLYPHS: [char; 8] = ['█', '▁', '▂', '▃', '▄', '▅', '▆', '▇'];
+    let full = units / 8;
+    let partial = units % 8;
+    if y < full {
+        GLYPHS[0]
+    } else if y == full && partial != 0 {
+        GLYPHS[partial]
+    } else {
+        ' '
+    }
 }
 
 pub(crate) fn density_char(level: usize, height: usize) -> char {

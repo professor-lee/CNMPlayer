@@ -70,8 +70,9 @@ pub fn draw_narrow(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let (bar_widths, gap, draw_total, x_offset) =
-        compute_bar_layout(width, true, 1, BarChannels::Stereo);
+    let mut bar_widths = [0; 192];
+    let (gap, draw_total, x_offset) =
+        compute_bar_layout(width, true, 1, BarChannels::Stereo, &mut bar_widths);
     if draw_total == 0 {
         return;
     }

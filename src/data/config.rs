@@ -49,7 +49,6 @@ impl GraphicsProtocol {
 pub struct Config {
     pub theme: String,
     pub ui_fps: u32,
-    pub spectrum_hz: u32,
 
     #[serde(default = "default_visualize")]
     pub visualize: VisualizeMode,
@@ -66,6 +65,7 @@ pub struct Config {
     #[serde(default)]
     pub graphics_protocol: GraphicsProtocol,
 
+    /// Smooth fractional cells for the narrow-window VU meter only.
     #[serde(default)]
     pub super_smooth_bar: bool,
     #[serde(default)]
@@ -251,25 +251,12 @@ pub enum VisualizeMode {
     Hidden,
     Bars,
     Oscilloscope,
-    /// 左右声道作 X/Y 的李萨如图（矢量模式）。与示波器同样读 PCM 抽头，不需要 cava。
+    /// 左右声道作 X/Y 的李萨如图（矢量模式），直接读播放链路上的 PCM 抽头。
     Vector,
 }
 
 impl VisualizeMode {
-    /// 该模式是否依赖 cava 的频谱数据。示波器读播放链路上的 PCM 抽头，不需要。
-    pub fn needs_cava(self) -> bool {
-        matches!(self, VisualizeMode::Bars)
-    }
-
-    /// 数据源就绪，可供用户选中。
-    pub fn is_available(self) -> bool {
-        !self.needs_cava() || crate::tmplayer::audio::cava::is_available()
-    }
-
-    /// 切到下一个**可用**模式：数据源缺失的模式被跳过，而不是让整项无法调整。
-    ///
-    /// 数组按「显示内容由少到多」排列；`unwrap_or(1)` 兜到 `Lyrics`，
-    /// 免得理论上找不到自身时把右侧区整个收掉。
+    /// 按「显示内容由少到多」在所有五档之间循环。
     pub fn cycle(self, delta: i32) -> Self {
         const MODES: [VisualizeMode; 5] = [
             VisualizeMode::Hidden,
@@ -279,13 +266,8 @@ impl VisualizeMode {
             VisualizeMode::Vector,
         ];
 
-        let len = MODES.len() as i32;
-        let step = if delta < 0 { -1 } else { 1 };
-        let start = MODES.iter().position(|mode| *mode == self).unwrap_or(1) as i32;
-        (1..=len)
-            .map(|offset| MODES[(start + step * offset).rem_euclid(len) as usize])
-            .find(|mode| mode.is_available())
-            .unwrap_or(self)
+        let index = MODES.iter().position(|mode| *mode == self).unwrap_or(1) as i32;
+        MODES[((index as i64 + delta as i64).rem_euclid(MODES.len() as i64)) as usize]
     }
 }
 
@@ -400,12 +382,7 @@ impl AudioQuality {
 }
 
 fn default_visualize() -> VisualizeMode {
-    if crate::tmplayer::audio::cava::is_available() {
-        VisualizeMode::Bars
-    } else {
-        // 示波器不依赖 cava，比直接关掉可视化更有用。
-        VisualizeMode::Oscilloscope
-    }
+    VisualizeMode::Bars
 }
 
 fn default_eq_bands_db() -> [f32; crate::tmplayer::app::state::EQ_BANDS] {
@@ -575,7 +552,6 @@ impl Default for Config {
         Self {
             theme: "frappe".to_string(),
             ui_fps: 30,
-            spectrum_hz: 30,
             visualize: default_visualize(),
             eq_bands_db: default_eq_bands_db(),
             transparent_background: true,
@@ -647,21 +623,14 @@ impl Config {
         let mut cfg: Config =
             toml::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
 
-        if cfg.ui_fps == 0 {
-            cfg.ui_fps = 30;
-        }
-        if cfg.spectrum_hz == 0 {
-            cfg.spectrum_hz = 30;
-        }
+        anyhow::ensure!(
+            cfg.ui_fps != 0,
+            "invalid ui_fps in {}: must be greater than zero",
+            path.display()
+        );
 
         cfg.page_lyrics_pos_x = cfg.page_lyrics_pos_x.clamp(0.0, 1.0);
         cfg.page_lyrics_pos_y = cfg.page_lyrics_pos_y.clamp(0.0, 1.0);
-
-        let mut forced_visualize_fallback = false;
-        if !cfg.visualize.is_available() {
-            cfg.visualize = VisualizeMode::Oscilloscope;
-            forced_visualize_fallback = true;
-        }
 
         let mut migrated_legacy_sidebar = false;
         if is_legacy_sidebar_default(&cfg.keybind_sidebar) {
@@ -694,7 +663,6 @@ impl Config {
             || !raw.contains("keybind_page_up")
             || !raw.contains("keybind_page_down")
             || !raw.contains("keybind_prev")
-            || forced_visualize_fallback
             || !raw.contains("keybind_next")
             || !raw.contains("keybind_toggle_play_pause")
             || !raw.contains("keybind_toggle_mode")
@@ -802,6 +770,51 @@ mod tests {
                 toml::from_str(&format!("visualize = \"{}\"", raw)).unwrap();
             assert_eq!(parsed.visualize, expected);
         }
+    }
+
+    #[test]
+    fn visualize_cycles_all_modes_without_external_dependencies() {
+        let modes = [
+            VisualizeMode::Hidden,
+            VisualizeMode::Lyrics,
+            VisualizeMode::Bars,
+            VisualizeMode::Oscilloscope,
+            VisualizeMode::Vector,
+        ];
+        for (index, mode) in modes.iter().copied().enumerate() {
+            assert_eq!(mode.cycle(1), modes[(index + 1) % modes.len()]);
+            assert_eq!(
+                mode.cycle(-1),
+                modes[(index + modes.len() - 1) % modes.len()]
+            );
+            assert_eq!(mode.cycle(0), mode);
+        }
+        assert_eq!(super::Config::default().visualize, VisualizeMode::Bars);
+        assert_eq!(super::Config::default().ui_fps, 30);
+    }
+
+    #[test]
+    fn fps_loading_rejects_zero_and_preserves_every_positive_u32() {
+        let dir =
+            std::env::temp_dir().join(format!("cnmplayer-fps-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("default.toml");
+        for fps in [0, 2, 144, u32::MAX] {
+            let cfg = super::Config {
+                ui_fps: fps,
+                ..super::Config::default()
+            };
+            let raw = toml::to_string_pretty(&cfg).unwrap();
+            std::fs::write(&path, &raw).unwrap();
+            let loaded = super::Config::load_from_path(&path);
+            if fps == 0 {
+                assert!(loaded.unwrap_err().to_string().contains("ui_fps"));
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+            } else {
+                assert_eq!(loaded.unwrap().ui_fps, fps);
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

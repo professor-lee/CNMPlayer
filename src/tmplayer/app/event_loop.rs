@@ -59,7 +59,8 @@ fn update_spectrum(app: &mut AppState, layout: &UiLayout, now: Instant) -> Resul
     ensure_bar_buffers(app, bars);
     app.spectrum_engine.set_bars(bars);
     if let Some(ring) = app.pcm_ring.as_ref() {
-        app.spectrum_engine.update(ring, app.player.playback == PlaybackState::Playing, now)?;
+        app.spectrum_engine
+            .update(ring, app.player.playback == PlaybackState::Playing, now)?;
         app.spectrum_engine.copy_bars(
             &mut app.spectrum.bars,
             &mut app.spectrum.bars_left,
@@ -397,7 +398,6 @@ where
     let mut last_host_sync = Instant::now() - Duration::from_millis(50);
     let wake = host_bridge.wake_signal();
     let mut clock = FrameClock::new(app.render_fps(), Instant::now());
-
 
     let _ = sync_from_host_bridge(
         app,
@@ -1421,7 +1421,6 @@ fn desired_bar_count(app: &AppState, layout: &UiLayout) -> usize {
     };
     raw.min(max_per_side).max(1)
 }
-
 
 fn ensure_bar_buffers(app: &mut AppState, bars: usize) {
     if app.spectrum.bars.len() != bars {
