@@ -633,7 +633,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut AppState) {
 
     // 环由宿主持有：先克隆 Arc 再借 state，避免同时借用 app 的两个字段。
     match app.pcm_ring.clone() {
-        Some(ring) => ring.snapshot(&mut app.vector.snapshot),
+        Some(ring) => ring.snapshot_tail_ms(
+            &mut app.vector.snapshot,
+            VECTOR_WINDOW_MS.ceil() as u32,
+        ),
         None => app.vector.snapshot.clear(),
     }
 
