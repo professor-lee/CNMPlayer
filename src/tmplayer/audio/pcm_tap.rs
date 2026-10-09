@@ -15,6 +15,7 @@ use crate::tmplayer::audio::lufs_meter::LufsMeter;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 /// 环容量（帧）。取 2 的幂以便用掩码回绕。
 ///
@@ -57,6 +58,16 @@ struct Ring {
     /// 起点之前的帧仍供 snapshot 使用，但不能跨丢批拼进一次增量读取。
     contiguous_start: u64,
     seen_drops: u64,
+    /// Monotonic timestamp of the last successful non-empty push in this generation.
+    updated_at: Option<Instant>,
+}
+
+/// Current PCM activity, published atomically with the ring's sample metadata.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PcmActivity {
+    pub generation: u64,
+    pub frames: usize,
+    pub updated_at: Option<Instant>,
 }
 
 impl Ring {
@@ -68,6 +79,7 @@ impl Ring {
             self.pos = 0;
             self.filled = 0;
             self.sample_rate = 0;
+            self.updated_at = None;
             self.generation_start = self.written;
             self.contiguous_start = self.written;
         }
@@ -166,6 +178,7 @@ impl PcmRing {
                 generation_start: 0,
                 contiguous_start: 0,
                 seen_drops: 0,
+                updated_at: None,
             }),
             generation: AtomicU64::new(0),
             dropped_batches: AtomicU64::new(0),
@@ -175,6 +188,16 @@ impl PcmRing {
     /// 丢弃环内全部样本。切歌与跳转后必须调用，否则示波器会画出上一段音频。
     pub fn reset(&self) {
         self.generation.fetch_add(1, Ordering::Release);
+    }
+    /// Return the current sample count and last successful write time without consuming samples.
+    pub(crate) fn activity(&self) -> PcmActivity {
+        let mut ring = self.inner.lock();
+        ring.sync_generation(self.generation.load(Ordering::Acquire));
+        PcmActivity {
+            generation: ring.generation,
+            frames: ring.filled,
+            updated_at: ring.updated_at,
+        }
     }
 
     /// 写入一批帧，`left` 与 `right` 按较短者对齐。抢不到锁则整批丢弃。
@@ -206,6 +229,7 @@ impl PcmRing {
         ring.pos = (pos + written) & MASK;
         ring.filled = (ring.filled + written).min(CAPACITY);
         ring.written += count as u64;
+        ring.updated_at = Some(Instant::now());
     }
 
     #[allow(dead_code)]
@@ -739,5 +763,104 @@ mod tests {
         let mut snap = PcmSnapshot::default();
         ring.snapshot(&mut snap);
         assert_eq!(snap.len, FLUSH_FRAMES);
+    }
+    #[test]
+    fn successful_push_publishes_fresh_activity_timestamp() {
+        let ring = PcmRing::new();
+        let before = Instant::now();
+        ring.push(&[1.0, 2.0], &[3.0, 4.0], 48_000);
+        let after = Instant::now();
+
+        let activity = ring.activity();
+        assert_eq!(activity.generation, 0);
+        assert_eq!(activity.frames, 2);
+        let updated_at = activity
+            .updated_at
+            .expect("successful push has a timestamp");
+        assert!(updated_at >= before);
+        assert!(updated_at <= after);
+    }
+
+    #[test]
+    fn empty_push_does_not_update_activity_timestamp() {
+        let ring = PcmRing::new();
+        ring.push(&[1.0], &[2.0], 48_000);
+        let before = ring.activity();
+
+        ring.push(&[], &[3.0], 48_000);
+
+        let after = ring.activity();
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(after.frames, before.frames);
+        assert_eq!(after.updated_at, before.updated_at);
+    }
+
+    #[test]
+    fn failed_try_lock_does_not_update_activity_timestamp() {
+        let ring = PcmRing::new();
+        ring.push(&[1.0], &[2.0], 48_000);
+        let before = ring.activity();
+        {
+            let _guard = ring.inner.lock();
+            ring.push(&[3.0], &[4.0], 48_000);
+        }
+
+        let after = ring.activity();
+        assert_eq!(after.generation, before.generation);
+        assert_eq!(after.frames, before.frames);
+        assert_eq!(after.updated_at, before.updated_at);
+    }
+
+    #[test]
+    fn reset_and_rate_change_clear_activity_generation_metadata() {
+        let ring = PcmRing::new();
+        ring.push(&[1.0, 2.0], &[3.0, 4.0], 48_000);
+        let first = ring.activity();
+
+        ring.reset();
+        let reset = ring.activity();
+        assert_ne!(reset.generation, first.generation);
+        assert_eq!(reset.frames, 0);
+        assert_eq!(reset.updated_at, None);
+
+        // Start the reset generation before changing its established rate.
+        ring.push(&[9.0], &[10.0], 48_000);
+        let resumed = ring.activity();
+
+        let before_rate_change = Instant::now();
+        ring.push(&[5.0], &[6.0], 96_000);
+        let after_rate_change = Instant::now();
+        let second = ring.activity();
+        assert_eq!(second.frames, 1);
+        assert_ne!(second.generation, resumed.generation);
+        let updated_at = second
+            .updated_at
+            .expect("successful rate change push has a timestamp");
+        assert!(updated_at >= before_rate_change);
+        assert!(updated_at <= after_rate_change);
+
+        ring.push(&[7.0], &[8.0], 44_100);
+        let changed_rate = ring.activity();
+        assert_ne!(changed_rate.generation, second.generation);
+        assert_eq!(changed_rate.frames, 1);
+        assert!(changed_rate.updated_at.is_some());
+    }
+
+    #[test]
+    fn activity_does_not_consume_or_modify_samples() {
+        let ring = PcmRing::new();
+        ring.push(&[1.0, 2.0], &[3.0, 4.0], 48_000);
+        let mut before = PcmSnapshot::default();
+        let mut after = PcmSnapshot::default();
+        ring.snapshot(&mut before);
+
+        let activity = ring.activity();
+
+        ring.snapshot(&mut after);
+        assert_eq!(activity.frames, before.len);
+        assert_eq!(after.len, before.len);
+        assert_eq!(after.sample_rate, before.sample_rate);
+        assert_eq!(&after.left[..after.len], &before.left[..before.len]);
+        assert_eq!(&after.right[..after.len], &before.right[..before.len]);
     }
 }

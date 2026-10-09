@@ -61,10 +61,10 @@ the component licenses below are not replaced by CNMPlayer's AGPL-3.0-only licen
   and integral smoothing, and the applicable channel/output processing. The PCM transport,
   sample-rate/Nyquist adaptation, elapsed-time pause silence, lifecycle and terminal rendering
   are integrated into CNMPlayer rather than implementing Cava's external input/output protocol.
-- The existing `ScopeGain` in `src/tmplayer/app/state.rs` also derives its amplitude-envelope
-  integral and gravity-shaped falloff formulas from Cava's `process [smoothing]`. It adapts them
-  to elapsed time, a normalized global oscilloscope gain and explicit settled endpoints; it is
-  not the spectrum core or a verbatim copy of the upstream implementation.
+- The oscilloscope's `ScopeGain` in `src/tmplayer/app/scope.rs` retains an integral-inspired
+  attack derived from Cava's `process [smoothing]`, adapted to elapsed time and a normalized
+  global gain. Its release uses CNMPlayer's existing EaseInOut curve for pause, stop and stale
+  PCM; it is not the spectrum core or a verbatim copy of the upstream implementation.
 - The FFT backend is RealFFT/RustFFT, not FFTW. No FFTW source or library is included by this port.
   Faithfulness refers to Cava's algorithm semantics, not bitwise identity with FFTW floating-point
   results. Cava's system audio capture, configuration parser and external process are not imported.

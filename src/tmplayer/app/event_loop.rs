@@ -1461,16 +1461,20 @@ mod tests {
             crate::ui::theme::Theme::default(),
             crate::data::config::Language::Zh,
         );
+        let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
+        ring.push(&[0.5; 512], &[0.5; 512], 48_000);
+        app.pcm_ring = Some(ring);
         let start = Instant::now();
         app.last_frame = start;
         app.player.playback = PlaybackState::Playing;
-        tick_visual_state(&mut app, start + Duration::from_secs(1));
-        assert_eq!(app.scope_gain.value(), 1.0);
+        tick_visual_state(&mut app, start);
+        tick_visual_state(&mut app, start + Duration::from_millis(100));
+        assert!(app.scope_gain.value() > 0.7);
         app.player.playback = PlaybackState::Paused;
         let mut settled = None;
         for frame in 1..=120 {
             let before = app.scope_gain.value();
-            let now = start + Duration::from_secs(1) + Duration::from_millis(frame * 16);
+            let now = start + Duration::from_millis(100 + frame * 16);
             let dirty = tick_visual_state(&mut app, now);
             if before > 0.0 && app.scope_gain.value() == 0.0 {
                 assert!(
@@ -1490,6 +1494,37 @@ mod tests {
             &mut app,
             settled + Duration::from_millis(16)
         ));
+    }
+
+    #[test]
+    fn missing_pcm_releases_scope_without_changing_playback_state() {
+        let config = Config {
+            visualize: VisualizeMode::Oscilloscope,
+            ..Config::default()
+        };
+        let mut app = AppState::new(
+            config,
+            crate::ui::theme::Theme::default(),
+            crate::data::config::Language::En,
+        );
+        let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
+        ring.push(&[0.5; 512], &[-0.5; 512], 48_000);
+        app.pcm_ring = Some(ring);
+        app.player.playback = PlaybackState::Playing;
+        let start = Instant::now();
+        app.last_frame = start;
+        tick_visual_state(&mut app, start);
+        tick_visual_state(&mut app, start + Duration::from_millis(100));
+        assert!(app.scope_gain.value() > 0.7, "fresh PCM opens the scope");
+        tick_visual_state(&mut app, start + Duration::from_millis(160));
+        let dirty = tick_visual_state(&mut app, start + Duration::from_millis(500));
+        assert_eq!(app.player.playback, PlaybackState::Playing);
+        assert_eq!(
+            app.scope_gain.value(),
+            0.0,
+            "stalled PCM must not hold the old waveform open"
+        );
+        assert!(dirty, "the settled scope frame must be submitted");
     }
 
     /// 挂在设置弹窗下面的子页必须全部登记进 `settings_parent`：
