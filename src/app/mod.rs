@@ -31,8 +31,8 @@ use crate::render::cover_renderer::render_cover_ascii;
 use crate::render::motion::{Curve, Toggle, Trail, Transition};
 use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::LyricLine;
-use crate::tmplayer::audio::spectrum::{MINI_BARS, Spectrum};
 use crate::tmplayer::audio::pcm_tap::PcmRing;
+use crate::tmplayer::audio::spectrum::{MINI_BARS, Spectrum};
 use crate::tmplayer::playback::metadata::{parse_lrc, parse_plain_lyrics};
 use crate::ui::page_lyrics;
 use crate::ui::theme::Theme;
@@ -3858,7 +3858,6 @@ impl App {
             .unwrap_or_default()
     }
 
-
     /// 播放链路上的 PCM 抽头环句柄，经 `HostPlaybackBridge` 交给全屏页示波器。
     pub fn pcm_ring(&self) -> Arc<PcmRing> {
         self.playback.audio_player.pcm_ring()
@@ -4130,7 +4129,10 @@ impl App {
     }
 
     fn mini_spectrum_enabled(&self) -> bool {
-        !matches!(self.config.visualize, VisualizeMode::Lyrics | VisualizeMode::Hidden)
+        !matches!(
+            self.config.visualize,
+            VisualizeMode::Lyrics | VisualizeMode::Hidden
+        )
     }
 
     /// Called only immediately before a Host frame submission, never during audio callbacks.
