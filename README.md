@@ -30,7 +30,7 @@ A single process carries two UIs:
 - the **host UI** — login, home recommendations, playlist / artist / search pages, a sliding sidebar and a 5-row collapsed player bar;
 - the **fullscreen playback page** — cover, lyrics, playlist overlay and a 10-band EQ. The fullscreen keybind (default `Ctrl+F`) opens it; inside, `Ctrl+F` or `Esc` returns to the host.
 
-Playback belongs to the host: streaming with a local cache, queue memory, private roam, VIP-aware audio quality, and the visualizers (cava bars, a real-PCM oscilloscope, a Lissajous vector mode, a LUFS VU meter) that the other UIs draw.
+Playback belongs to the host: streaming with a local cache, queue memory, private roam, VIP-aware audio quality, and the visualizers (internal Cava spectrum bars, a real-PCM oscilloscope, a Lissajous vector mode, a LUFS VU meter) that the other UIs draw.
 
 > Read the [Disclaimer](#disclaimer) first: this is an unofficial client, music copyright belongs to the
 > rights holders, and the cache/download features are for personal offline use only — **no redistribution**.
@@ -97,11 +97,11 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 
 - `hidden` (shown as "Off" in settings) — the whole right-hand side of the fullscreen page is collapsed: neither a visualizer nor the lyrics are drawn, and the song info panel stretches across the full terminal width (its border spans the full width, while the content inside is capped at 1/3 of the window and centred).
 - `lyrics` (shown as "Lyrics") — the right-hand side only shows the lyrics; no visualizer is drawn. The old `off` value still selects this mode.
-- `bars` — cava spectrum bars. Requires the external `cava` binary.
-- `vector` — a Lissajous-style vectorscope: the left channel drives the horizontal axis and the right channel the vertical one (up = positive, always), drawn dot by dot with the same braille raster as the oscilloscope and scaled so the track's loudest moment so far fills the panel (only track changes restart it). On pause or a sudden cut to silence the figure bursts apart into drifting dots that settle and softly twinkle until playback resumes. Needs no cava
+- `bars` — an internal, faithful Rust port of Cava's spectrum algorithm, rendered with eight sub-cell height levels; no external `cava` executable is needed.
+- `vector` — a Lissajous-style vectorscope: the left channel drives the horizontal axis and the right channel the vertical one (up = positive, always), drawn dot by dot with the same braille raster as the oscilloscope and scaled so the track's loudest moment so far fills the panel (only track changes restart it). On pause or a sudden cut to silence the figure bursts apart into drifting dots that settle and softly twinkle until playback resumes.
 - The vectorscope calibrates from the first valid PCM window before drawing that frame; its peak reference then only increases, and the first valid window after a PCM reset recalibrates it. Pausing the oscilloscope commits its exact settled frame without requiring another input event.
-- If cava is missing, the default becomes `oscilloscope` and cycling the setting skips `bars` instead of failing.
-- The collapsed player bar draws a 10-cell braille mini spectrum from cava; that spot stays blank in `lyrics` and `hidden` because cava is not started there. The narrow small window draws a stereo VU meter driven by a 400 ms momentary LUFS meter (display range −60…0 LUFS).
+- The default visualization is `bars`; selecting it no longer depends on an installed executable.
+- The collapsed player bar draws a 10-cell braille mini spectrum using the same internal Cava algorithm and playback PCM source as fullscreen bars; that spot stays blank in `lyrics` and `hidden`. The narrow small window draws a stereo VU meter driven by a 400 ms momentary LUFS meter (display range −60…0 LUFS).
 
 ### Small window mode
 
@@ -123,7 +123,7 @@ The flat player bar keeps its mouse targets (previous, play-pause, next, like, r
 - Themes: loaded dynamically from `themes/*.toml` — 20 built-ins (`frappe` by default, plus `system`, the other Catppuccin variants, `ayu_light`, `ayu_mirage`, `ocean`, `everforest_dark`, `everforest_light`, `monokai_pro`, `nord`, `rose_pine_moon`, `solarized_dark`, `solarized_light`, `tomorrow_light`, `tomorrow_night`, `zenburn`, `zinc_dark`, `zinc_light`); drop in your own toml and it joins the cycle. Files that fail validation are skipped, and a broken selected theme falls back to the default
 - UI language: `zh` / `en`
 - Startup: a loading page (ASCII title plus progress bar, no text) appears first; login restore and recommendation fetches run in the background step by step, and an unusable saved session hands over to the login page. Playback-memory restoration is bounded by the same initialization deadline.
-- The host refreshes playback time and progress on its idle maintenance tick even when cava is unavailable or visualization is set to lyrics/hidden.
+- The host refreshes playback time and progress on its idle maintenance tick even when visualization is set to lyrics/hidden.
 - Settings and their subpages open and close immediately in both the host and fullscreen UI, without modal transition animations.
 - Transparent background, album-cover border and hint lines
 - 22 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
@@ -146,7 +146,7 @@ paru -S cnmplayer-bin
 
 ### Prebuilt tarballs
 
-Every release publishes `CNMPlayer_vX.Y.Z_linux_amd64.tar.xz`, `CNMPlayer_vX.Y.Z_linux_aarch64.tar.xz` and `SHA256SUMS` on the [Releases page](https://github.com/professor-lee/CNMPlayer/releases). Both tarballs are flat archives containing the `cnmplayer` binary and `LICENSE`.
+Every release publishes `CNMPlayer_vX.Y.Z_linux_amd64.tar.xz`, `CNMPlayer_vX.Y.Z_linux_aarch64.tar.xz` and `SHA256SUMS` on the [Releases page](https://github.com/professor-lee/CNMPlayer/releases). Both tarballs are flat archives containing the `cnmplayer` binary, `LICENSE` and `THIRD_PARTY_NOTICES.md` (including the full MIT notices for Cava and the Rust FFT dependencies).
 
 ```bash
 # Download SHA256SUMS next to the tarball; verify the downloaded architecture.
@@ -177,21 +177,17 @@ sudo apt install -y build-essential cmake pkg-config \
 ### Requirements
 
 - Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime
-- An optional `cava` binary for the `bars` visualizer
 - A Nerd Font is required for the playback and navigation icons; the application always uses the Nerd Font glyph set.
 
-## cava
+## Internal Cava spectrum
 
-CNMPlayer looks for an external `cava` binary for the live spectrum visualizer.
-If `cava` is not available, the app still runs: `bars` is unavailable and the default visualizer becomes the oscilloscope, which reads PCM from the playback chain and needs no external process.
+Fullscreen `bars` and the collapsed mini spectrum analyze CNMPlayer's own decoded playback PCM. The shared tap is after the 10-band EQ and before playback volume: EQ changes affect the visualization, while volume changes do not. It does not capture the microphone, system output or other applications' audio.
 
-The executable lookup order is:
+The spectrum is a faithful Rust port of [Cava](https://github.com/karlstav/cava)'s algorithm at commit [`6d43df3b2c7882122585c02c064b20009842a6f8`](https://github.com/karlstav/cava/tree/6d43df3b2c7882122585c02c064b20009842a6f8). It uses the real playback sample rate, independent left/right FFTs and Cava's windows, band mapping, autosensitivity, falloff and integral smoothing. Mono display averages the independently processed, output-clamped channels rather than averaging PCM before the FFT. The FFT backend is pure Rust (`realfft` / `rustfft`), not copied FFTW code; floating-point differences mean this is not a claim of bitwise identity with FFTW.
 
-1. `TMPLAYER_CAVA`
-2. `<executable dir>/cava`
-3. `<executable dir>/third_party/cava/cava`
-4. `<current working directory>/third_party/cava/cava`
-5. `cava` in `PATH`
+The internal defaults are fixed: autosensitivity enabled, noise reduction `0.77`, cutoff `50–8000 Hz` (adapted to the Nyquist limit at low sample rates), linear scaling, sensitivity `1`, and Monstercat/waves disabled. These are not new user settings. Frequency bars use Cava's eight-level height rendering without an extra project EMA or gamma curve.
+
+Spectrum processing advances with the shared `ui_fps` UI submission clock; there is no independent spectrum refresh timer. Pausing feeds elapsed-time silence so the window and smoothing tail decay rather than repeatedly transforming stale audio. No external `cava`, executable lookup or `TMPLAYER_CAVA` environment variable is used. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and full license terms.
 
 ## First Run and Asset Root
 
@@ -215,13 +211,13 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 
 ## Configuration
 
-`config/default.toml` is rewritten on startup when a defaulted field is missing, a legacy value needs migration, or the saved visualizer is unavailable. Invalid TOML or missing required fields produce an error without replacing the file; repair the reported configuration before restarting.
+`config/default.toml` is rewritten on startup when a defaulted field is missing or a legacy value needs migration. Invalid TOML or missing required fields produce an error without replacing the file; repair the reported configuration before restarting.
 
 | Key | Default | Values / notes |
 | --- | --- | --- |
 | `theme` | `frappe` | Any theme key from `themes/*.toml` (20 built-ins, custom files picked up); a broken file falls back to the default |
 | `language` | `zh` | `zh`, `en` |
-| `visualize` | cava present → `bars`, otherwise `oscilloscope` | `hidden` (shown as "Off" in settings), `lyrics` ("Lyrics"; the old `off` means the same), `bars`, `oscilloscope`, `vector`; only `bars` needs cava |
+| `visualize` | `bars` | `hidden` (shown as "Off" in settings), `lyrics` ("Lyrics"; the old `off` means the same), `bars`, `oscilloscope`, `vector`; all visualizers are internal |
 | `transparent_background` | `true` | Use the terminal background |
 | `album_border` | `true` | Border around the fullscreen cover |
 | `show_hints` | `true` | Hint line on the content pages and in the fullscreen page's panel border |
@@ -241,10 +237,9 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 | `bar_number` | `auto` | `auto`, `16`, `32`, `48`, `64`, `80`, `96` (fullscreen spectrum) |
 | `bar_channels` | `mono` | `stereo`, `mono` |
 | `bar_channel_reverse` | `false` | Draw the right channel on the left (fullscreen spectrum) |
-| `super_smooth_bar` | `false` | Sub-cell smoothed bars instead of density characters |
+| `super_smooth_bar` | `false` | "Smooth VU": sub-cell smoothing for the narrow-window LUFS VU meter only; does not change frequency bars |
 | `bars_gap` | `false` | Leave a gap between bars |
-| `ui_fps` | `30` | UI render cap for host and fullscreen (runtime-clamped to 10–60 FPS) |
-| `spectrum_hz` | `30` (shipped file says `60`) | Cava/spectrum data refresh rate; independent from UI rendering |
+| `ui_fps` | `60` in the shipped template; `30` in code defaults | Positive integer UI submission cap for host and fullscreen, including idle; not clamped to 10–60. Clean frames may be skipped; terminal speed and processing cost determine the actual FPS, which is not guaranteed |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |
 | `cache.clean_strategy` | `both` | `size`, `age`, `both` |
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
@@ -336,7 +331,7 @@ Fullscreen page:
 
 ## Notes
 
-- There are no command line flags. The environment variables are `CNMPLAYER_ASSET_DIR` (asset root), `TMPLAYER_CAVA` (explicit cava binary, retained for compatibility) and `COLORTERM` / `TERM` (color capability detection).
+- There are no command line flags. The environment variables are `CNMPLAYER_ASSET_DIR` (asset root) and `COLORTERM` / `TERM` (color capability detection).
 - A Nerd Font is required for the playback and navigation icons; CNMPlayer intentionally does not guess glyph availability from `TERM`.
 - There is no dedicated album page; album search results and artist-page albums are shown with the playlist-page layout.
 - Native audio backends write warnings straight to stderr; CNMPlayer redirects fd 2 into `Player.stderr.log` so those messages cannot smear the TUI.
@@ -356,7 +351,7 @@ Fullscreen page:
 - Playback: rodio + symphonia (mp3 / flac) over PipeWire
 - Metadata and artwork: image + qrcode
 - Image rendering: ratatui-image + chafa
-- Visualization: external `cava`, plus an internal PCM tap that feeds the oscilloscope and the LUFS meter
+- Visualization: internal Cava Rust spectrum port using realfft + rustfft, with a shared playback PCM tap feeding bars, mini spectrum, oscilloscope, vectorscope and LUFS metering
 - Linux media control: mpris-server
 - Fullscreen playback: embedded `src/tmplayer/` UI using host playback and shared configuration
 
@@ -405,7 +400,7 @@ Release (`release.yml`) runs the root and vendored test gates before publishing,
 
 CNMPlayer is licensed under [AGPL-3.0-only](LICENSE).
 
-Third-party attributions and license notices for vendored code are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Third-party attributions and license notices for vendored code, adapted algorithms and the FFT dependencies are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which is also included in the prebuilt release archives.
 
 See [CITATION.cff](CITATION.cff) for the standard citation metadata and upstream references.
 

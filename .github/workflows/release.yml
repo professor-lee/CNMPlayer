@@ -103,13 +103,13 @@ jobs:
       - name: Build
         run: cargo build --locked --release --target ${{ matrix.target }}
 
-      # 与既有发布约定一致：tarball 内平铺 cnmplayer + LICENSE（无顶层目录）
+      # 平铺可执行文件及项目/第三方许可声明（无顶层目录）
       - name: Package
         run: |
           mkdir pkg
           cp "target/${{ matrix.target }}/release/cnmplayer" pkg/
-          cp LICENSE pkg/
-          (cd pkg && tar -cJf "../CNMPlayer_${TAG}_linux_${ARCH}.tar.xz" cnmplayer LICENSE)
+          cp LICENSE THIRD_PARTY_NOTICES.md pkg/
+          (cd pkg && tar -cJf "../CNMPlayer_${TAG}_linux_${ARCH}.tar.xz" cnmplayer LICENSE THIRD_PARTY_NOTICES.md)
 
       - uses: actions/upload-artifact@v4
         with:

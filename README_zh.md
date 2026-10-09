@@ -30,7 +30,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - **主程序界面**：登录、首页推荐、歌单 / 作者 / 搜索页、可滑出的侧边栏，以及底部 5 行的折叠播放栏；
 - **全屏播放页**：封面、歌词、歌单浮层和 10 段均衡器。全屏快捷键（默认 `Ctrl+F`）进入该页面，再按 `Ctrl+F` 或 `Esc` 返回主程序。
 
-播放本身由主程序负责：带本地缓存的流式播放、播放记忆、私人漫游、按 VIP 权限裁剪的音质，以及由其它界面绘制的可视化（cava 频谱、真 PCM 示波器、李萨如矢量模式、LUFS 音量条）。
+播放本身由主程序负责：带本地缓存的流式播放、播放记忆、私人漫游、按 VIP 权限裁剪的音质，以及由其它界面绘制的可视化（内部 Cava 频谱、真 PCM 示波器、李萨如矢量模式、LUFS 音量条）。
 
 > 使用前请先读 [免责声明](#免责声明)：本项目是非官方客户端，音乐内容版权归原权利人所有，
 > 播放缓存与下载仅供个人离线使用，**禁止二次传播**。
@@ -97,11 +97,11 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 - `hidden`（设置弹窗里显示「关闭」）——全屏页右侧整块收起：可视化与歌词都不画，歌曲信息区撑满整个终端宽度（边框铺满整宽，内容宽度上限为窗口的 1/3 并居中）
 - `lyrics`（显示「仅歌词」）——右侧只显示歌词，不画可视化；旧配置里的 `off` 仍按这一档读取
-- `bars`——cava 频谱条，需要外部 `cava` 可执行文件
-- `vector`——李萨如矢量示波器：横向 x 轴 = 左声道 L，纵向 y 轴 = 右声道 R（**向上恒为正**），用与示波器相同的盲文点阵逐点绘制；缩放基准取本曲开播以来的最响段落，恰好撑满面板，仅切歌重新开始。暂停或突断静音时图形炸开成飞散的盲文点，停稳后轻微明灭，直到恢复播放。**不依赖** cava
+- `bars`——内部忠实移植 Cava 算法的 Rust 频谱条，使用八级子格高度绘制，无需外部 `cava` 可执行文件
+- `vector`——李萨如矢量示波器：横向 x 轴 = 左声道 L，纵向 y 轴 = 右声道 R（**向上恒为正**），用与示波器相同的盲文点阵逐点绘制；缩放基准取本曲开播以来的最响段落，恰好撑满面板，仅切歌重新开始。暂停或突断静音时图形炸开成飞散的盲文点，停稳后轻微明灭，直到恢复播放。
 - 李萨如图从首个有效 PCM 窗口开始校准，首帧绘制前即使用该窗口峰值；之后基准只增不减，PCM 重置后的首个有效窗口重新校准。示波器暂停时会提交精确归零的收尾帧，无需额外按键。
-- 没有 cava 时默认改为 `oscilloscope`，切换设置时会跳过 `bars`，而不是让整项无法调整
-- 折叠播放栏绘制 10 格盲文迷你频谱，数据来自 cava；`lyrics` 与 `hidden` 两档不启动 cava，那里因此是空白。窄窗则用 400 ms Momentary LUFS 计量驱动双声道音量条（显示范围 −60…0 LUFS）
+- 默认可视化为 `bars`，选择它不再取决于是否安装了外部程序
+- 折叠播放栏绘制 10 格盲文迷你频谱，与全屏频谱使用同一内部 Cava 算法和播放 PCM 来源；`lyrics` 与 `hidden` 两档中那里保持空白。窄窗则用 400 ms Momentary LUFS 计量驱动双声道音量条（显示范围 −60…0 LUFS）
 
 ### 小窗口模式
 
@@ -123,7 +123,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - 主题：从 `themes/*.toml` 动态加载——内置 20 款（默认 `frappe`，另有 `system`、Catppuccin 其余变体、`ayu_light`、`ayu_mirage`、`ocean`、`everforest_dark`、`everforest_light`、`monokai_pro`、`nord`、`rose_pine_moon`、`solarized_dark`、`solarized_light`、`tomorrow_light`、`tomorrow_night`、`zenburn`、`zinc_dark`、`zinc_light`）；自己丢一个 toml 进去即可加入循环。校验不过的文件会被跳过，选中的主题损坏时回退默认主题
 - 界面语言：`zh` / `en`
 - 启动：先出加载页（ASCII 标题 + 进度条，不显示文字），登录恢复、推荐加载等网络步骤在后台按步推进；登录态不可用时收尾后进入登录页。播放记忆恢复受同一个初始化截止时间约束。
-- 即使 cava 不可用或可视化设为歌词/关闭，主程序仍在空闲维护周期刷新播放时间与进度。
+- 即使可视化设为歌词/关闭，主程序仍在空闲维护周期刷新播放时间与进度。
 - 主程序与全屏页的设置及其子弹窗均立即打开/关闭，不播放弹窗转场动画。
 - 透明背景、封面边框、提示行开关
 - 22 个可重绑快捷键，带冲突检测；`Ctrl+Alt+R` 恢复默认
@@ -146,7 +146,7 @@ paru -S cnmplayer-bin
 
 ### 预编译包
 
-每个版本都会在 [Releases](https://github.com/professor-lee/CNMPlayer/releases) 发布 `CNMPlayer_vX.Y.Z_linux_amd64.tar.xz`、`CNMPlayer_vX.Y.Z_linux_aarch64.tar.xz` 与 `SHA256SUMS`。两种压缩包都是平铺结构，内含 `cnmplayer` 可执行文件与 `LICENSE`。
+每个版本都会在 [Releases](https://github.com/professor-lee/CNMPlayer/releases) 发布 `CNMPlayer_vX.Y.Z_linux_amd64.tar.xz`、`CNMPlayer_vX.Y.Z_linux_aarch64.tar.xz` 与 `SHA256SUMS`。两种压缩包都是平铺结构，内含 `cnmplayer` 可执行文件、`LICENSE` 与 `THIRD_PARTY_NOTICES.md`（包括 Cava 和 Rust FFT 依赖的完整 MIT 声明）。
 
 ```bash
 # 把 SHA256SUMS 与下载的压缩包放在同一目录，校验已下载的架构。
@@ -177,21 +177,17 @@ sudo apt install -y build-essential cmake pkg-config \
 ### 运行要求
 
 - Linux 上的 PipeWire 音频（ALSA 后端已弃用），以及运行时的 chafa 共享库
-- 可选的 `cava` 可执行文件，用于 `bars` 频谱
 - 播放与导航图标要求 Nerd Font；程序固定使用 Nerd Font 字形，不根据 `TERM` 猜测字体能力。
 
-## cava
+## 内部 Cava 频谱
 
-CNMPlayer 会查找外部 `cava` 可执行文件来生成实时频谱可视化。
-没有 `cava` 时程序仍可运行：`bars` 不可用，默认可视化变为示波器——它读取播放链路上的 PCM，不依赖外部进程。
+全屏 `bars` 与折叠栏迷你频谱分析 CNMPlayer 自己解码的播放 PCM。共享抽头位于十段 EQ 之后、播放音量之前：修改 EQ 会影响可视化，调节音量不会。它不采集麦克风、系统输出或其它应用的声音。
 
-可执行文件的查找顺序如下：
+频谱按 [Cava](https://github.com/karlstav/cava) 的 [`6d43df3b2c7882122585c02c064b20009842a6f8`](https://github.com/karlstav/cava/tree/6d43df3b2c7882122585c02c064b20009842a6f8) 提交忠实移植为 Rust，使用实际播放采样率、左右声道独立 FFT，以及 Cava 的窗口、频带映射、自动灵敏度、回落和 integral 平滑。单声道显示在两声道独立处理并钳位输出后取平均，不在 FFT 前混合 PCM。FFT 后端为纯 Rust 的 `realfft` / `rustfft`，不是复制 FFTW 代码；浮点计算存在差异，因此不宣称与 FFTW 逐位一致。
 
-1. `TMPLAYER_CAVA`
-2. `<可执行文件目录>/cava`
-3. `<可执行文件目录>/third_party/cava/cava`
-4. `<当前工作目录>/third_party/cava/cava`
-5. `PATH` 里的 `cava`
+内部默认值固定为：开启自动灵敏度，降噪系数 `0.77`，截止频率 `50–8000 Hz`（低采样率时适配到 Nyquist 上限），线性缩放，灵敏度 `1`，关闭 Monstercat/waves。这些不是新增用户设置。频谱高度使用 Cava 的八级子格语义，不叠加项目额外的 EMA 或 gamma 曲线。
+
+频谱按共享的 `ui_fps` UI 提交时钟推进，没有独立频谱刷新计时器。暂停时按实际经过时间送入静音，让窗口和平滑尾巴自然衰减，而不是重复分析旧音频。无需外部 `cava`，不再查找可执行文件，也不使用 `TMPLAYER_CAVA` 环境变量。归属与完整许可条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 首次运行与资源目录
 
@@ -215,13 +211,13 @@ CNMPlayer 会查找外部 `cava` 可执行文件来生成实时频谱可视化�
 
 ## 配置
 
-默认字段缺失、旧值需要迁移或保存的可视化模式不可用时，程序会在启动时重写 `config/default.toml`。无效 TOML 或缺少必需字段会报错而不会替换原文件；请根据报错修复配置后再启动。
+默认字段缺失或旧值需要迁移时，程序会在启动时重写 `config/default.toml`。无效 TOML 或缺少必需字段会报错而不会替换原文件；请根据报错修复配置后再启动。
 
 | 配置项 | 默认值 | 取值 / 说明 |
 | --- | --- | --- |
 | `theme` | `frappe` | `themes/*.toml` 里的任意主题 key（内置 20 款，自动识别自定义文件）；选中的主题文件损坏时回退默认主题 |
 | `language` | `zh` | `zh`、`en` |
-| `visualize` | 有 cava 时为 `bars`，否则 `oscilloscope` | `hidden`（设置里显示「关闭」）、`lyrics`（「仅歌词」，旧的 `off` 同义）、`bars`、`oscilloscope`、`vector`；只有 `bars` 依赖 cava |
+| `visualize` | `bars` | `hidden`（设置里显示「关闭」）、`lyrics`（「仅歌词」，旧的 `off` 同义）、`bars`、`oscilloscope`、`vector`；所有可视化均为内部实现 |
 | `transparent_background` | `true` | 使用终端背景 |
 | `album_border` | `true` | 全屏封面边框 |
 | `show_hints` | `true` | 内容页提示行，以及全屏页面板边框内的提示文字 |
@@ -241,10 +237,9 @@ CNMPlayer 会查找外部 `cava` 可执行文件来生成实时频谱可视化�
 | `bar_number` | `auto` | `auto`、`16`、`32`、`48`、`64`、`80`、`96`（全屏频谱） |
 | `bar_channels` | `mono` | `stereo`、`mono` |
 | `bar_channel_reverse` | `false` | 左右声道反画（全屏频谱） |
-| `super_smooth_bar` | `false` | 用子格平滑条替代密度字符 |
+| `super_smooth_bar` | `false` | 「VU 平滑」：仅控制窄窗 LUFS 音量条的子格平滑，不改变频谱条 |
 | `bars_gap` | `false` | 频谱条之间留出间隔 |
-| `ui_fps` | `30` | 主程序与全屏页的 UI 绘制上限（运行时限制为 10–60 FPS） |
-| `spectrum_hz` | `30`（仓库内模板写的是 `60`） | cava/频谱数据刷新率，与 UI 绘制频率相互独立 |
+| `ui_fps` | 仓库模板为 `60`，代码默认值为 `30` | 正整数，控制主程序与全屏页（包括空闲时）的 UI 提交上限，不再限制为 10–60。无变化的帧可跳过；实际 FPS 取决于终端速度与处理开销，不保证达到设定值 |
 | `cache.path` | 未设置 | 缓存目录覆盖（默认用系统缓存目录） |
 | `cache.clean_strategy` | `both` | `size`、`age`、`both` |
 | `cache.max_size_mb` | `500` | LRU 阶段的容量上限 |
@@ -336,7 +331,7 @@ CNMPlayer 会查找外部 `cava` 可执行文件来生成实时频谱可视化�
 
 ## 注意事项
 
-- 没有命令行参数。可用的环境变量是 `CNMPLAYER_ASSET_DIR`（资产根目录）、`TMPLAYER_CAVA`（显式指定 cava，名称为兼容旧配置而保留）与 `COLORTERM` / `TERM`（颜色能力探测）。
+- 没有命令行参数。可用的环境变量是 `CNMPLAYER_ASSET_DIR`（资产根目录）与 `COLORTERM` / `TERM`（颜色能力探测）。
 - 播放与导航图标要求 Nerd Font；CNMPlayer 不根据 `TERM` 猜测字形是否可用。
 - 没有独立的专辑页；专辑搜索结果与作者页里的专辑都以歌单页样式展示。
 - 原生音频后端会把告警直接写到 stderr；CNMPlayer 把 fd 2 重定向到 `Player.stderr.log`，避免这些信息糊掉 TUI。
@@ -356,7 +351,7 @@ CNMPlayer 会查找外部 `cava` 可执行文件来生成实时频谱可视化�
 - 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire
 - 元数据与封面：image + qrcode
 - 图像渲染：ratatui-image + chafa
-- 可视化：外部 `cava`，以及内部 PCM 抽头驱动的示波器、李萨如矢量模式与 LUFS 计量
+- 可视化：使用 realfft + rustfft 的内部 Cava Rust 频谱移植，共享播放 PCM 抽头驱动频谱条、迷你频谱、示波器、李萨如矢量模式与 LUFS 计量
 - Linux 媒体控制：mpris-server
 - 全屏播放：内置 `src/tmplayer/` UI，使用主程序播放链路与共享配置
 
@@ -398,7 +393,7 @@ CI（`ci.yml`）会在 Rust 1.95 与 stable 上分别执行默认特性和 `--no
 
 CNMPlayer 采用 [AGPL-3.0-only](LICENSE) 许可证。
 
-仓库内 vendored 代码的第三方归属与许可证声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+vendored 代码、改写算法与 FFT 依赖的第三方归属和许可证声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，预编译发布包也包含该文件。
 
 标准引用元数据和上游依赖请查看 [CITATION.cff](CITATION.cff)。
 
