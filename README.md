@@ -211,7 +211,7 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 
 ## Configuration
 
-`config/default.toml` is rewritten on startup when a defaulted field is missing or a legacy value needs migration. Invalid TOML or missing required fields produce an error without replacing the file; repair the reported configuration before restarting.
+The repository's `config/default.toml` is embedded at build time and is the single source for first-run configuration, `Config::default()` and missing-field completion (including nested cache settings). User values override the template. Missing fields or legacy migrations are saved on startup; invalid TOML, invalid values and zero `ui_fps` return an error without replacing the user file. An incomplete or invalid embedded template is a development error and fails explicitly, never falling back to another set of defaults.
 
 | Key | Default | Values / notes |
 | --- | --- | --- |
@@ -239,7 +239,7 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 | `bar_channel_reverse` | `false` | Draw the right channel on the left (fullscreen spectrum) |
 | `super_smooth_bar` | `false` | "Smooth VU": sub-cell smoothing for the narrow-window LUFS VU meter only; does not change frequency bars |
 | `bars_gap` | `false` | Leave a gap between bars |
-| `ui_fps` | `60` in the shipped template; `30` in code defaults | Positive integer UI submission cap for host and fullscreen, including idle; not clamped to 10–60. Clean frames may be skipped; terminal speed and processing cost determine the actual FPS, which is not guaranteed |
+| `ui_fps` | `60` | Defaults come from the embedded template. Positive integer UI submission cap for host and fullscreen, including idle; not clamped to 10–60. Clean frames may be skipped; terminal speed and processing cost determine the actual FPS, which is not guaranteed |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |
 | `cache.clean_strategy` | `both` | `size`, `age`, `both` |
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |

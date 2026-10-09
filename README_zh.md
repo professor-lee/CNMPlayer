@@ -211,7 +211,7 @@ sudo apt install -y build-essential cmake pkg-config \
 
 ## 配置
 
-默认字段缺失或旧值需要迁移时，程序会在启动时重写 `config/default.toml`。无效 TOML 或缺少必需字段会报错而不会替换原文件；请根据报错修复配置后再启动。
+仓库中的 `config/default.toml` 在构建时内嵌，是首次生成配置、`Config::default()` 和缺失字段补全（含嵌套缓存配置）的唯一默认值来源。用户配置覆盖模板值；缺失字段或旧值迁移完成后会在启动时保存。无效 TOML、无效值和 `ui_fps = 0` 会报错，不替换用户文件。内嵌模板不完整或解析失败属于开发错误，会明确失败，不回退另一套默认值。
 
 | 配置项 | 默认值 | 取值 / 说明 |
 | --- | --- | --- |
@@ -239,7 +239,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `bar_channel_reverse` | `false` | 左右声道反画（全屏频谱） |
 | `super_smooth_bar` | `false` | 「VU 平滑」：仅控制窄窗 LUFS 音量条的子格平滑，不改变频谱条 |
 | `bars_gap` | `false` | 频谱条之间留出间隔 |
-| `ui_fps` | 仓库模板为 `60`，代码默认值为 `30` | 正整数，控制主程序与全屏页（包括空闲时）的 UI 提交上限，不再限制为 10–60。无变化的帧可跳过；实际 FPS 取决于终端速度与处理开销，不保证达到设定值 |
+| `ui_fps` | `60` | 默认值来自内嵌模板；正整数，控制主程序与全屏页（包括空闲时）的 UI 提交上限，不再限制为 10–60。无变化的帧可跳过；实际 FPS 取决于终端速度与处理开销，不保证达到设定值 |
 | `cache.path` | 未设置 | 缓存目录覆盖（默认用系统缓存目录） |
 | `cache.clean_strategy` | `both` | `size`、`age`、`both` |
 | `cache.max_size_mb` | `500` | LRU 阶段的容量上限 |

@@ -1247,8 +1247,9 @@ async fn activate_download_reset(app: &mut AppState, host_bridge: &mut impl Host
     }
 
     app.download_reset_armed = false;
-    app.config.download_audio_quality = crate::data::config::default_download_audio_quality();
-    app.config.download_path = None;
+    let defaults = Config::default();
+    app.config.download_audio_quality = defaults.download_audio_quality;
+    app.config.download_path = defaults.download_path;
     save_and_sync_host_config(app, host_bridge).await;
     app.refresh_download_root();
 }

@@ -6939,8 +6939,9 @@ impl App {
         }
 
         self.settings.download_reset_armed = false;
-        self.config.download_audio_quality = crate::data::config::default_download_audio_quality();
-        self.config.download_path = None;
+        let defaults = Config::default();
+        self.config.download_audio_quality = defaults.download_audio_quality;
+        self.config.download_path = defaults.download_path;
         self.persist_config();
         self.refresh_download_root();
         self.set_runtime_status(self.lang_text(
