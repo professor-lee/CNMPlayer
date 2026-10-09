@@ -4116,7 +4116,7 @@ impl App {
     pub fn main_spectrum_braille(&self) -> String {
         let bars = self.mini_spectrum.mini_bars();
         let mut out = String::with_capacity(30);
-        for pair in bars.chunks_exact(2) {
+        for pair in bars.as_chunks::<2>().0 {
             let left_h = (pair[0].clamp(0.0, 1.0) * 4.0).round() as u8;
             let right_h = (pair[1].clamp(0.0, 1.0) * 4.0).round() as u8;
             out.push(braille_from_two_bars(left_h.min(4), right_h.min(4)));
