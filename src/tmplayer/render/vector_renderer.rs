@@ -256,7 +256,7 @@ impl VectorState {
         }
     }
 
-    /// 快动画（分散 / 聚集回归）进行中：需要 `spectrum_hz` 高帧率推完。
+    /// 快动画（分散 / 聚集回归）进行中：按统一的 `ui_fps` 推进与重绘。
     pub(crate) fn is_animating(&self) -> bool {
         matches!(self.phase, Phase::Dispersing | Phase::Recovering)
     }

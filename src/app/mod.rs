@@ -31,7 +31,7 @@ use crate::render::cover_renderer::render_cover_ascii;
 use crate::render::motion::{Curve, Toggle, Trail, Transition};
 use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::LyricLine;
-use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, MiniCavaState};
+use crate::tmplayer::audio::spectrum::{MINI_BARS, Spectrum};
 use crate::tmplayer::audio::pcm_tap::PcmRing;
 use crate::tmplayer::playback::metadata::{parse_lrc, parse_plain_lyrics};
 use crate::ui::page_lyrics;
@@ -3098,7 +3098,7 @@ pub struct App {
     qr_last_poll_at: Option<Instant>,
     last_global_hotkey_at: Option<Instant>,
     last_content_click: Option<(Instant, Page, usize)>,
-    pub cava: Option<MiniCavaState>,
+    mini_spectrum: Spectrum,
     cover_cache_dir: PathBuf,
     cover_fetch_tx: watch::Sender<Option<CoverFetchRequest>>,
     cover_fetch_rx: async_mpsc::Receiver<CoverFetchResult>,
@@ -3235,7 +3235,7 @@ impl App {
             qr_last_poll_at: None,
             last_global_hotkey_at: None,
             last_content_click: None,
-            cava: None,
+            mini_spectrum: Spectrum::new(MINI_BARS),
             cover_cache_dir,
             cover_fetch_tx,
             cover_fetch_rx,
@@ -3269,7 +3269,6 @@ impl App {
 
         app.load_private_roam_memory().await;
 
-        app.sync_cava();
         app.sync_terminal_size();
 
         // 先出加载页，网络初始化交给后台任务：登录恢复这几步在旧实现里是
@@ -3791,6 +3790,13 @@ impl App {
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
     pub fn should_continuous_redraw(&self) -> bool {
+        if self.mini_spectrum_enabled()
+            && self.playback.now_playing.is_some()
+            && (self.playback.playback_state == PlaybackRuntimeState::Playing
+                || self.mini_spectrum.has_tail())
+        {
+            return true;
+        }
         if self.is_seeking() || self.page_lyrics_grab.is_some() {
             return true;
         }
@@ -3852,9 +3858,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    pub fn cava_bars(&self) -> [f32; 20] {
-        self.cava.as_ref().map(|x| x.bars()).unwrap_or_default()
-    }
 
     /// 播放链路上的 PCM 抽头环句柄，经 `HostPlaybackBridge` 交给全屏页示波器。
     pub fn pcm_ring(&self) -> Arc<PcmRing> {
@@ -4111,56 +4114,42 @@ impl App {
         self.vu_animating = left_moving || right_moving;
     }
 
-    pub fn main_spectrum_braille(&mut self) -> String {
-        let mut out = String::with_capacity(10);
-        for i in 0..10 {
-            let bar = self.cava_bars();
-            let left = bar[i * 2].clamp(0.0, 1.0);
-            let right = bar[i * 2 + 1].clamp(0.0, 1.0);
-            let left_h = (left * 4.0).round() as u8;
-            let right_h = (right * 4.0).round() as u8;
+    pub fn main_spectrum_braille(&self) -> String {
+        let bars = self.mini_spectrum.mini_bars();
+        let mut out = String::with_capacity(30);
+        for pair in bars.chunks_exact(2) {
+            let left_h = (pair[0].clamp(0.0, 1.0) * 4.0).round() as u8;
+            let right_h = (pair[1].clamp(0.0, 1.0) * 4.0).round() as u8;
             out.push(braille_from_two_bars(left_h.min(4), right_h.min(4)));
         }
         out
     }
 
     pub fn sync_on_change(&mut self) {
-        self.sync_cava();
         self.sync_terminal_size();
     }
 
-    fn sync_cava(&mut self) {
-        let available = crate::tmplayer::audio::cava::is_available();
-        // 两个无可视化档位都把 cava 停掉：折叠视图那 10 格迷你频谱也就没数据可画。
-        let enable = !matches!(
-            self.config.visualize,
-            VisualizeMode::Lyrics | VisualizeMode::Hidden
-        );
-        if !available || !enable {
-            self.cava = None;
-            return;
-        }
-
-        if self.cava.is_none() {
-            let cfg = CavaConfig {
-                framerate_hz: self.config.spectrum_hz.clamp(1, 30),
-                bars: 20,
-                channels: CavaChannels::Mono,
-                reverse: false,
-            };
-
-            self.cava = MiniCavaState::try_new(cfg).ok();
-        }
+    fn mini_spectrum_enabled(&self) -> bool {
+        !matches!(self.config.visualize, VisualizeMode::Lyrics | VisualizeMode::Hidden)
     }
 
-    pub async fn suspend_main_cava_for_fullscreen(&mut self) {
-        if let Some(cava) = self.cava.take() {
-            cava.shutdown().await;
+    /// Called only immediately before a Host frame submission, never during audio callbacks.
+    pub fn update_main_spectrum(&mut self, now: Instant) -> Result<()> {
+        if !self.mini_spectrum_enabled() || self.playback.now_playing.is_none() {
+            self.mini_spectrum.clear();
+            return Ok(());
         }
+        self.mini_spectrum.update(
+            &self.playback.audio_player.pcm_ring(),
+            self.playback.playback_state == PlaybackRuntimeState::Playing,
+            now,
+        )?;
+        Ok(())
     }
 
-    pub fn resume_main_cava_after_fullscreen(&mut self) {
-        self.sync_cava();
+    /// The Host is not rendered while Fullscreen owns the terminal.
+    pub fn reset_main_spectrum(&mut self) {
+        self.mini_spectrum.clear();
     }
 
     fn seek_to_ratio(&mut self, ratio: f32) {

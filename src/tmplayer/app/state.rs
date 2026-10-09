@@ -2,7 +2,7 @@ use crate::app::SIDEBAR_ANIM_DURATION;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
 use crate::render::motion::{Curve, Transition};
-use crate::tmplayer::audio::smoother::Ema;
+use crate::tmplayer::audio::spectrum::Spectrum;
 use crate::tmplayer::data::playlist::Playlist;
 use crate::tmplayer::render::cover_cache::CoverCache;
 use crate::tmplayer::render::cover_cache::CoverKey;
@@ -335,10 +335,7 @@ pub struct AppState {
     // Playlist overlay browsing list.
     pub playlist_view: Playlist,
     pub spectrum: SpectrumData,
-    pub spectrum_bar_smoother: Ema,
-    pub spectrum_left_smoother: Ema,
-    pub spectrum_right_smoother: Ema,
-    pub spectrum_render_grid: Vec<Vec<char>>,
+    pub spectrum_engine: Spectrum,
 
     /// 宿主播放链路上的 PCM 抽头环；进入全屏事件循环时绑定。
     pub pcm_ring: Option<Arc<crate::tmplayer::audio::pcm_tap::PcmRing>>,
@@ -462,10 +459,7 @@ impl AppState {
             playlist: Playlist::default(),
             playlist_view: Playlist::default(),
             spectrum: SpectrumData::default(),
-            spectrum_bar_smoother: Ema::new(0.35, 64),
-            spectrum_left_smoother: Ema::new(0.35, 64),
-            spectrum_right_smoother: Ema::new(0.35, 64),
-            spectrum_render_grid: Vec::new(),
+            spectrum_engine: Spectrum::new(64),
             pcm_ring: None,
             scope: Default::default(),
             scope_gain: ScopeGain::default(),
@@ -655,7 +649,7 @@ impl AppState {
             return true;
         }
 
-        if self.player.playback == PlaybackState::Paused && self.has_spectrum_tail_motion() {
+        if self.config.visualize == VisualizeMode::Bars && self.spectrum_engine.has_tail() {
             return true;
         }
 
@@ -689,19 +683,8 @@ impl AppState {
         false
     }
 
-    pub fn active_render_fps(&self) -> u32 {
-        self.config.ui_fps.clamp(10, 60)
-    }
-
-    pub fn idle_render_fps(&self) -> u32 {
-        self.config.ui_fps.clamp(4, 12)
-    }
-
-    fn has_spectrum_tail_motion(&self) -> bool {
-        const TAIL_EPS: f32 = 0.003;
-        self.spectrum.bars.iter().any(|&v| v > TAIL_EPS)
-            || self.spectrum.bars_left.iter().any(|&v| v > TAIL_EPS)
-            || self.spectrum.bars_right.iter().any(|&v| v > TAIL_EPS)
+    pub fn render_fps(&self) -> u32 {
+        self.config.ui_fps
     }
 
     /// 示波器的包络动画（起振或回落）正在进行，需要持续重绘把它推完。

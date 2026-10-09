@@ -2,7 +2,6 @@ use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
 use crate::tmplayer::app::state::{AppState, Overlay, PlaybackState, RepeatMode};
-use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, CavaService};
 use crate::tmplayer::ui::tui::{Tui, UiLayout};
 use crate::tmplayer::utils::input::{Action, map_key, map_mouse};
 use crate::tmplayer::{
@@ -35,15 +34,41 @@ fn clear_spectrum(app: &mut AppState) {
     app.spectrum.bars.fill(0.0);
     app.spectrum.bars_left.fill(0.0);
     app.spectrum.bars_right.fill(0.0);
-    app.spectrum_bar_smoother.reset();
-    app.spectrum_left_smoother.reset();
-    app.spectrum_right_smoother.reset();
+    app.spectrum_engine.clear();
 }
 
 fn has_spectrum_data(app: &AppState) -> bool {
     app.spectrum.bars.iter().any(|&v| v > 0.0)
         || app.spectrum.bars_left.iter().any(|&v| v > 0.0)
         || app.spectrum.bars_right.iter().any(|&v| v > 0.0)
+}
+
+/// Advance the internal spectrum exactly once for a submitted UI frame.
+fn update_spectrum(app: &mut AppState, layout: &UiLayout, now: Instant) -> Result<()> {
+    if app.config.visualize != VisualizeMode::Bars {
+        if has_spectrum_data(app) || app.spectrum_engine.has_tail() {
+            clear_spectrum(app);
+        }
+        return Ok(());
+    }
+    let bars = if layout.spectrum_rect.width == 0 {
+        app.spectrum.bars.len()
+    } else {
+        desired_bar_count(app, layout)
+    };
+    ensure_bar_buffers(app, bars);
+    app.spectrum_engine.set_bars(bars);
+    if let Some(ring) = app.pcm_ring.as_ref() {
+        app.spectrum_engine.update(ring, app.player.playback == PlaybackState::Playing, now)?;
+        app.spectrum_engine.copy_bars(
+            &mut app.spectrum.bars,
+            &mut app.spectrum.bars_left,
+            &mut app.spectrum.bars_right,
+        );
+    } else {
+        clear_spectrum(app);
+    }
+    Ok(())
 }
 
 fn map_host_state(state: HostPlaybackState) -> PlaybackState {
@@ -367,21 +392,12 @@ where
     let mut last_layout =
         play_page_transition(&mut tui, app, host_bridge, true, host_snapshot).await?;
 
-    // Prefer cava for system-wide visualization (keeps our renderer/style; cava only provides bars).
-    // If cava isn't installed, we leave the spectrum empty.
-    let cava = CavaService::new();
-
-    let mut last_spectrum = Instant::now();
     let mut last_host_metadata_signature: Option<u64> = None;
     let mut last_host_config_signature: Option<u64> = None;
     let mut last_host_sync = Instant::now() - Duration::from_millis(50);
     let wake = host_bridge.wake_signal();
-    let mut clock = FrameClock::new(app.idle_render_fps(), Instant::now());
+    let mut clock = FrameClock::new(app.render_fps(), Instant::now());
 
-    let desired = desired_cava_config(app, &last_layout);
-    cava.set_desired(desired);
-    let mut cava_cfg = desired;
-    let mut last_cava_failure: Option<String> = None;
 
     let _ = sync_from_host_bridge(
         app,
@@ -429,69 +445,14 @@ where
                     _ => {}
                 }
             }
-            let desired = desired_cava_config(app, &last_layout);
-            if cava_cfg != desired {
-                cava.set_desired(desired);
-                cava_cfg = desired;
-                clear_spectrum(app);
-                last_cava_failure = None;
-                state_changed = true;
-            }
-            {
-                let failure = cava.failure();
-                if *failure != last_cava_failure {
-                    if let Some(error) = failure.as_ref() {
-                        log::warn!("Fullscreen visualization unavailable: {error}");
-                        app.set_toast(format!("Visualization unavailable: {error}"));
-                        state_changed = true;
-                    }
-                    last_cava_failure.clone_from(&failure);
-                }
-            }
-            if app.config.visualize == VisualizeMode::Bars {
-                ensure_bar_buffers(app, desired_bar_count(app, &last_layout));
-            }
-            if app.config.visualize.needs_cava() {
-                let period = Duration::from_millis((1000 / app.config.spectrum_hz.max(1)) as u64);
-                if frame_start.duration_since(last_spectrum) >= period {
-                    last_spectrum = frame_start;
-                    state_changed = true;
-                    let snapshot = cava.latest();
-                    let bars = desired_bar_count(app, &last_layout);
-                    ensure_bar_buffers(app, bars);
-                    let mut left = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
-                    let mut right = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
-                    let mut mono = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
-                    if app.config.bar_channels == BarChannels::Stereo {
-                        let _ = snapshot.copy_stereo_into(&mut left, &mut right);
-                        app.spectrum_left_smoother
-                            .apply_in_place(&left[..bars], &mut app.spectrum.bars_left);
-                        app.spectrum_right_smoother
-                            .apply_in_place(&right[..bars], &mut app.spectrum.bars_right);
-                    } else {
-                        app.spectrum.bars_left.fill(0.0);
-                        app.spectrum.bars_right.fill(0.0);
-                    }
-                    let _ = snapshot.mono_into(&mut mono);
-                    app.spectrum_bar_smoother
-                        .apply_in_place(&mono[..bars], &mut app.spectrum.bars);
-                }
-            } else if has_spectrum_data(app) {
-                clear_spectrum(app);
-                state_changed = true;
-            }
             state_changed |= tick_visual_state(app, frame_start);
             state_changed |= tui.poll_cover_frames();
             if state_changed || app.should_continuous_redraw() {
                 clock.mark_dirty();
             }
-            let target_fps = if app.should_continuous_redraw() {
-                app.active_render_fps()
-            } else {
-                app.idle_render_fps()
-            };
-            clock.set_fps(target_fps, frame_start);
+            clock.set_fps(app.render_fps(), frame_start);
             if clock.due(frame_start) {
+                update_spectrum(app, &last_layout, frame_start)?;
                 last_layout = tui.draw(app)?;
                 clock.presented(Instant::now());
             }
@@ -528,11 +489,7 @@ where
     } else {
         Ok(())
     };
-    let cava_result = compio::runtime::spawn_blocking(move || cava.shutdown_blocking())
-        .await
-        .map_err(|_| anyhow::anyhow!("cava shutdown task panicked"));
     loop_result?;
-    cava_result?;
     transition_result?;
 
     let exit = match app.exit_request {
@@ -562,6 +519,7 @@ where
     let mut started = false;
     let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
     let mut metadata = None;
+    let mut previous_layout = UiLayout::default();
     let layout = loop {
         host.tick().await;
         apply_host_runtime_snapshot(app, host.runtime_snapshot());
@@ -579,7 +537,9 @@ where
         tui.poll_cover_frames();
         clock.mark_dirty();
         if clock.due(now) {
+            update_spectrum(app, &previous_layout, now)?;
             let layout = tui.draw_reveal(app, &host_snapshot, motion.value())?;
+            previous_layout = layout;
             let presented = Instant::now();
             clock.presented(presented);
             if !started {
@@ -1462,20 +1422,6 @@ fn desired_bar_count(app: &AppState, layout: &UiLayout) -> usize {
     raw.min(max_per_side).max(1)
 }
 
-fn desired_cava_config(app: &AppState, layout: &UiLayout) -> Option<CavaConfig> {
-    if !app.config.visualize.needs_cava() {
-        return None;
-    }
-    Some(CavaConfig {
-        framerate_hz: app.config.spectrum_hz,
-        bars: desired_bar_count(app, layout),
-        channels: match app.config.bar_channels {
-            BarChannels::Mono => CavaChannels::Mono,
-            BarChannels::Stereo => CavaChannels::Stereo,
-        },
-        reverse: false,
-    })
-}
 
 fn ensure_bar_buffers(app: &mut AppState, bars: usize) {
     if app.spectrum.bars.len() != bars {
@@ -1592,9 +1538,6 @@ mod tests {
             "initial sync is not a track transition"
         );
         app.spectrum.bars.fill(1.0);
-        let mut output = [0.0];
-        app.spectrum_bar_smoother
-            .apply_in_place(&[1.0], &mut output);
         let now = Instant::now();
         app.pending_system_cover_anim = Some((
             crate::tmplayer::app::state::CoverSnapshot::from(&app.player.track),
@@ -1606,9 +1549,6 @@ mod tests {
         assert_eq!(app.cover_anim.as_ref().unwrap().dir, 1);
         assert!(app.pending_system_cover_anim.is_none());
         assert!(app.spectrum.bars.iter().all(|value| *value == 0.0));
-        app.spectrum_bar_smoother
-            .apply_in_place(&[1.0], &mut output);
-        assert_eq!(output, [0.35]);
         sync_from_host_snapshot(&mut app, HostPlaybackSnapshot::default());
         assert!(app.cover_anim.is_none());
         assert!(app.playlist.items.is_empty());
