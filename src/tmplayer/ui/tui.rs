@@ -1,19 +1,19 @@
+use crate::render::cover_pipeline::{CoverKey, CoverPipeline, ImagePhase};
+use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::{AppState, Overlay};
 use crate::tmplayer::ui::components::control_buttons;
 use crate::tmplayer::ui::panels::info_panel::{download_cells, heart_cells};
 use crate::tmplayer::ui::panels::{info_panel, playlist_panel, visual_panel};
 use crate::tmplayer::utils::input::Action;
 use anyhow::Result;
-use crossterm::execute;
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
-use crossterm::{event, terminal};
+use crossterm::terminal;
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::Backend;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use std::io::{self, Stdout};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UiLayout {
@@ -37,52 +37,49 @@ pub struct UiLayout {
     pub modal_rows: ModalRows,
 }
 
-pub struct Tui {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+/// Fullscreen rendering resources only. The Host owns terminal modes and the
+/// sole double-buffered output surface; snapshots live in transition calls.
+pub struct Tui<'a, B: Backend> {
+    terminal: &'a mut Terminal<B>,
     pub should_quit: bool,
-    halfblocks: crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+    covers: CoverPipeline,
+    sidebar: PlaylistDrawer,
 }
 
-impl Tui {
-    pub fn new() -> Result<Self> {
-        let stdout = io::stdout();
-        let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
-        Ok(Self {
+#[derive(Default)]
+struct PlaylistDrawer {
+    buffer: Buffer,
+}
+
+impl<'a, B: Backend> Tui<'a, B>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    pub fn new(terminal: &'a mut Terminal<B>, wake: WakeSignal) -> Self {
+        Self {
             terminal,
             should_quit: false,
-            halfblocks: crate::tmplayer::render::halfblock_cover::HalfblockCovers::new(),
-        })
+            covers: CoverPipeline::new(wake),
+            sidebar: PlaylistDrawer::default(),
+        }
     }
 
-    pub fn enter(&mut self) -> Result<()> {
-        execute!(
-            io::stdout(),
-            EnterAlternateScreen,
-            event::EnableMouseCapture
-        )?;
-        terminal::enable_raw_mode()?;
-        Ok(())
+    pub fn terminal_mut(&mut self) -> &mut Terminal<B> {
+        self.terminal
+    }
+    pub fn request_quit(&mut self) {
+        self.should_quit = true;
     }
 
-    pub fn exit(&mut self) -> Result<()> {
-        terminal::disable_raw_mode()?;
-        execute!(
-            io::stdout(),
-            event::DisableMouseCapture,
-            LeaveAlternateScreen
-        )?;
-        Ok(())
+    pub fn area(&mut self) -> std::result::Result<Rect, B::Error> {
+        self.terminal.autoresize()?;
+        Ok(self.terminal.get_frame().area())
     }
     pub fn poll_cover_frames(&mut self) -> bool {
-        self.halfblocks.poll()
+        self.covers.poll()
     }
 
     pub fn draw(&mut self, app: &mut AppState) -> Result<UiLayout> {
-        if app.toast.as_ref().map(|(m, _)| m.as_str()) == Some("Bye") {
-            self.should_quit = true;
-        }
-
         // 点击作者名/专辑名这类"退出后交给宿主"的请求：请求一旦写下就退出。
         // 退出判定只在 draw 里做一次，避免每条事件分支各自记一遍。
         if app.exit_request.is_some() {
@@ -101,221 +98,29 @@ impl Tui {
             return Ok(layout_out);
         }
 
-        self.terminal.draw(|f| {
-            let size = f.area();
-            layout_out.full = size;
-
-            // small terminal: keep stable, hide secondary panels
-            if size.width < 50 || size.height < 12 {
-                f.render_widget(ratatui::widgets::Clear, size);
-
-                let mut base_style = Style::default().fg(app.theme.color_text());
-                if !app.config.transparent_background {
-                    base_style = base_style.bg(app.theme.color_base());
-                }
-                f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
-                f.render_widget(
-                    ratatui::widgets::Paragraph::new(lang_text(
-                        app,
-                        "终端窗口过小",
-                        "Terminal too small",
-                    ))
-                    .style(Style::default().fg(app.theme.color_subtext())),
-                    size,
-                );
-                return;
-            }
-
-            // 提示不再独占一行：否则开关"显示提示"会把整页挤上去一行。
-            // 内容区占满，提示以 `┤…├` 嵌进左面板底边框（那一行本就是 `─`）。
-            let content_area = size;
-            let bottom_row = if content_area.height > 0 {
-                Rect {
-                    x: content_area.x,
-                    y: content_area.y + content_area.height - 1,
-                    width: content_area.width,
-                    height: 1,
-                }
-            } else {
-                Rect::default()
-            };
-
-            // 「关闭」档位把右侧区（可视化 + 歌词）整块收起，歌曲信息区独占整宽。
-            let show_right = app.config.visualize != crate::data::config::VisualizeMode::Hidden;
-            let (left, right) = if show_right {
-                let cols = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(33), Constraint::Percentage(67)])
-                    .split(content_area);
-                (cols[0], cols[1])
-            } else {
-                (content_area, Rect::default())
-            };
-            layout_out.left = left;
-            layout_out.right = right;
-            layout_out.left_width = left.width;
-
-            // 右栏的两行（歌词 / 可视化）；收起时保持零矩形。
-            let mut lyric_row = Rect::default();
-            let mut spectrum_row = Rect::default();
-            if show_right {
-                // right: lyrics (10%) + spectrum (rest)
-                let lyric_h = ((right.height as f32) * 0.10).round() as u16;
-                let lyric_h = lyric_h.clamp(3, right.height.saturating_sub(6));
-                let rows = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(lyric_h), Constraint::Min(1)])
-                    .split(right);
-                lyric_row = rows[0];
-                spectrum_row = rows[1];
-
-                // Mirror visual panel inner layout for auto bar count.
-                let outer = Rect {
-                    x: rows[0].x,
-                    y: rows[0].y,
-                    width: rows[0].width,
-                    height: rows[0].height.saturating_add(rows[1].height),
-                };
-                let inner = outer.inner(ratatui::layout::Margin {
-                    horizontal: 1,
-                    vertical: 1,
-                });
-                let lyric_h_inner = rows[0].height.saturating_sub(2).min(inner.height);
-                layout_out.spectrum_rect = Rect {
-                    x: inner.x,
-                    y: inner.y + lyric_h_inner,
-                    width: inner.width,
-                    height: inner.height.saturating_sub(lyric_h_inner),
-                };
-            }
-
-            let info_l = info_panel::layout(left, size.width);
-            layout_out.info_progress = info_l.progress;
-            layout_out.info_volume = info_l.volume;
-            layout_out.info_controls = info_l.controls;
-            layout_out.info_meta = if info_panel::core_rows_visible(&info_l) {
-                info_l.meta
-            } else {
-                Rect::default()
-            };
-
-            // base styling
-            f.render_widget(ratatui::widgets::Clear, size);
-
-            let mut base_style = Style::default().fg(app.theme.color_text());
-            if !app.config.transparent_background {
-                base_style = base_style.bg(app.theme.color_base());
-            }
-            f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
-
-            info_panel::render(f, left, size.width, app);
-            if show_right {
-                visual_panel::render(f, lyric_row, spectrum_row, app);
-            }
-            if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
-                && app.overlay != Overlay::Playlist
-                && app.playlist_slide_x == app.playlist_slide_target_x
-            {
-                paint_halfblock_cover(f.buffer_mut(), &mut self.halfblocks, info_l.cover, app);
-            }
-
-            // playlist overlay slides in/out over left
-            if app.overlay == Overlay::Playlist
-                || app.playlist_slide_x != app.playlist_slide_target_x
-            {
-                let collapsing = app.overlay != Overlay::Playlist
-                    && app.playlist_slide_x > app.playlist_slide_target_x;
-
-                // 动画推进在 AppState::tick 里完成，渲染只读取当前进度。
-                // Slide effect via visible width growth/shrink (x stays at left edge)
-                let full_w = left.width as i16;
-                let visible_w = (full_w + app.playlist_slide_x).clamp(0, full_w) as u16;
-                if visible_w > 0 {
-                    let r = Rect {
-                        x: left.x,
-                        y: left.y,
-                        width: visible_w,
-                        height: left.height,
-                    };
-                    layout_out.playlist_rect = r;
-
-                    if collapsing {
-                        // Closing animation only needs the panel shell; skip expensive list/cover rendering.
-                        f.render_widget(ratatui::widgets::Clear, r);
-                        f.render_widget(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_set(crate::tmplayer::ui::borders::SOLID_BORDER)
-                                .style(
-                                    Style::default()
-                                        .fg(app.theme.color_subtext())
-                                        .bg(app.theme.color_surface()),
-                                ),
-                            r,
-                        );
-                    } else {
-                        let pl_layout = playlist_panel::compute_layout(r, app);
-                        layout_out.playlist_inner = pl_layout.inner;
-                        layout_out.playlist_list_inner = pl_layout.list_inner;
-                        playlist_panel::render(f, r, app);
-                    }
-                }
-            }
-
-            // toast
-            if let Some((msg, _)) = &app.toast {
-                let area = Rect {
-                    x: size.x,
-                    y: size.y,
-                    width: size.width,
-                    height: 1,
-                };
-                f.render_widget(
-                    ratatui::widgets::Paragraph::new(msg.as_str())
-                        .style(Style::default().fg(app.theme.color_accent3())),
-                    area,
-                );
-            }
-
-            if app.config.show_hints {
-                Self::render_hint_in_border(f, app, bottom_row, layout_out.left);
-            }
-
-            if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks
-                && app.overlay == Overlay::Playlist
-                && app.playlist_slide_x == 0
-                && app.playlist_slide_target_x == 0
-                && let (Some(bytes), Some(hash)) =
-                    (app.playlist_cover.as_deref(), app.playlist_cover_hash)
-            {
-                let cover =
-                    playlist_panel::compute_layout(layout_out.playlist_rect, app).cover_rect;
-                self.halfblocks.paint(f.buffer_mut(), cover, hash, bytes);
-            }
-            // modals (top-most)
-            match app.overlay {
-                Overlay::SettingsModal => {
-                    render_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::BarSettingsModal => {
-                    render_bar_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::LyricsSettingsModal => {
-                    render_lyrics_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::DownloadSettingsModal | Overlay::DownloadPathEditModal => {
-                    render_download_settings_modal(f, size, app, &mut layout_out.modal_rows)
-                }
-                Overlay::AboutModal => render_about_modal(f, size, app),
-                Overlay::HelpModal => render_help_modal(f, size, app, &mut layout_out.modal_rows),
-                Overlay::EqModal => render_eq_modal(f, size, app),
-                _ => {}
-            }
-        })?;
+        layout_out = draw_page(self.terminal, app, &mut self.covers, &mut self.sidebar)?;
 
         Ok(layout_out)
     }
+    pub fn draw_reveal(
+        &mut self,
+        app: &mut AppState,
+        host_snapshot: &Buffer,
+        progress: f32,
+    ) -> Result<UiLayout> {
+        draw_page_reveal_with_snapshot(
+            self.terminal,
+            app,
+            &mut self.covers,
+            &mut self.sidebar,
+            Some(host_snapshot),
+            progress,
+        )
+        .map_err(Into::into)
+    }
+}
 
+impl<B: Backend> Tui<'_, B> {
     /// 把提示以 `┤文字├` 的形式嵌进左侧面板的底边框。
     ///
     /// 该行本身就是面板的 `horizontal_bottom`（`─`）。只重绘左面板那一段，
@@ -372,25 +177,395 @@ impl Tui {
             .set_string(seg.x, seg.y, &content, border_style);
     }
 }
+
+fn draw_page<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    covers: &mut CoverPipeline,
+    sidebar: &mut PlaylistDrawer,
+) -> std::result::Result<UiLayout, B::Error> {
+    draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, None, 1.0)
+}
+
+#[cfg(test)]
+fn draw_page_reveal<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    covers: &mut CoverPipeline,
+    sidebar: &mut PlaylistDrawer,
+    progress: f32,
+) -> std::result::Result<UiLayout, B::Error> {
+    draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, None, progress)
+}
+
+fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut AppState,
+    covers: &mut CoverPipeline,
+    sidebar: &mut PlaylistDrawer,
+    host_snapshot: Option<&Buffer>,
+    progress: f32,
+) -> std::result::Result<UiLayout, B::Error> {
+    let mut layout_out = UiLayout::default();
+    terminal.autoresize()?;
+    // Fixed target preparation is outside the terminal drawing closure.
+    let size = terminal.get_frame().area();
+    let show_right = app.config.visualize != crate::data::config::VisualizeMode::Hidden;
+    let left = if show_right {
+        Layout::horizontal([Constraint::Percentage(33), Constraint::Percentage(67)]).split(size)[0]
+    } else {
+        size
+    };
+    covers.begin_frame();
+    if app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks {
+        let content = info_panel::cover_content_rect(info_panel::layout(left, size.width).cover);
+        if let Some(anim) = &app.cover_anim {
+            for snapshot in [&anim.from, &anim.to] {
+                if let (Some(bytes), Some(hash)) = (snapshot.cover.as_deref(), snapshot.cover_hash)
+                {
+                    covers.request_bytes(cover_key(content, hash), bytes, ImagePhase::Moving);
+                }
+            }
+        } else if let (Some(bytes), Some(hash)) = (
+            app.player.track.cover.as_deref(),
+            app.player.track.cover_hash,
+        ) {
+            covers.request_bytes(cover_key(content, hash), bytes, ImagePhase::Stable);
+        }
+        let sidebar_cover = playlist_panel::compute_layout(left, app).cover_rect;
+        if let (Some(bytes), Some(hash)) = (app.playlist_cover.as_deref(), app.playlist_cover_hash)
+        {
+            covers.request_bytes(cover_key(sidebar_cover, hash), bytes, ImagePhase::Stable);
+        }
+    }
+    covers.end_frame();
+    terminal.draw(|f| {
+        let size = f.area();
+        layout_out.full = size;
+
+        // small terminal: keep stable, hide secondary panels
+        if size.width < 50 || size.height < 12 {
+            f.render_widget(ratatui::widgets::Clear, size);
+
+            let mut base_style = Style::default().fg(app.theme.color_text());
+            if !app.config.transparent_background {
+                base_style = base_style.bg(app.theme.color_base());
+            }
+            f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
+            f.render_widget(
+                ratatui::widgets::Paragraph::new(lang_text(
+                    app,
+                    "终端窗口过小",
+                    "Terminal too small",
+                ))
+                .style(Style::default().fg(app.theme.color_subtext())),
+                size,
+            );
+            slide_page_from_bottom(f.buffer_mut(), progress, host_snapshot);
+            return;
+        }
+
+        // 提示不再独占一行：否则开关"显示提示"会把整页挤上去一行。
+        // 内容区占满，提示以 `┤…├` 嵌进左面板底边框（那一行本就是 `─`）。
+        let content_area = size;
+        let bottom_row = if content_area.height > 0 {
+            Rect {
+                x: content_area.x,
+                y: content_area.y + content_area.height - 1,
+                width: content_area.width,
+                height: 1,
+            }
+        } else {
+            Rect::default()
+        };
+
+        // 「关闭」档位把右侧区（可视化 + 歌词）整块收起，歌曲信息区独占整宽。
+        let show_right = app.config.visualize != crate::data::config::VisualizeMode::Hidden;
+        let (left, right) = if show_right {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(33), Constraint::Percentage(67)])
+                .split(content_area);
+            (cols[0], cols[1])
+        } else {
+            (content_area, Rect::default())
+        };
+        layout_out.left = left;
+        layout_out.right = right;
+        layout_out.left_width = left.width;
+
+        // 右栏的两行（歌词 / 可视化）；收起时保持零矩形。
+        let mut lyric_row = Rect::default();
+        let mut spectrum_row = Rect::default();
+        if show_right {
+            // right: lyrics (10%) + spectrum (rest)
+            let lyric_h = ((right.height as f32) * 0.10).round() as u16;
+            let lyric_h = lyric_h.clamp(3, right.height.saturating_sub(6));
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(lyric_h), Constraint::Min(1)])
+                .split(right);
+            lyric_row = rows[0];
+            spectrum_row = rows[1];
+
+            // Mirror visual panel inner layout for auto bar count.
+            let outer = Rect {
+                x: rows[0].x,
+                y: rows[0].y,
+                width: rows[0].width,
+                height: rows[0].height.saturating_add(rows[1].height),
+            };
+            let inner = outer.inner(ratatui::layout::Margin {
+                horizontal: 1,
+                vertical: 1,
+            });
+            let lyric_h_inner = rows[0].height.saturating_sub(2).min(inner.height);
+            layout_out.spectrum_rect = Rect {
+                x: inner.x,
+                y: inner.y + lyric_h_inner,
+                width: inner.width,
+                height: inner.height.saturating_sub(lyric_h_inner),
+            };
+        }
+
+        let info_l = info_panel::layout(left, size.width);
+        layout_out.info_progress = info_l.progress;
+        layout_out.info_volume = info_l.volume;
+        layout_out.info_controls = info_l.controls;
+        layout_out.info_meta = if info_panel::core_rows_visible(&info_l) {
+            info_l.meta
+        } else {
+            Rect::default()
+        };
+
+        // base styling
+        f.render_widget(ratatui::widgets::Clear, size);
+
+        let mut base_style = Style::default().fg(app.theme.color_text());
+        if !app.config.transparent_background {
+            base_style = base_style.bg(app.theme.color_base());
+        }
+        f.render_widget(ratatui::widgets::Block::default().style(base_style), size);
+
+        let halfblocks =
+            app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Halfblocks;
+        info_panel::render(f, left, size.width, app);
+        if show_right {
+            visual_panel::render(f, lyric_row, spectrum_row, app);
+        }
+        if halfblocks {
+            // Song cells remain behind the drawer; translation only clips cells.
+            paint_halfblock_cover(f.buffer_mut(), covers, info_l.cover, app);
+        }
+
+        let pl_layout = playlist_panel::compute_layout(left, app);
+
+        if app.overlay == Overlay::Playlist || app.playlist_slide_x != app.playlist_slide_target_x {
+            let dx = app.playlist_slide_x.clamp(-(left.width as i16), 0);
+            let visible = translated_clip(left, dx, left);
+            layout_out.playlist_rect = visible;
+            if !visible.is_empty() {
+                sidebar.buffer.resize(left);
+                sidebar.buffer.reset();
+                let surface = Style::default().bg(app.theme.color_surface());
+                sidebar.buffer.set_style(left, surface);
+                playlist_panel::render(&mut sidebar.buffer, left, app, !halfblocks);
+                if halfblocks && let Some(hash) = app.playlist_cover_hash {
+                    covers.paint(
+                        &mut sidebar.buffer,
+                        pl_layout.cover_rect,
+                        pl_layout.cover_rect,
+                        0,
+                        0,
+                        cover_key(pl_layout.cover_rect, hash),
+                    );
+                }
+                paint_drawer(f.buffer_mut(), &sidebar.buffer, dx, visible);
+                layout_out.playlist_inner = translated_clip(pl_layout.inner, dx, visible);
+                layout_out.playlist_list_inner = translated_clip(pl_layout.list_inner, dx, visible);
+            }
+        }
+
+        // toast
+        if let Some((msg, _)) = &app.toast {
+            let area = Rect {
+                x: size.x,
+                y: size.y,
+                width: size.width,
+                height: 1,
+            };
+            f.render_widget(
+                ratatui::widgets::Paragraph::new(msg.as_str())
+                    .style(Style::default().fg(app.theme.color_accent3())),
+                area,
+            );
+        }
+
+        if app.config.show_hints {
+            Tui::<B>::render_hint_in_border(f, app, bottom_row, layout_out.left);
+        }
+
+        // modals (top-most)
+        match app.overlay {
+            Overlay::SettingsModal => {
+                render_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::BarSettingsModal => {
+                render_bar_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::LyricsSettingsModal => {
+                render_lyrics_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::DownloadSettingsModal | Overlay::DownloadPathEditModal => {
+                render_download_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::AboutModal => render_about_modal(f, size, app),
+            Overlay::HelpModal => render_help_modal(f, size, app, &mut layout_out.modal_rows),
+            Overlay::EqModal => render_eq_modal(f, size, app),
+            _ => {}
+        }
+        // Draw at the final geometry, then move the whole page as one drawer.
+        // Cover preparation and cache keys are independent of this screen offset.
+        slide_page_from_bottom(f.buffer_mut(), progress, host_snapshot);
+    })?;
+    Ok(layout_out)
+}
+
+fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32, host_snapshot: Option<&Buffer>) {
+    let width = usize::from(buffer.area.width);
+    let height = usize::from(buffer.area.height);
+    if width == 0 || height == 0 {
+        return;
+    }
+    let visible = (f32::from(buffer.area.height) * progress.clamp(0.0, 1.0)).round() as usize;
+    let offset = height.saturating_sub(visible);
+    if offset == 0 {
+        return;
+    }
+    for source_row in (0..visible).rev() {
+        let destination = (source_row + offset) * width;
+        let (source, target) = buffer.content.split_at_mut(destination);
+        let start = source_row * width;
+        target[..width].clone_from_slice(&source[start..start + width]);
+    }
+    for row in 0..offset {
+        let start = row * width;
+        if let Some(snapshot) = host_snapshot.filter(|snapshot| snapshot.area == buffer.area) {
+            buffer.content[start..start + width]
+                .clone_from_slice(&snapshot.content[start..start + width]);
+        } else {
+            for cell in &mut buffer.content[start..start + width] {
+                cell.reset();
+            }
+        }
+    }
+}
+
+fn translated_clip(area: Rect, dx: i16, clip: Rect) -> Rect {
+    let x = i32::from(area.x) + i32::from(dx);
+    let start = x.max(i32::from(clip.left()));
+    let end = (x + i32::from(area.width)).min(i32::from(clip.right()));
+    let top = area.top().max(clip.top());
+    let bottom = area.bottom().min(clip.bottom());
+    if start >= end || top >= bottom {
+        return Rect::default();
+    }
+    Rect::new(start as u16, top, (end - start) as u16, bottom - top)
+}
+
+fn paint_drawer(target: &mut Buffer, source: &Buffer, dx: i16, clip: Rect) {
+    use unicode_width::UnicodeWidthStr;
+
+    let clip = translated_clip(source.area, dx, clip.intersection(target.area));
+    for y in clip.top()..clip.bottom() {
+        for x in clip.left()..clip.right() {
+            let source_x = (i32::from(x) - i32::from(dx)) as u16;
+            let cell = &source[(source_x, y)];
+            let dest = &mut target[(x, y)];
+            dest.clone_from(cell);
+            // Never expose half a wide title character at either clipping boundary.
+            let cut_left = x == clip.left()
+                && source_x > source.area.left()
+                && source[(source_x - 1, y)].symbol().width() > 1;
+            if cut_left || usize::from(x) + cell.symbol().width() > usize::from(clip.right()) {
+                dest.set_char(' ');
+            }
+        }
+    }
+}
+
 fn paint_halfblock_cover(
     target: &mut ratatui::buffer::Buffer,
-    halfblocks: &mut crate::tmplayer::render::halfblock_cover::HalfblockCovers,
+    covers: &CoverPipeline,
     cover: Rect,
     app: &AppState,
 ) {
+    let paint_border = |target: &mut Buffer, dx: i16, hash: u64| {
+        if !app.config.album_border
+            || covers
+                .frame(cover_key(info_panel::cover_content_rect(cover), hash))
+                .is_none()
+        {
+            return;
+        }
+        let content = info_panel::cover_content_rect(cover);
+        if content == cover {
+            return;
+        }
+        let border = crate::tmplayer::ui::borders::SOLID_BORDER;
+        let clip = translated_clip(cover, dx, cover.intersection(target.area));
+        for y in clip.top()..clip.bottom() {
+            for x in clip.left()..clip.right() {
+                let sx = (i32::from(x) - i32::from(dx)) as u16;
+                let symbol = match (
+                    y == cover.top(),
+                    y + 1 == cover.bottom(),
+                    sx == cover.left(),
+                    sx + 1 == cover.right(),
+                ) {
+                    (true, _, true, _) => Some(border.top_left),
+                    (true, _, _, true) => Some(border.top_right),
+                    (_, true, true, _) => Some(border.bottom_left),
+                    (_, true, _, true) => Some(border.bottom_right),
+                    (true, _, _, _) => Some(border.horizontal_top),
+                    (_, true, _, _) => Some(border.horizontal_bottom),
+                    (_, _, true, _) => Some(border.vertical_left),
+                    (_, _, _, true) => Some(border.vertical_right),
+                    _ => None,
+                };
+                if let Some(symbol) = symbol {
+                    target[(x, y)]
+                        .set_symbol(symbol)
+                        .set_fg(app.theme.color_subtext());
+                }
+            }
+        }
+    };
     let content = info_panel::cover_content_rect(cover);
     if let Some(anim) = &app.cover_anim {
         let (from_dx, to_dx) = anim.slide_offsets(cover.width, app.last_frame);
         for (snapshot, dx) in [(&anim.from, from_dx), (&anim.to, to_dx)] {
             if let (Some(bytes), Some(hash)) = (snapshot.cover.as_deref(), snapshot.cover_hash) {
-                halfblocks.paint_segment(target, content, cover, dx, hash, bytes);
+                let _ = bytes;
+                paint_border(target, dx, hash);
+                covers.paint(target, content, cover, dx, 0, cover_key(content, hash));
             }
         }
     } else if let (Some(bytes), Some(hash)) = (
         app.player.track.cover.as_deref(),
         app.player.track.cover_hash,
     ) {
-        halfblocks.paint(target, content, hash, bytes);
+        let _ = bytes;
+        paint_border(target, 0, hash);
+        covers.paint(target, content, cover, 0, 0, cover_key(content, hash));
+    }
+}
+
+fn cover_key(area: Rect, hash: u64) -> CoverKey {
+    CoverKey {
+        hash,
+        width: area.width,
+        height: area.height,
     }
 }
 
@@ -649,11 +824,6 @@ fn render_bar_settings_modal(
                     lang_text(app, "矢量", "Vector")
                 }
             }
-        ),
-        format!(
-            "{}: {}",
-            lang_text(app, "超级流畅", "Super Smooth"),
-            lang_on_off(app, app.config.super_smooth_bar)
         ),
         format!(
             "{}: {}",
@@ -1311,7 +1481,7 @@ pub fn help_items(app: &AppState) -> Vec<(String, String)> {
             "Sidebar Playlist Section Switch",
             "Ctrl+Up/Down",
         ),
-        item("按键绑定", "Keybinds", "Ctrl+K"),
+        item("按键绑定开关", "Toggle Keybinds", "Ctrl+K"),
     ]
 }
 
@@ -1393,8 +1563,8 @@ fn render_help_modal(
     f.render_widget(
         Paragraph::new(lang_text(
             app,
-            "Up/Down 浏览  Esc 关闭（仅查看）",
-            "Up/Down browse  Esc close (view only, no rebinding)",
+            "Up/Down 浏览  Ctrl+K 关闭  Esc 返回（仅查看）",
+            "Up/Down browse  Ctrl+K close  Esc back (view only)",
         ))
         .style(Style::default().fg(app.theme.color_subtext())),
         rows[2],
@@ -1773,6 +1943,17 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
         return None;
     }
 
+    // The rendered playlist (including its slide shell) covers every information control.
+    if contains(layout.playlist_rect, col, row) || contains(layout.playlist_list_inner, col, row) {
+        if contains(layout.playlist_list_inner, col, row) {
+            let offset = row.saturating_sub(layout.playlist_list_inner.y) as usize;
+            if offset < app.playlist_list_rows {
+                return Some(Action::PlaylistSelect(app.playlist_list_scroll + offset));
+            }
+        }
+        return None;
+    }
+
     if contains(layout.info_controls, col, row) {
         return control_buttons::hit_test(layout.info_controls, app, col, row);
     }
@@ -1795,23 +1976,9 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
         return Some(Action::ToggleDownload);
     }
 
-    // 歌单浮层（含滑出动画）画在信息区之上：它盖住的那几行不再是"看得见的名字"，
-    // 命中区按空名字处理（空名字本就不返回命中区），以免点在可见的歌单行上被判成
-    // "点作者名/专辑名"而退出全屏页。浮层自己的行命中在下面按绘制顺序判定。
-    let covered_by_playlist_panel =
-        !layout.playlist_rect.is_empty() && contains(layout.playlist_rect, col, row);
-    let (artist_hit, album_hit) = if covered_by_playlist_panel {
-        ("", "")
-    } else {
-        (
-            app.player.track.artist.as_str(),
-            app.player.track.album.as_str(),
-        )
-    };
-
     // 作者名贴 meta 块第 2 行左端，多作者按字符位置分段（"A / B" 点谁的名字进谁）：
     // 只有名字画出来的那几格可点，连接符与行尾空白都不算。
-    for (index, rect) in info_panel::artist_row_hits(layout.info_meta, artist_hit) {
+    for (index, rect) in info_panel::artist_row_hits(layout.info_meta, &app.player.track.artist) {
         if contains(rect, col, row) {
             return Some(Action::OpenAuthorPage(index));
         }
@@ -1819,7 +1986,7 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
 
     // 专辑名贴 meta 块第 3 行左端，同样只算画出来的字符：点了打开专辑页。
     if contains(
-        info_panel::album_row_rect(layout.info_meta, album_hit),
+        info_panel::album_row_rect(layout.info_meta, &app.player.track.album),
         col,
         row,
     ) {
@@ -1835,16 +2002,6 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
             layout.info_progress,
             col,
         )));
-    }
-
-    if contains(layout.playlist_list_inner, col, row) {
-        // 渲染带虚拟滚动窗口 + 末尾 2 行 footer，命中区必须用同一份映射，
-        // 否则列表滚过一屏后点到的不是看到的那首。
-        let offset = row.saturating_sub(layout.playlist_list_inner.y) as usize;
-        if offset < app.playlist_list_rows {
-            return Some(Action::PlaylistSelect(app.playlist_list_scroll + offset));
-        }
-        return None;
     }
 
     None
@@ -1919,6 +2076,201 @@ mod tests {
     use super::*;
     use crate::data::icons::UiIcons;
     use crate::ui::theme::{ColorCapability, Theme, ThemePalette};
+
+    #[test]
+    fn fullscreen_drawer_translates_content_and_keeps_cover_geometry() {
+        use crate::data::config::VisualizeMode;
+        use crate::render::cover_pipeline::CoverStatus;
+        use ratatui::backend::TestBackend;
+        use ratatui::buffer::Cell;
+
+        let mut app = state(Overlay::None);
+        app.config.show_hints = false;
+        app.config.visualize = VisualizeMode::Lyrics;
+        // TestBackend does not emulate a terminal erasing a wide glyph's tail.
+        // Compare full terminal diffs with narrow text; wide cells are tested below.
+        app.language = crate::data::config::Language::En;
+        app.player.track.title = "Drawer song".into();
+        app.player.track.artist = "Drawer artist".into();
+        app.player.track.cover = Some(encoded_cover());
+        app.player.track.cover_hash = Some(700);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut covers = CoverPipeline::new(WakeSignal::default());
+        let mut drawer = PlaylistDrawer::default();
+
+        // The first, fully offscreen frame still starts real cover preparation.
+        let layout =
+            draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.0).unwrap();
+        let content = info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover);
+        let key = cover_key(content, 700);
+        assert_eq!(covers.status(key), CoverStatus::Loading);
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .all(|cell| *cell == Cell::default())
+        );
+
+        wait_ready(&mut covers, key);
+        draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        let full = terminal.backend().buffer().clone();
+        let steady_cover = covers.frame(key).unwrap().clone();
+
+        // Open from below, then close downwards. Row offsets are worked examples
+        // at height 40, independent of the implementation's movement calculation.
+        for (progress, offset) in [
+            (0.025, 39),
+            (0.2, 32),
+            (0.5, 20),
+            (0.8, 8),
+            (1.0, 0),
+            (0.8, 8),
+            (0.5, 20),
+            (0.2, 32),
+            (0.0, 40),
+        ] {
+            draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, progress).unwrap();
+            let actual = terminal.backend().buffer();
+            for y in 0..40 {
+                for x in 0..120 {
+                    if y < offset {
+                        assert_eq!(
+                            actual[(x, y)],
+                            Cell::default(),
+                            "vacated row, progress={progress}"
+                        );
+                    } else {
+                        assert_eq!(
+                            actual[(x, y)],
+                            full[(x, y - offset)],
+                            "whole page translates: progress={progress}, cell=({x},{y})"
+                        );
+                    }
+                }
+            }
+            assert_eq!(covers.status(key), CoverStatus::Ready);
+            assert_eq!(
+                covers.frame(key),
+                Some(&steady_cover),
+                "movement must reuse final-size chafa cells"
+            );
+        }
+    }
+
+    #[test]
+    fn drawer_moves_wide_glyph_and_colors_with_a_nonzero_origin() {
+        let mut buffer = Buffer::empty(Rect::new(7, 9, 6, 4));
+        let style = Style::default()
+            .fg(ratatui::style::Color::Rgb(200, 50, 30))
+            .bg(ratatui::style::Color::Rgb(20, 40, 60));
+        buffer.set_string(7, 9, "中AB", style);
+        let source = buffer.clone();
+        slide_page_from_bottom(&mut buffer, 0.5, None);
+        assert_eq!(buffer[(7, 11)].symbol(), "中");
+        for x in 7..13 {
+            assert_eq!(buffer[(x, 11)], source[(x, 9)]);
+            assert_eq!(buffer[(x, 12)], source[(x, 10)]);
+            assert_eq!(buffer[(x, 9)], ratatui::buffer::Cell::default());
+            assert_eq!(buffer[(x, 10)], ratatui::buffer::Cell::default());
+        }
+    }
+
+    #[test]
+    fn fullscreen_handoff_uses_one_terminal_and_a_fresh_exit_snapshot() {
+        use crate::{data::config::VisualizeMode, render::snapshot};
+        use ratatui::backend::TestBackend;
+
+        fn paint_host(frame: &mut ratatui::Frame, label: &str) {
+            for y in frame.area().top()..frame.area().bottom() {
+                let area = frame.area();
+                frame.buffer_mut().set_string(
+                    area.x,
+                    y,
+                    format!("{label} row {y}"),
+                    Style::default(),
+                );
+            }
+        }
+
+        let mut app = state(Overlay::None);
+        app.config.show_hints = false;
+        app.config.small_window_display = false;
+        app.config.visualize = VisualizeMode::Lyrics;
+        app.language = crate::data::config::Language::En;
+        app.player.track.title = "Fullscreen content".into();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| paint_host(frame, "HOST BEFORE"))
+            .unwrap();
+        let visible_host = terminal.backend().buffer().clone();
+        let host =
+            snapshot::capture(&mut terminal, |frame| paint_host(frame, "HOST BEFORE")).unwrap();
+        assert_eq!(
+            terminal.backend().buffer(),
+            &visible_host,
+            "offscreen capture cannot submit or clear the Host"
+        );
+
+        let mut tui = Tui::new(&mut terminal, WakeSignal::default());
+        tui.draw(&mut app).unwrap();
+        let full = tui.terminal_mut().backend().buffer().clone();
+        for (progress, offset) in [(0.0, 40), (0.2, 32), (0.5, 20), (0.8, 8), (1.0, 0)] {
+            tui.draw_reveal(&mut app, &host, progress).unwrap();
+            let actual = tui.terminal_mut().backend().buffer();
+            for y in 0..40 {
+                for x in 0..120 {
+                    let expected = if y < offset {
+                        &host[(x, y)]
+                    } else {
+                        &full[(x, y - offset)]
+                    };
+                    assert_eq!(
+                        &actual[(x, y)],
+                        expected,
+                        "entry frame {progress}, ({x}, {y})"
+                    );
+                }
+            }
+        }
+        drop(host);
+
+        // The Host changed while Fullscreen was open. Capture it offscreen,
+        // leaving the current Fullscreen frame intact until sliding starts.
+        let exit_host =
+            snapshot::capture(tui.terminal_mut(), |frame| paint_host(frame, "HOST AFTER")).unwrap();
+        assert_eq!(tui.terminal_mut().backend().buffer(), &full);
+        for (progress, offset) in [(1.0, 0), (0.8, 8), (0.5, 20), (0.2, 32), (0.0, 40)] {
+            tui.draw_reveal(&mut app, &exit_host, progress).unwrap();
+            let actual = tui.terminal_mut().backend().buffer();
+            for y in 0..40 {
+                for x in 0..120 {
+                    let expected = if y < offset {
+                        &exit_host[(x, y)]
+                    } else {
+                        &full[(x, y - offset)]
+                    };
+                    assert_eq!(
+                        &actual[(x, y)],
+                        expected,
+                        "exit frame {progress}, ({x}, {y})"
+                    );
+                }
+            }
+        }
+        drop(exit_host);
+        drop(tui);
+        terminal
+            .draw(|frame| paint_host(frame, "HOST RESUMED"))
+            .unwrap();
+        for (x, ch) in "HOST RESUMED row 0".chars().enumerate() {
+            assert_eq!(
+                terminal.backend().buffer()[(x as u16, 0)].symbol(),
+                ch.to_string()
+            );
+        }
+    }
 
     fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
         Rect {
@@ -2102,10 +2454,6 @@ mod tests {
                         app.theme.color_subtext(),
                         "下载三态均使用歌曲列表未下载图标的颜色"
                     );
-                    assert_eq!(
-                        buf[(download_x, y)].symbol(),
-                        info_panel::download_glyph(&app).unwrap().to_string()
-                    );
                     for x in download_x..download_x + width {
                         assert_eq!(click(x, y), Some(Action::ToggleDownload));
                     }
@@ -2140,87 +2488,315 @@ mod tests {
         assert_eq!(download_cells(rect(0, 0, width + 1, 1), &app), None);
     }
 
+    fn encoded_cover() -> Vec<u8> {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(32, 32, |x, y| {
+            image::Rgb([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8])
+        }));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        encoded.into_inner()
+    }
+
+    fn wait_ready(covers: &mut CoverPipeline, key: CoverKey) {
+        use crate::render::cover_pipeline::CoverStatus;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while covers.status(key) != CoverStatus::Ready {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cover preparation timed out"
+            );
+            covers.poll();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     #[test]
-    fn halfblock_cover_slides_keep_both_cached_images_colored_and_clipped() {
+    fn halfblocks_loading_missing_and_transition_never_emit_ascii_art() {
+        use crate::data::config::GraphicsProtocol;
         use crate::tmplayer::app::state::CoverSnapshot;
-        use crate::tmplayer::render::halfblock_cover::HalfblockCovers;
-        use ratatui::buffer::Buffer;
-        use ratatui::style::Color;
+        use ratatui::backend::TestBackend;
+        let mut app = state(Overlay::None);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut covers = CoverPipeline::new(WakeSignal::default());
+        let mut drawer = PlaylistDrawer::default();
+        let layout = draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        let cover = info_panel::layout(layout.left, 120).cover;
+        let assert_blank = |buffer: &Buffer| {
+            for y in cover.top()..cover.bottom() {
+                for x in cover.left()..cover.right() {
+                    assert_eq!(buffer[(x, y)].symbol(), " ");
+                }
+            }
+        };
+        assert_blank(terminal.backend().buffer());
+        let from = CoverSnapshot::from(&app.player.track);
+        app.player.track.cover = Some(encoded_cover());
+        app.player.track.cover_hash = Some(42);
+        app.start_cover_anim(
+            from,
+            CoverSnapshot::from(&app.player.track),
+            -1,
+            app.last_frame,
+        );
+        draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        assert_blank(terminal.backend().buffer());
+        let content = info_panel::cover_content_rect(cover);
+        wait_ready(&mut covers, cover_key(content, 42));
+        app.cover_anim = None;
+        draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..)))
+        );
+    }
+
+    #[test]
+    fn sidebar_slides_preserve_exposed_song_chafa_cells() {
+        use crate::data::config::GraphicsProtocol;
+        use crate::render::cover_pipeline::CoverStatus;
+        use ratatui::backend::TestBackend;
         use std::io::Cursor;
         use std::time::{Duration, Instant};
 
-        let encode = |rgb| {
-            let image = image::RgbImage::from_pixel(4, 4, image::Rgb(rgb));
-            let mut bytes = Cursor::new(Vec::new());
-            image::DynamicImage::ImageRgb8(image)
-                .write_to(&mut bytes, image::ImageFormat::Png)
-                .unwrap();
-            bytes.into_inner()
-        };
         let mut app = state(Overlay::None);
-        app.config.graphics_protocol = crate::data::config::GraphicsProtocol::Halfblocks;
-        let cover = info_panel::layout(rect(0, 0, 120, 40), 120).cover;
-        let red = Color::Rgb(255, 0, 0);
-        let blue = Color::Rgb(0, 0, 255);
-        let mut halfblocks = HalfblockCovers::new();
-        let mut from = CoverSnapshot::from(&app.player.track);
-        from.cover = Some(encode([255, 0, 0]));
-        from.cover_hash = Some(1);
-        let mut to = from.clone();
-        to.cover = Some(encode([0, 0, 255]));
-        to.cover_hash = Some(2);
-        let content = info_panel::cover_content_rect(cover);
-        let mut first = Buffer::empty(rect(0, 0, 120, 40));
-        let mut second = first.clone();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            halfblocks.poll();
-            halfblocks.paint(&mut first, content, 1, from.cover.as_deref().unwrap());
-            halfblocks.paint(&mut second, content, 2, to.cover.as_deref().unwrap());
-            let first_cell = &first[(content.x, content.y)];
-            let second_cell = &second[(content.x, content.y)];
-            if (first_cell.fg == red || first_cell.bg == red)
-                && (second_cell.fg == blue || second_cell.bg == blue)
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        app.config.show_hints = false;
+        let image = image::RgbImage::from_fn(32, 32, |x, y| {
+            image::Rgb([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8])
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        app.player.track.cover = Some(encoded.into_inner());
+        app.player.track.cover_hash = Some(42);
+        let mut halfblocks = CoverPipeline::new(WakeSignal::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut sidebar = PlaylistDrawer::default();
+        let layout = draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
+        let loading = terminal.backend().buffer().clone();
+
+        // Before worker results are consumed there is no ASCII fallback.
+        for y in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).top()
+            ..info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).bottom()
+        {
+            for x in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover)
+                .left()
+                ..info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).right()
             {
-                break;
+                assert_eq!(loading[(x, y)].symbol(), " ");
             }
+        }
+        let content = info_panel::cover_content_rect(
+            info_panel::layout(layout.left, layout.full.width).cover,
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while halfblocks.status(cover_key(content, 42)) != CoverStatus::Ready {
             assert!(
                 Instant::now() < deadline,
-                "color cover worker did not finish"
+                "song cover preparation timed out"
             );
+            halfblocks.poll();
             std::thread::sleep(Duration::from_millis(1));
         }
+        draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
+        let closed = terminal.backend().buffer().clone();
+        assert_ne!(closed, loading, "ready image replaces blank loading area");
 
-        for border in [false, true] {
-            app.config.album_border = border;
-            for dir in [-1, 1] {
-                let started_at = Instant::now();
-                app.start_cover_anim(from.clone(), to.clone(), dir, started_at);
-                app.last_frame = started_at + Duration::from_millis(110);
-                let (_, original) = render_to_buffer_sized(120, 40, &mut app, |f, app, _| {
-                    info_panel::render(f, f.area(), 120, app);
-                });
-                let mut expected = original.clone();
-                let anim = app.cover_anim.as_ref().unwrap();
-                let (from_dx, to_dx) = anim.slide_offsets(cover.width, app.last_frame);
-                for (source, dx) in [(&first, from_dx), (&second, to_dx)] {
-                    for y in content.top()..content.bottom() {
-                        for x in content.left()..content.right() {
-                            let dest_x = i32::from(x) + i32::from(dx);
-                            if dest_x >= i32::from(cover.left())
-                                && dest_x < i32::from(cover.right())
-                            {
-                                expected[(dest_x as u16, y)] = source[(x, y)].clone();
-                            }
+        for opening in [true, false] {
+            app.overlay = if opening {
+                Overlay::Playlist
+            } else {
+                Overlay::None
+            };
+            app.playlist_slide_target_x = if opening {
+                0
+            } else {
+                -(layout.left.width as i16)
+            };
+            for visible in [1, 8, 16, 24, 32, 39, 40] {
+                app.playlist_slide_x = visible - layout.left.width as i16;
+                let frame =
+                    draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
+                let buffer = terminal.backend().buffer();
+                for y in content.top()..content.bottom() {
+                    for x in content.left()..content.right() {
+                        if !contains(frame.playlist_rect, x, y) {
+                            assert_eq!(
+                                buffer[(x, y)],
+                                closed[(x, y)],
+                                "exposed song cell ({x}, {y}), opening={opening}, visible={visible}"
+                            );
+                        } else {
+                            assert_ne!(
+                                buffer[(x, y)],
+                                closed[(x, y)],
+                                "sidebar must occlude the song image"
+                            );
                         }
                     }
                 }
-                let mut actual = original;
-                paint_halfblock_cover(&mut actual, &mut halfblocks, cover, &app);
-                assert_eq!(
-                    actual, expected,
-                    "slide must preserve every chafa glyph/color and clip to the cover"
-                );
+            }
+        }
+    }
+
+    #[test]
+    fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
+        use crate::data::config::GraphicsProtocol;
+        use crate::tmplayer::data::playlist::PlaylistItem;
+        use ratatui::backend::TestBackend;
+        use std::io::Cursor;
+
+        let mut app = state(Overlay::None);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        app.config.show_hints = false;
+        let image = image::RgbImage::from_fn(24, 24, |x, y| {
+            image::Rgb([(x * 9) as u8, (y * 9) as u8, ((x + y) * 5) as u8])
+        });
+        let mut encoded = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        app.playlist_cover = Some(encoded.into_inner());
+        app.playlist_cover_hash = Some(91);
+        app.playlist_view.items = (0..12)
+            .map(|i| PlaylistItem {
+                song_id: Some(i.to_string()),
+                title: format!("Track {i}"),
+            })
+            .collect();
+        let mut song_covers = CoverPipeline::new(WakeSignal::default());
+        let mut drawer = PlaylistDrawer::default();
+
+        // Resize uses a new final-size cover, not an animation-sized image.
+        for (width, height) in [(120, 40), (90, 30)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            app.overlay = Overlay::None;
+            app.playlist_slide_x = 0;
+            app.playlist_slide_target_x = 0;
+            let closed_layout =
+                draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+            let background = terminal.backend().buffer().clone();
+            let final_layout = playlist_panel::compute_layout(closed_layout.left, &app);
+            wait_ready(&mut song_covers, cover_key(final_layout.cover_rect, 91));
+            app.overlay = Overlay::Playlist;
+            draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+            let fully_open = terminal.backend().buffer().clone();
+            let cover_cell = &fully_open[(final_layout.cover_rect.x, final_layout.cover_rect.y)];
+            assert_ne!(
+                cover_cell.fg,
+                app.theme.color_text(),
+                "prewarmed chafa is not ASCII"
+            );
+
+            for opening in [true, false] {
+                app.overlay = if opening {
+                    Overlay::Playlist
+                } else {
+                    Overlay::None
+                };
+                app.playlist_slide_target_x = if opening {
+                    0
+                } else {
+                    -(closed_layout.left.width as i16)
+                };
+                for dx in [-(closed_layout.left.width as i16), -17, -8, -1, 0] {
+                    app.playlist_slide_x = dx;
+                    let frame =
+                        draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
+                    let actual = terminal.backend().buffer();
+                    for y in closed_layout.left.top()..closed_layout.left.bottom() {
+                        for x in closed_layout.left.left()..closed_layout.left.right() {
+                            if contains(frame.playlist_rect, x, y) {
+                                let source_x = (i32::from(x) - i32::from(dx)) as u16;
+                                assert_eq!(
+                                    actual[(x, y)],
+                                    fully_open[(source_x, y)],
+                                    "drawer cell must translate, not rescale: opening={opening}, dx={dx}"
+                                );
+                            } else {
+                                assert_eq!(
+                                    actual[(x, y)],
+                                    background[(x, y)],
+                                    "outside drawer is unchanged"
+                                );
+                            }
+                        }
+                    }
+                    if !frame.playlist_list_inner.is_empty() {
+                        let hit = hit_test(
+                            &frame,
+                            &app,
+                            frame.playlist_list_inner.x,
+                            frame.playlist_list_inner.y,
+                        );
+                        assert_eq!(hit, Some(Action::PlaylistSelect(app.playlist_list_scroll)),);
+                        assert_eq!(
+                            wheel_over_playlist(
+                                &frame,
+                                &app,
+                                frame.playlist_rect.x,
+                                frame.playlist_rect.y
+                            ),
+                            opening
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn drawer_clipping_does_not_expose_half_a_wide_character() {
+        let mut source = Buffer::empty(rect(0, 0, 6, 1));
+        source.set_string(0, 0, "中AB文", Style::default());
+        let mut target = Buffer::empty(rect(0, 0, 6, 1));
+        target.set_string(0, 0, "......", Style::default());
+        paint_drawer(&mut target, &source, -1, rect(0, 0, 3, 1));
+        assert_eq!(line_text(&target, 0), " AB...");
+        paint_drawer(&mut target, &source, 0, rect(0, 0, 1, 1));
+        assert_eq!(
+            target[(0, 0)].symbol(),
+            " ",
+            "right-edge half glyph stays blank"
+        );
+    }
+
+    #[test]
+    fn drawer_failed_cover_is_blank_without_ascii_or_retry_loop() {
+        use crate::data::config::GraphicsProtocol;
+        use crate::render::cover_pipeline::CoverStatus;
+        use ratatui::backend::TestBackend;
+        let mut app = state(Overlay::Playlist);
+        app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
+        app.playlist_cover = Some(b"invalid image".to_vec());
+        app.playlist_cover_hash = Some(19);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut covers = CoverPipeline::new(WakeSignal::default());
+        let mut drawer = PlaylistDrawer::default();
+        let layout = draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+        let cover = playlist_panel::compute_layout(layout.left, &app).cover_rect;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while covers.status(cover_key(cover, 19)) != CoverStatus::Failed {
+            assert!(std::time::Instant::now() < deadline);
+            covers.poll();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        for dx in [0, -8, -17] {
+            app.playlist_slide_x = dx;
+            let frame = draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+            let exposed = translated_clip(cover, dx, frame.playlist_rect);
+            for y in exposed.top()..exposed.bottom() {
+                for x in exposed.left()..exposed.right() {
+                    assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), " ");
+                }
             }
         }
     }
@@ -2439,6 +3015,58 @@ mod tests {
             hit_test(&uncovered, &app, 2, 7),
             Some(Action::OpenAlbumPage)
         );
+    }
+
+    #[test]
+    fn playlist_panel_blocks_hidden_controls_but_not_uncovered_cells() {
+        let mut app = state(Overlay::Playlist);
+        app.download_state = crate::tmplayer::DownloadIconState::NotDownloaded;
+        app.playlist_list_scroll = 7;
+        app.playlist_list_rows = 5;
+        let layout = UiLayout {
+            playlist_rect: rect(0, 0, 24, 8),
+            playlist_list_inner: rect(1, 1, 22, 6),
+            info_meta: rect(1, 1, 22, 3),
+            info_controls: rect(0, 4, 30, 1),
+            info_volume: rect(0, 5, 30, 1),
+            info_progress: rect(0, 6, 30, 1),
+            ..UiLayout::default()
+        };
+        for row in 1..=5 {
+            assert_eq!(
+                hit_test(&layout, &app, 21, row),
+                Some(Action::PlaylistSelect(7 + usize::from(row - 1)))
+            );
+        }
+        assert_eq!(
+            hit_test(&layout, &app, 21, 6),
+            None,
+            "footer swallows the hidden seek bar"
+        );
+        assert_eq!(
+            hit_test(&layout, &app, 0, 4),
+            None,
+            "panel border swallows hidden buttons"
+        );
+        assert!(matches!(
+            hit_test(&layout, &app, 25, 5),
+            Some(Action::SetVolume(_))
+        ));
+        assert!(matches!(
+            hit_test(&layout, &app, 25, 6),
+            Some(Action::SeekToFraction(_))
+        ));
+
+        let sliding = UiLayout {
+            playlist_rect: rect(0, 0, 12, 8),
+            playlist_list_inner: Rect::default(),
+            ..layout
+        };
+        assert_eq!(hit_test(&sliding, &app, 5, 5), None);
+        assert!(matches!(
+            hit_test(&sliding, &app, 15, 5),
+            Some(Action::SetVolume(_))
+        ));
     }
 
     /// 命中宽度按显示宽度算：中日韩名字一个字占两格。

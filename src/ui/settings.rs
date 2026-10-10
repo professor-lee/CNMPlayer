@@ -220,11 +220,6 @@ fn draw_playback_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         ),
         format!(
             "{}: {}",
-            l(app, "超级流畅", "Super Smooth"),
-            on_off(app, app.config.super_smooth_bar)
-        ),
-        format!(
-            "{}: {}",
             l(app, "频谱间隔", "Bars Gap"),
             on_off(app, app.config.bars_gap)
         ),
@@ -644,7 +639,11 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     lines.push(Line::from(Span::styled(
         format!(
             "  {}",
-            l(app, "按键绑定弹窗（Ctrl+K）", "Open Keybinds (Ctrl+K)")
+            l(
+                app,
+                "按键绑定弹窗开关（Ctrl+K）",
+                "Toggle Keybinds (Ctrl+K)"
+            )
         ),
         Style::default().fg(app.theme.color_subtext()),
     )));
@@ -695,8 +694,8 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     } else {
         l(
             app,
-            "Enter 重绑  Ctrl+Alt+R 重置  Esc 返回",
-            "Enter rebind  Ctrl+Alt+R reset  Esc back",
+            "Enter 重绑  Ctrl+Alt+R 重置  Ctrl+K 关闭  Esc 返回",
+            "Enter rebind  Ctrl+Alt+R reset  Ctrl+K close  Esc back",
         )
         .to_string()
     };

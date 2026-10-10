@@ -30,7 +30,7 @@ A single process carries two UIs:
 - the **host UI** — login, home recommendations, playlist / artist / search pages, a sliding sidebar and a 5-row collapsed player bar;
 - the **fullscreen playback page** — cover, lyrics, playlist overlay and a 10-band EQ. The fullscreen keybind (default `Ctrl+F`) opens it; inside, `Ctrl+F` or `Esc` returns to the host.
 
-Playback belongs to the host: streaming with a local cache, queue memory, private roam, VIP-aware audio quality, and the visualizers (cava bars, a real-PCM oscilloscope, a Lissajous vector mode, a LUFS VU meter) that the other UIs draw.
+Playback belongs to the host: streaming with a local cache, queue memory, private roam, VIP-aware audio quality, and the visualizers (internal Cava spectrum bars, a real-PCM oscilloscope, a Lissajous vector mode, a LUFS VU meter) that the other UIs draw.
 
 > Read the [Disclaimer](#disclaimer) first: this is an unofficial client, music copyright belongs to the
 > rights holders, and the cache/download features are for personal offline use only — **no redistribution**.
@@ -46,10 +46,10 @@ Playback belongs to the host: streaming with a local cache, queue memory, privat
 ### Browsing
 
 - Home: a recommendation tile grid whose first three slots are always `每日推荐` (Daily Recommendations), `私人雷达` (Private Radar) and `私人漫游` (Private Roam); `home_more_recommend` expands the remaining recommendations
-- Home sidebar (toggle keybind, default `P`): your created and collected playlists, up to 100 each; `Ctrl+Up/Down` switches section, Enter opens, Esc collapses; the wheel scrolls the section under the cursor (stopping at either end), a click focuses and a double click opens
-- Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list
+- Home sidebar (toggle keybind, default `P`): your created and collected playlists, fetched 100 at a time and appended when scrolling to the end; `Ctrl+Up/Down` switches section, Enter opens, Esc collapses; the wheel scrolls the section under the cursor (stopping at either end), a click focuses and a double click opens
+- Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list. Playlist tracks load 100 at a time; browsing and playback share the same source-bound cursor and request, so a page fetched by either is appended to both. Switching to daily recommendations, artist sections or albums cancels the old browsing request and clears its pagination state.
 - Artist page: avatar, name, hot-song / album / EP / single counts and a tile grid per section
-- Search page: a plain keyword searches artists, playlists and songs at once (artists and playlists show the 5 most relevant hits each, above separate rules); songs are requested 50 at a time and appended as you scroll further
+- Search page: a plain keyword searches artists, playlists and songs at once (artists and playlists show the 5 most relevant hits each, above separate rules); songs are requested 100 at a time and appended as you scroll further
 - Private roam: refreshed daily while keeping the last played track at the head; reaching the end of the list fetches more (each API call returns 3 songs, three calls are merged and de-duplicated) and appends them; the tile cover follows the currently playing roam song, and the queue origin survives a restart
 - Navigation: Enter opens or plays, Esc / Left goes back, Tab / Down and Shift+Tab / Up move, PageUp / PageDown jump one page
 - Mouse: the wheel scrolls, a single click focuses, a double click activates (400 ms window); the collapsed player bar's previous / play-pause / next, like and repeat-mode buttons and its progress bar are clickable
@@ -75,11 +75,12 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 
 - Streaming: the song downloads into `<cache>/audio/<song_id>__<quality>.<pid>-<job_id>.part` and is renamed to `<song_id>__<quality>.audio` only after the complete response is written successfully. Independent temporary files prevent cancellation of an old task from affecting its replacement. Completed cache files play directly from disk; the buffered part of the progress bar shows download progress.
 - Seeking from the progress bar or inside the fullscreen page, with a pulse animation while the position catches up
-- Queue memory (`playback_memory`): queue, current index, repeat mode and the queue's origin list are saved on every track change and restored after login — the restored track starts from the beginning
+- Queue memory (`playback_memory`): queue, current index, repeat mode and the queue's origin list are saved on every track change; new saves also retain the playlist cursor. Startup restoration shares the 12-second initialization budget (at most 6 seconds for one step); timeout skips this attempt without replacing the saved memory. The restored track starts from the beginning.
 - VIP-aware audio quality (`audio_quality`): 9 levels from `standard` to `jymaster`; a non-VIP account is clamped to `exhigh`
 - 10-band EQ, ±12 dB (`eq_bands_db`), edited from the fullscreen EQ modal and applied to the live stream
-- Like / unlike from the fullscreen page and from the collapsed player bar
+- Like / unlike from the fullscreen page and from the collapsed player bar; requests are serialized and rapid inputs retain the latest intent instead of letting an older in-flight result discard it
 - Repeat modes: sequence → shuffle → loop all → loop one
+- Playlist playback prefetches the next page when entering the last three loaded tracks. At an unfinished boundary, sequence/list-repeat waits for that page instead of stopping or wrapping early; scrolling the fullscreen queue to its last row uses the same request. The open fullscreen playlist consumes clicks over hidden information controls.
 - Linux media control (MPRIS, player name `cnmplayer`) with metadata and cover art; the host owns MPRIS updates and the fullscreen page has no independent polling setting
 
 ### Downloads
@@ -96,11 +97,12 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 
 - `hidden` (shown as "Off" in settings) — the whole right-hand side of the fullscreen page is collapsed: neither a visualizer nor the lyrics are drawn, and the song info panel stretches across the full terminal width (its border spans the full width, while the content inside is capped at 1/3 of the window and centred).
 - `lyrics` (shown as "Lyrics") — the right-hand side only shows the lyrics; no visualizer is drawn. The old `off` value still selects this mode.
-- `bars` — cava spectrum bars. Requires the external `cava` binary.
-- `vector` — a Lissajous-style vectorscope: the left channel drives the horizontal axis and the right channel the vertical one (up = positive, always), drawn dot by dot with the same braille raster as the oscilloscope and scaled so the track's loudest moment so far fills the panel (only track changes restart it). On pause or a sudden cut to silence the figure bursts apart into drifting dots that settle and softly twinkle until playback resumes. Needs no cava
-- The vectorscope calibrates from the first valid PCM window before drawing that frame; its peak reference then only increases, and the first valid window after a PCM reset recalibrates it. Pausing the oscilloscope commits its exact settled frame without requiring another input event.
-- If cava is missing, the default becomes `oscilloscope` and cycling the setting skips `bars` instead of failing.
-- The collapsed player bar draws a 10-cell braille mini spectrum from cava; that spot stays blank in `lyrics` and `hidden` because cava is not started there. The narrow small window draws a stereo VU meter driven by a 400 ms momentary LUFS meter (display range −60…0 LUFS).
+- `bars` — an internal, faithful Rust port of Cava's spectrum algorithm, rendered with eight sub-cell height levels; no external `cava` executable is needed.
+- `oscilloscope` — a real-PCM waveform that smoothly settles to a flat line on pause, stop or audio interruption, and reopens when playback resumes.
+- `vector` — a Lissajous-style vectorscope: the left channel drives the horizontal axis and the right channel the vertical one (up = positive, always), drawn dot by dot with the same braille raster as the oscilloscope and scaled so the track's loudest moment so far fills the panel (only track changes restart it). On pause or a sudden cut to silence the figure bursts apart into drifting dots that settle and softly twinkle until playback resumes.
+- The vectorscope calibrates from the first valid PCM window before drawing that frame; its peak reference then only increases, and the first valid window after a PCM reset recalibrates it.
+- The default visualization is `bars`; selecting it no longer depends on an installed executable.
+- The collapsed player bar draws a 10-cell braille mini spectrum using the same internal Cava algorithm and playback PCM source as fullscreen bars; that spot stays blank in `lyrics` and `hidden`. The narrow small window draws a stereo VU meter driven by a 400 ms momentary LUFS meter (display range −60…0 LUFS).
 
 ### Small window mode
 
@@ -121,7 +123,9 @@ The flat player bar keeps its mouse targets (previous, play-pause, next, like, r
 
 - Themes: loaded dynamically from `themes/*.toml` — 20 built-ins (`frappe` by default, plus `system`, the other Catppuccin variants, `ayu_light`, `ayu_mirage`, `ocean`, `everforest_dark`, `everforest_light`, `monokai_pro`, `nord`, `rose_pine_moon`, `solarized_dark`, `solarized_light`, `tomorrow_light`, `tomorrow_night`, `zenburn`, `zinc_dark`, `zinc_light`); drop in your own toml and it joins the cycle. Files that fail validation are skipped, and a broken selected theme falls back to the default
 - UI language: `zh` / `en`
-- Startup: a loading page (ASCII title plus progress bar, no text) appears first; login restore and recommendation fetches run in the background step by step, and an unusable saved session hands over to the login page
+- Startup: a loading page (ASCII title plus progress bar, no text) appears first; login restore and recommendation fetches run in the background step by step, and an unusable saved session hands over to the login page. Playback-memory restoration is bounded by the same initialization deadline.
+- The host refreshes playback time and progress on its idle maintenance tick even when visualization is set to lyrics/hidden.
+- Settings and their subpages open and close immediately in both the host and fullscreen UI, without modal transition animations.
 - Transparent background, album-cover border and hint lines
 - 22 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
 - About modal with braille art, and a hidden easter egg inside it (the `easter-egg` cargo feature, compiled in by default and removable with `--no-default-features`)
@@ -143,7 +147,7 @@ paru -S cnmplayer-bin
 
 ### Prebuilt tarballs
 
-Every release publishes `CNMPlayer_vX.Y.Z_linux_amd64.tar.xz`, `CNMPlayer_vX.Y.Z_linux_aarch64.tar.xz` and `SHA256SUMS` on the [Releases page](https://github.com/professor-lee/CNMPlayer/releases). Both tarballs are flat archives containing the `cnmplayer` binary and `LICENSE`.
+Every release publishes `CNMPlayer_vX.Y.Z_linux_amd64.tar.xz`, `CNMPlayer_vX.Y.Z_linux_aarch64.tar.xz` and `SHA256SUMS` on the [Releases page](https://github.com/professor-lee/CNMPlayer/releases). Both tarballs are flat archives containing the `cnmplayer` binary, `LICENSE` and `THIRD_PARTY_NOTICES.md` (including the full MIT notices for Cava and the Rust FFT dependencies).
 
 ```bash
 # Download SHA256SUMS next to the tarball; verify the downloaded architecture.
@@ -174,21 +178,17 @@ sudo apt install -y build-essential cmake pkg-config \
 ### Requirements
 
 - Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime
-- An optional `cava` binary for the `bars` visualizer
 - A Nerd Font is required for the playback and navigation icons; the application always uses the Nerd Font glyph set.
 
-## cava
+## Internal Cava spectrum
 
-CNMPlayer looks for an external `cava` binary for the live spectrum visualizer.
-If `cava` is not available, the app still runs: `bars` is unavailable and the default visualizer becomes the oscilloscope, which reads PCM from the playback chain and needs no external process.
+Fullscreen `bars` and the collapsed mini spectrum analyze CNMPlayer's own decoded playback PCM. The shared tap is after the 10-band EQ and before playback volume: EQ changes affect the visualization, while volume changes do not. It does not capture the microphone, system output or other applications' audio.
 
-The executable lookup order is:
+The spectrum is a faithful Rust port of [Cava](https://github.com/karlstav/cava)'s algorithm at commit [`6d43df3b2c7882122585c02c064b20009842a6f8`](https://github.com/karlstav/cava/tree/6d43df3b2c7882122585c02c064b20009842a6f8). It uses the real playback sample rate, independent left/right FFTs and Cava's windows, band mapping, autosensitivity, falloff and integral smoothing. Mono display averages the independently processed, output-clamped channels rather than averaging PCM before the FFT. The FFT backend is pure Rust (`realfft` / `rustfft`), not copied FFTW code; floating-point differences mean this is not a claim of bitwise identity with FFTW.
 
-1. `TMPLAYER_CAVA`
-2. `<executable dir>/cava`
-3. `<executable dir>/third_party/cava/cava`
-4. `<current working directory>/third_party/cava/cava`
-5. `cava` in `PATH`
+The internal defaults are fixed: autosensitivity enabled, noise reduction `0.77`, cutoff `50–8000 Hz` (adapted to the Nyquist limit at low sample rates), linear scaling, sensitivity `1`, **Monstercat smoothing enabled** with `waves` disabled. These are not new user settings. Frequency bars use Cava's eight-level height rendering without an extra project EMA or gamma curve.
+
+Spectrum processing advances with the shared `ui_fps` UI submission clock; there is no independent spectrum refresh timer. Pausing feeds elapsed-time silence so the window and smoothing tail decay rather than repeatedly transforming stale audio. No external `cava`, executable lookup or `TMPLAYER_CAVA` environment variable is used. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and full license terms.
 
 ## First Run and Asset Root
 
@@ -212,13 +212,13 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 
 ## Configuration
 
-`config/default.toml` is rewritten on startup when a defaulted field is missing, a legacy value needs migration, or the saved visualizer is unavailable. Invalid TOML or missing required fields produce an error without replacing the file; repair the reported configuration before restarting.
+The repository's `config/default.toml` is embedded at build time and is the single source for first-run configuration, `Config::default()` and missing-field completion (including nested cache settings). User values override the template. Missing fields or legacy migrations are saved on startup; invalid TOML, invalid values and zero `ui_fps` return an error without replacing the user file. An incomplete or invalid embedded template is a development error and fails explicitly, never falling back to another set of defaults.
 
 | Key | Default | Values / notes |
 | --- | --- | --- |
 | `theme` | `frappe` | Any theme key from `themes/*.toml` (20 built-ins, custom files picked up); a broken file falls back to the default |
 | `language` | `zh` | `zh`, `en` |
-| `visualize` | cava present → `bars`, otherwise `oscilloscope` | `hidden` (shown as "Off" in settings), `lyrics` ("Lyrics"; the old `off` means the same), `bars`, `oscilloscope`, `vector`; only `bars` needs cava |
+| `visualize` | `bars` | `hidden` (shown as "Off" in settings), `lyrics` ("Lyrics"; the old `off` means the same), `bars`, `oscilloscope`, `vector`; all visualizers are internal |
 | `transparent_background` | `true` | Use the terminal background |
 | `album_border` | `true` | Border around the fullscreen cover |
 | `show_hints` | `true` | Hint line on the content pages and in the fullscreen page's panel border |
@@ -238,10 +238,8 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 | `bar_number` | `auto` | `auto`, `16`, `32`, `48`, `64`, `80`, `96` (fullscreen spectrum) |
 | `bar_channels` | `mono` | `stereo`, `mono` |
 | `bar_channel_reverse` | `false` | Draw the right channel on the left (fullscreen spectrum) |
-| `super_smooth_bar` | `false` | Sub-cell smoothed bars instead of density characters |
 | `bars_gap` | `false` | Leave a gap between bars |
-| `ui_fps` | `30` | Fullscreen page frame-rate cap |
-| `spectrum_hz` | `30` (shipped file says `60`) | Spectrum refresh rate; the host clamps its own cava to 1–30 Hz |
+| `ui_fps` | `60` | Defaults come from the embedded template. Positive integer UI submission cap for host and fullscreen, including idle; not clamped to 10–60. Clean frames may be skipped; terminal speed and processing cost determine the actual FPS, which is not guaranteed |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |
 | `cache.clean_strategy` | `both` | `size`, `age`, `both` |
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
@@ -289,7 +287,7 @@ The fullscreen-only slots are inert in the host: there they fall through to page
 
 - `Esc` — close the current overlay, or go back from the current page
 - `Ctrl+C` — quit from any state
-- `Ctrl+K` — open the keybind list
+- `Ctrl+K` — open the keybind list; press it again inside the list to close the whole modal on either UI, not return to settings. `Esc` retains its parent-navigation behavior.
 - `Ctrl+Up` / `Ctrl+Down` — switch the sidebar playlist section (Created / Collected) while the sidebar is open
 - `Ctrl+Alt+R` — restore the default keybinds (inside the keybind modal)
 - `F1` / `F2` / `F3` — login method (QR / account / phone)
@@ -317,26 +315,29 @@ Settings modal:
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` move, `Left` / `Right` / `Enter` change a value, `Esc` steps back
 - Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the lyrics subpage, where a single click flips the switch
-- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input
+- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding.
 
 Fullscreen page:
 
 - The host ignores the entry keybind while the terminal is narrower than 50 columns
 - `P` opens the playlist overlay, `Up` / `Down` select, `Enter` plays, `Esc` closes it
-- `T` opens the settings modal, `Ctrl+K` the keybind list, `About` is reachable from the settings modal
+- `T` opens the settings modal, `Ctrl+K` the keybind list, `About` is reachable from the settings modal; these modals open and close immediately, including while playback is paused.
 - `E` opens the EQ modal; arrows move and adjust a band, `Alt+R` resets it, `Esc` / `E` closes it
 - `Up` / `Down` adjust the volume, `Left` / `Right` change track, `Space` plays or pauses, `M` cycles the repeat mode, `L` likes the song
 - `Ctrl+F` or `Esc` returns to the host; the mouse clicks the control buttons, the progress bar, the volume bar (click, or press and drag), the like glyph and the playlist rows; clicking an artist name (each name of a multi-artist line is its own target) or the album name leaves the fullscreen page for that artist's or album's page in the host; an open overlay takes the wheel for row focus, and its rows focus on a single click and activate on a double click (the EQ modal sets a band on click)
 - If `small_window_display` is on and the terminal drops below 50 columns or 12 rows, the fullscreen page returns to the host by itself
+- Entering and leaving fullscreen slides the real two-column player layout up from the bottom like a drawer (and back down on exit). Cover preparation starts during entry; its transient preview and final chafa surface belong to the same fullscreen instance. Mouse controls are active as soon as the entry transition finishes.
+- The host and fullscreen page share one Terminal and alternate screen. Uncovered rows show a temporary host snapshot, dropped after entry. A fresh host view is prepared offscreen before exit and dropped when the transition ends; no host frame is written to the original terminal screen.
 
 ## Notes
 
-- There are no command line flags. The environment variables are `CNMPLAYER_ASSET_DIR` (asset root), `TMPLAYER_CAVA` (explicit cava binary, retained for compatibility) and `COLORTERM` / `TERM` (color capability detection).
+- There are no command line flags. The environment variables are `CNMPLAYER_ASSET_DIR` (asset root) and `COLORTERM` / `TERM` (color capability detection).
 - A Nerd Font is required for the playback and navigation icons; CNMPlayer intentionally does not guess glyph availability from `TERM`.
 - There is no dedicated album page; album search results and artist-page albums are shown with the playlist-page layout.
 - Native audio backends write warnings straight to stderr; CNMPlayer redirects fd 2 into `Player.stderr.log` so those messages cannot smear the TUI.
 - Prebuilt artifacts and AUR packages are produced for Linux `amd64` and `aarch64` only. MPRIS is Linux-only as well.
 - Background page and artwork reads are cancelled when their last UI owner is dropped. API responses and cover downloads have a 30-second deadline covering headers and the complete body; streaming playback also bounds header waiting to 30 seconds. Slow audio bodies remain cooperatively cancellable rather than imposing a total song-download deadline.
+- With `graphics_protocol = "halfblocks"`, covers never fall back to ASCII art: loading uses a transient low-resolution colored halfblock preview, then a bounded final chafa surface; missing or failed art stays blank. Final surfaces are shared only within the fullscreen lifetime and only at currently needed geometries.
 - Cover and lyric workers each run one request and retain only the latest pending request; result mailboxes are bounded. Blocking cover validation admits at most two jobs, and cancellation does not release a job's slot before it actually finishes.
 - One persistence thread keeps at most 32 pending cache writes and four pending keyed snapshots (configuration, login session, playback memory and private roam). New snapshots replace older pending snapshots for the same key; flush barriers preserve ordering. Cache writes rejected at capacity are logged; this optional cache does not prevent displaying a fetched cover.
 - Seeking uses one worker and one latest pending target. Each track owns a separate playback queue, so a stale seek cannot affect the next track. A blocked filesystem/audio operation cannot be forcibly cancelled: it may delay completion or shutdown, but does not admit more workers.
@@ -350,7 +351,7 @@ Fullscreen page:
 - Playback: rodio + symphonia (mp3 / flac) over PipeWire
 - Metadata and artwork: image + qrcode
 - Image rendering: ratatui-image + chafa
-- Visualization: external `cava`, plus an internal PCM tap that feeds the oscilloscope and the LUFS meter
+- Visualization: internal Cava Rust spectrum port using realfft + rustfft, with a shared playback PCM tap feeding bars, mini spectrum, oscilloscope, vectorscope and LUFS metering
 - Linux media control: mpris-server
 - Fullscreen playback: embedded `src/tmplayer/` UI using host playback and shared configuration
 
@@ -399,7 +400,7 @@ Release (`release.yml`) runs the root and vendored test gates before publishing,
 
 CNMPlayer is licensed under [AGPL-3.0-only](LICENSE).
 
-Third-party attributions and license notices for vendored code are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Third-party attributions and license notices for vendored code, adapted algorithms and the FFT dependencies are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which is also included in the prebuilt release archives.
 
 See [CITATION.cff](CITATION.cff) for the standard citation metadata and upstream references.
 

@@ -15,6 +15,14 @@ pub struct PlaybackSessionTrack {
     pub cover_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistCursor {
+    pub source_id: String,
+    pub next_offset: usize,
+    pub total_tracks: Option<usize>,
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlaybackSessionRecord {
     #[serde(default)]
@@ -26,6 +34,8 @@ pub struct PlaybackSessionRecord {
     /// 歌单/专辑的来源封面；旧存档缺少时使用歌曲封面兜底。
     #[serde(default)]
     pub source_cover_url: Option<String>,
+    #[serde(default)]
+    pub source_cursor: Option<PlaylistCursor>,
     pub updated_at: i64,
 }
 

@@ -1,7 +1,7 @@
 use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
+use crate::render::frame_clock::FrameClock;
 use crate::tmplayer::app::state::{AppState, Overlay, PlaybackState, RepeatMode};
-use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, CavaService};
 use crate::tmplayer::ui::tui::{Tui, UiLayout};
 use crate::tmplayer::utils::input::{Action, map_key, map_mouse};
 use crate::tmplayer::{
@@ -10,7 +10,7 @@ use crate::tmplayer::{
 };
 use anyhow::Result;
 use crossterm::event::{self, Event};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::{Terminal, backend::Backend};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
@@ -34,15 +34,42 @@ fn clear_spectrum(app: &mut AppState) {
     app.spectrum.bars.fill(0.0);
     app.spectrum.bars_left.fill(0.0);
     app.spectrum.bars_right.fill(0.0);
-    app.spectrum_bar_smoother.reset();
-    app.spectrum_left_smoother.reset();
-    app.spectrum_right_smoother.reset();
+    app.spectrum_engine.clear();
 }
 
 fn has_spectrum_data(app: &AppState) -> bool {
     app.spectrum.bars.iter().any(|&v| v > 0.0)
         || app.spectrum.bars_left.iter().any(|&v| v > 0.0)
         || app.spectrum.bars_right.iter().any(|&v| v > 0.0)
+}
+
+/// Advance the internal spectrum exactly once for a submitted UI frame.
+fn update_spectrum(app: &mut AppState, layout: &UiLayout, now: Instant) -> Result<()> {
+    if app.config.visualize != VisualizeMode::Bars {
+        if has_spectrum_data(app) || app.spectrum_engine.has_tail() {
+            clear_spectrum(app);
+        }
+        return Ok(());
+    }
+    let bars = if layout.spectrum_rect.width == 0 {
+        app.spectrum.bars.len()
+    } else {
+        desired_bar_count(app, layout)
+    };
+    ensure_bar_buffers(app, bars);
+    app.spectrum_engine.set_bars(bars);
+    if let Some(ring) = app.pcm_ring.as_ref() {
+        app.spectrum_engine
+            .update(ring, app.player.playback == PlaybackState::Playing, now)?;
+        app.spectrum_engine.copy_bars(
+            &mut app.spectrum.bars,
+            &mut app.spectrum.bars_left,
+            &mut app.spectrum.bars_right,
+        );
+    } else {
+        clear_spectrum(app);
+    }
+    Ok(())
 }
 
 fn map_host_state(state: HostPlaybackState) -> PlaybackState {
@@ -191,7 +218,14 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
     playlist.selected = current;
     playlist.clamp_selected();
 
-    let keep_selected = app.overlay == Overlay::Playlist && app.playlist_view.len() == queue_len;
+    let keep_selected = app.overlay == Overlay::Playlist
+        && app.playlist_view.len() <= queue_len
+        && app
+            .playlist_view
+            .items
+            .iter()
+            .zip(&playlist.items)
+            .all(|(old, new)| old.song_id == new.song_id);
     let view_selected = if keep_selected {
         app.playlist_view.selected.min(queue_len.saturating_sub(1))
     } else {
@@ -344,35 +378,26 @@ fn tick_visual_state(app: &mut AppState, now: Instant) -> bool {
     scope_before != app.scope_gain.value() || app.should_continuous_redraw()
 }
 
-pub async fn run(
+pub async fn run<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut AppState,
+    host_snapshot: ratatui::buffer::Buffer,
     host_bridge: &mut impl HostPlaybackBridge,
-) -> Result<crate::tmplayer::FullscreenExit> {
-    enable_raw_mode()?;
-    let mut tui = Tui::new()?;
-    tui.enter()?;
+) -> Result<crate::tmplayer::FullscreenExit>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    // No screen-mode changes here. Tui owns only fullscreen rendering resources.
+    let mut tui = Tui::new(terminal, host_bridge.wake_signal());
+    app.pcm_ring = Some(host_bridge.pcm_ring());
+    let mut last_layout =
+        play_page_transition(&mut tui, app, host_bridge, true, host_snapshot).await?;
 
-    // Prefer cava for system-wide visualization (keeps our renderer/style; cava only provides bars).
-    // If cava isn't installed, we leave the spectrum empty.
-    let cava = CavaService::new();
-
-    let mut last_spectrum = Instant::now();
     let mut last_host_metadata_signature: Option<u64> = None;
     let mut last_host_config_signature: Option<u64> = None;
-    let mut needs_redraw = true;
-    let mut last_draw_at = Instant::now()
-        .checked_sub(Duration::from_millis(250))
-        .unwrap_or_else(Instant::now);
-
-    let mut last_layout = UiLayout::default();
-
-    // 示波器始终读取宿主播放链路上的 PCM 抽头环。
-    app.pcm_ring = Some(host_bridge.pcm_ring());
-
-    let desired = desired_cava_config(app, &last_layout);
-    cava.set_desired(desired);
-    let mut cava_cfg = desired;
-    let mut last_cava_failure: Option<String> = None;
+    let mut last_host_sync = Instant::now() - Duration::from_millis(50);
+    let wake = host_bridge.wake_signal();
+    let mut clock = FrameClock::new(app.render_fps(), Instant::now());
 
     let _ = sync_from_host_bridge(
         app,
@@ -386,130 +411,63 @@ pub async fn run(
         loop {
             let frame_start = Instant::now();
             let mut state_changed = false;
-
-            state_changed |= sync_from_host_bridge(
-                app,
-                host_bridge,
-                &mut last_host_metadata_signature,
-                &mut last_host_config_signature,
-            )
-            .await;
-
-            while event::poll(Duration::from_millis(0))? {
+            if wake.take() || last_host_sync.elapsed() >= Duration::from_millis(50) {
+                state_changed |= sync_from_host_bridge(
+                    app,
+                    host_bridge,
+                    &mut last_host_metadata_signature,
+                    &mut last_host_config_signature,
+                )
+                .await;
+                last_host_sync = frame_start;
+            }
+            while event::poll(Duration::ZERO)? {
                 match event::read()? {
                     Event::Key(k) => {
                         let action = map_key(k, app.overlay, &app.config);
+                        let exits_fullscreen = matches!(action, Action::Quit);
                         handle_action(app, host_bridge, action, &last_layout).await?;
+                        if exits_fullscreen || app.exit_request.is_some() {
+                            tui.request_quit();
+                        }
                         state_changed = true;
                     }
                     Event::Mouse(m) => {
                         let action = map_mouse(m);
+                        let exits_fullscreen = matches!(action, Action::Quit);
                         handle_action(app, host_bridge, action, &last_layout).await?;
+                        if exits_fullscreen || app.exit_request.is_some() {
+                            tui.request_quit();
+                        }
                         state_changed = true;
                     }
-                    Event::Resize(_, _) => {
-                        state_changed = true;
-                    }
+                    Event::Resize(_, _) => state_changed = true,
                     _ => {}
                 }
             }
-
-            let desired = desired_cava_config(app, &last_layout);
-            if cava_cfg != desired {
-                cava.set_desired(desired);
-                cava_cfg = desired;
-                clear_spectrum(app);
-                last_cava_failure = None;
-                state_changed = true;
-            }
-            {
-                let failure = cava.failure();
-                if *failure != last_cava_failure {
-                    if let Some(error) = failure.as_ref() {
-                        log::warn!("Fullscreen visualization unavailable: {error}");
-                        app.set_toast(format!("Visualization unavailable: {error}"));
-                        state_changed = true;
-                    }
-                    last_cava_failure.clone_from(&failure);
-                }
-            }
-
-            if app.config.visualize == VisualizeMode::Bars {
-                let bars = desired_bar_count(app, &last_layout);
-                ensure_bar_buffers(app, bars);
-            }
-
-            // 频谱采集。示波器不走这里 —— 它在渲染时直接读 PCM 抽头环。但残留的
-            // cava 数据会让 has_spectrum_tail_motion() 长期为真，暂停后仍按高帧率
-            // 空转，所以切走时必须清零。
-            if app.config.visualize.needs_cava() {
-                let period = Duration::from_millis((1000 / app.config.spectrum_hz.max(1)) as u64);
-                if frame_start.duration_since(last_spectrum) >= period {
-                    last_spectrum = frame_start;
-                    state_changed = true;
-                    let snapshot = cava.latest();
-                    let bars = desired_bar_count(app, &last_layout);
-                    ensure_bar_buffers(app, bars);
-                    let mut left = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
-                    let mut right = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
-                    let mut mono = [0.0; crate::tmplayer::audio::cava::MAX_BARS];
-                    if app.config.bar_channels == BarChannels::Stereo {
-                        let _ = snapshot.copy_stereo_into(&mut left, &mut right);
-                        app.spectrum_left_smoother
-                            .apply_in_place(&left[..bars], &mut app.spectrum.bars_left);
-                        app.spectrum_right_smoother
-                            .apply_in_place(&right[..bars], &mut app.spectrum.bars_right);
-                    } else {
-                        app.spectrum.bars_left.fill(0.0);
-                        app.spectrum.bars_right.fill(0.0);
-                    }
-                    let _ = snapshot.mono_into(&mut mono);
-                    app.spectrum_bar_smoother
-                        .apply_in_place(&mono[..bars], &mut app.spectrum.bars);
-                }
-            } else if has_spectrum_data(app) {
-                clear_spectrum(app);
-                state_changed = true;
-            }
-
             state_changed |= tick_visual_state(app, frame_start);
             state_changed |= tui.poll_cover_frames();
-
-            if app.should_continuous_redraw() {
-                state_changed = true;
+            let continuous = app.should_continuous_redraw();
+            if state_changed || continuous {
+                clock.mark_dirty();
             }
-
-            let target_fps = if app.should_continuous_redraw() {
-                app.active_render_fps()
-            } else {
-                app.idle_render_fps()
-            };
-            let frame_dt = fps_to_dt(target_fps);
-
-            if state_changed {
-                needs_redraw = true;
-            }
-
-            if app.should_continuous_redraw() && last_draw_at.elapsed() >= frame_dt {
-                needs_redraw = true;
-            }
-
-            if needs_redraw {
+            clock.set_fps(app.render_fps(), frame_start);
+            clock.set_continuous(continuous);
+            if clock.due(frame_start) {
+                update_spectrum(app, &last_layout, frame_start)?;
                 last_layout = tui.draw(app)?;
-                last_draw_at = Instant::now();
-                needs_redraw = false;
+                clock.presented(Instant::now());
             }
-
-            // frame pacing
-            // 使用异步 sleep 而非 std::thread::sleep：本应用跑在单线程 compio 运行时上，
-            // 阻塞式 sleep 会让 executor/proactor（含流媒体下载任务）在整个睡眠期间停摆，
-            // 导致全屏页切到未缓存的下一首时下载冻结、播放卡在歌曲开头。
-            // 异步 sleep 会把执行权交还给运行时，后台下载得以持续推进。
-            let elapsed = frame_start.elapsed();
-            if elapsed < frame_dt {
-                compio::time::sleep(frame_dt - elapsed).await;
+            let maintenance_wait =
+                Duration::from_millis(50).saturating_sub(last_host_sync.elapsed());
+            let frame_wait = clock
+                .next_deadline()
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(Duration::from_secs(1));
+            let wait = maintenance_wait.min(frame_wait);
+            if !wait.is_zero() {
+                compio::time::sleep(wait).await;
             }
-
             if tui.should_quit {
                 break;
             }
@@ -518,15 +476,23 @@ pub async fn run(
     }
     .await;
 
-    let exit_result = tui.exit();
-    let raw_result = disable_raw_mode();
-    let cava_result = compio::runtime::spawn_blocking(move || cava.shutdown_blocking())
+    // The close animation is a visual handoff, not a fullscreen toast frame.
+    // Clear the exit/status toast before both the fresh Host snapshot and the
+    // sliding page are rendered; otherwise "Bye" remains accent-red at top.
+    app.toast = None;
+    let transition_result = if loop_result.is_ok() {
+        async {
+            let snapshot = host_bridge.host_snapshot(tui.terminal_mut())?;
+            play_page_transition(&mut tui, app, host_bridge, false, snapshot)
+                .await
+                .map(|_| ())
+        }
         .await
-        .map_err(|_| anyhow::anyhow!("cava shutdown task panicked"));
+    } else {
+        Ok(())
+    };
     loop_result?;
-    exit_result?;
-    raw_result?;
-    cava_result?;
+    transition_result?;
 
     let exit = match app.exit_request {
         Some(exit) => exit,
@@ -538,6 +504,70 @@ pub async fn run(
     Ok(exit)
 }
 
+async fn play_page_transition<B: Backend>(
+    tui: &mut Tui<'_, B>,
+    app: &mut AppState,
+    host: &mut impl HostPlaybackBridge,
+    opening: bool,
+    mut host_snapshot: ratatui::buffer::Buffer,
+) -> Result<UiLayout>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    use crate::render::motion::{Curve, Transition};
+    let start_value = if opening { 0.0 } else { 1.0 };
+    let target = if opening { 1.0 } else { 0.0 };
+    let mut motion = Transition::new(start_value);
+    let mut started = false;
+    let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
+    let mut metadata = None;
+    let mut previous_layout = UiLayout::default();
+    let layout = loop {
+        host.tick().await;
+        apply_host_runtime_snapshot(app, host.runtime_snapshot());
+        let signature = host.metadata_signature();
+        if metadata != Some(signature) {
+            sync_from_host_snapshot(app, host.snapshot());
+            metadata = Some(signature);
+        }
+        if host_snapshot.area != tui.area()? {
+            host_snapshot = host.host_snapshot(tui.terminal_mut())?;
+        }
+        let now = Instant::now();
+        app.tick(now);
+        motion.tick(now);
+        tui.poll_cover_frames();
+        clock.mark_dirty();
+        if clock.due(now) {
+            update_spectrum(app, &previous_layout, now)?;
+            let layout = tui.draw_reveal(app, &host_snapshot, motion.value())?;
+            previous_layout = layout;
+            let presented = Instant::now();
+            clock.presented(presented);
+            if !started {
+                // Initialization and snapshot work must not consume the visible
+                // animation duration. Its initial endpoint is submitted first.
+                motion.retarget(
+                    target,
+                    presented,
+                    Duration::from_millis(220),
+                    Curve::EaseOut,
+                );
+                started = true;
+            } else if !motion.is_running() {
+                break layout;
+            }
+        }
+        let wait = clock
+            .next_deadline()
+            .unwrap_or(now)
+            .saturating_duration_since(Instant::now());
+        compio::time::sleep(wait).await;
+    };
+    // Snapshot ownership ends here, before stable Fullscreen or Host resumes.
+    Ok(layout)
+}
+
 async fn handle_action(
     app: &mut AppState,
     host_bridge: &mut impl HostPlaybackBridge,
@@ -545,21 +575,12 @@ async fn handle_action(
     layout: &UiLayout,
 ) -> Result<()> {
     match action {
-        Action::Quit => {
-            // handled by tui flag
-            app.set_toast("Bye");
-        }
+        Action::Quit => {}
         Action::OpenSettingsModal => {
             app.settings_selected = app.settings_selected.min(12);
             app.overlay = Overlay::SettingsModal;
         }
-        Action::OpenHelpModal => {
-            app.help_keybind_selected = app
-                .help_keybind_selected
-                .min(crate::tmplayer::ui::tui::help_item_count(app).saturating_sub(1));
-            app.help_keybind_scroll = 0;
-            app.overlay = Overlay::HelpModal;
-        }
+        Action::ToggleHelpModal => app.toggle_help_modal(),
         Action::OpenEqModal => {
             app.overlay = Overlay::EqModal;
             app.eq_selected = 0;
@@ -620,7 +641,9 @@ async fn handle_action(
                 }
 
                 app.overlay = Overlay::Playlist;
-                app.playlist_slide_x = -(layout.left_width as i16);
+                if app.playlist_slide_x == app.playlist_slide_target_x {
+                    app.playlist_slide_x = -(layout.left_width as i16);
+                }
                 app.start_playlist_slide(0);
             }
         }
@@ -687,31 +710,27 @@ async fn handle_action(
                     save_and_sync_host_config(app, host_bridge).await;
                 }
                 1 => {
-                    app.config.super_smooth_bar = !app.config.super_smooth_bar;
-                    save_and_sync_host_config(app, host_bridge).await;
-                }
-                2 => {
                     app.config.bars_gap = !app.config.bars_gap;
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                3 => {
+                2 => {
                     app.config.bar_number = cycle_bar_number(app.config.bar_number, 1);
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                4 => {
+                3 => {
                     app.config.bar_channels = toggle_bar_channels(app.config.bar_channels);
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                5 => {
+                4 => {
                     app.config.album_border = !app.config.album_border;
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                6 => {
+                5 => {
                     app.config.audio_quality =
                         app.config.audio_quality.cycle(1, app.vip_audio_unlocked);
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                7 => {
+                6 => {
                     app.config.playback_memory = !app.config.playback_memory;
                     save_and_sync_host_config(app, host_bridge).await;
                 }
@@ -749,6 +768,9 @@ async fn handle_action(
         Action::PlaylistDown => {
             app.playlist_view.move_down();
             app.playlist_view.clamp_selected();
+            if app.playlist_view.selected + 1 >= app.playlist_view.len() {
+                host_bridge.request_queue_page();
+            }
         }
         Action::ModalUp => {
             if app.overlay == Overlay::SettingsModal {
@@ -761,7 +783,7 @@ async fn handle_action(
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, -1);
             } else if app.overlay == Overlay::BarSettingsModal {
-                let count = 8;
+                let count = 7;
                 if app.bar_settings_selected == 0 {
                     app.bar_settings_selected = count - 1;
                 } else {
@@ -800,7 +822,7 @@ async fn handle_action(
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, 1);
             } else if app.overlay == Overlay::BarSettingsModal {
-                let count = 8;
+                let count = 7;
                 app.bar_settings_selected = (app.bar_settings_selected + 1) % count;
             } else if app.overlay == Overlay::LyricsSettingsModal {
                 let count = 3;
@@ -833,31 +855,27 @@ async fn handle_action(
                         save_and_sync_host_config(app, host_bridge).await;
                     }
                     1 => {
-                        app.config.super_smooth_bar = !app.config.super_smooth_bar;
-                        save_and_sync_host_config(app, host_bridge).await;
-                    }
-                    2 => {
                         app.config.bars_gap = !app.config.bars_gap;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    3 => {
+                    2 => {
                         app.config.bar_number = cycle_bar_number(app.config.bar_number, -1);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    4 => {
+                    3 => {
                         app.config.bar_channels = toggle_bar_channels(app.config.bar_channels);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    5 => {
+                    4 => {
                         app.config.album_border = !app.config.album_border;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    6 => {
+                    5 => {
                         app.config.audio_quality =
                             app.config.audio_quality.cycle(-1, app.vip_audio_unlocked);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    7 => {
+                    6 => {
                         app.config.playback_memory = !app.config.playback_memory;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
@@ -888,31 +906,27 @@ async fn handle_action(
                         save_and_sync_host_config(app, host_bridge).await;
                     }
                     1 => {
-                        app.config.super_smooth_bar = !app.config.super_smooth_bar;
-                        save_and_sync_host_config(app, host_bridge).await;
-                    }
-                    2 => {
                         app.config.bars_gap = !app.config.bars_gap;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    3 => {
+                    2 => {
                         app.config.bar_number = cycle_bar_number(app.config.bar_number, 1);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    4 => {
+                    3 => {
                         app.config.bar_channels = toggle_bar_channels(app.config.bar_channels);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    5 => {
+                    4 => {
                         app.config.album_border = !app.config.album_border;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    6 => {
+                    5 => {
                         app.config.audio_quality =
                             app.config.audio_quality.cycle(1, app.vip_audio_unlocked);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    7 => {
+                    6 => {
                         app.config.playback_memory = !app.config.playback_memory;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
@@ -929,6 +943,9 @@ async fn handle_action(
             if idx < app.playlist_view.len() {
                 app.playlist_view.selected = idx;
                 app.playlist_view.clamp_selected();
+                if idx + 1 >= app.playlist_view.len() {
+                    host_bridge.request_queue_page();
+                }
                 let now = Instant::now();
                 let is_double = app.last_playlist_click.is_some_and(|(at, last)| {
                     now.duration_since(at) <= Duration::from_millis(400) && last == idx
@@ -1220,8 +1237,9 @@ async fn activate_download_reset(app: &mut AppState, host_bridge: &mut impl Host
     }
 
     app.download_reset_armed = false;
-    app.config.download_audio_quality = crate::data::config::default_download_audio_quality();
-    app.config.download_path = None;
+    let defaults = Config::default();
+    app.config.download_audio_quality = defaults.download_audio_quality;
+    app.config.download_path = defaults.download_path;
     save_and_sync_host_config(app, host_bridge).await;
     app.refresh_download_root();
 }
@@ -1395,21 +1413,6 @@ fn desired_bar_count(app: &AppState, layout: &UiLayout) -> usize {
     raw.min(max_per_side).max(1)
 }
 
-fn desired_cava_config(app: &AppState, layout: &UiLayout) -> Option<CavaConfig> {
-    if !app.config.visualize.needs_cava() {
-        return None;
-    }
-    Some(CavaConfig {
-        framerate_hz: app.config.spectrum_hz,
-        bars: desired_bar_count(app, layout),
-        channels: match app.config.bar_channels {
-            BarChannels::Mono => CavaChannels::Mono,
-            BarChannels::Stereo => CavaChannels::Stereo,
-        },
-        reverse: false,
-    })
-}
-
 fn ensure_bar_buffers(app: &mut AppState, bars: usize) {
     if app.spectrum.bars.len() != bars {
         app.spectrum.bars.resize(bars, 0.0);
@@ -1431,10 +1434,6 @@ fn max_display_bars(width_cells: u16, gap: bool) -> usize {
     }
 }
 
-fn fps_to_dt(fps: u32) -> Duration {
-    Duration::from_secs_f64(1.0 / f64::from(fps.clamp(1, 120)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1450,16 +1449,20 @@ mod tests {
             crate::ui::theme::Theme::default(),
             crate::data::config::Language::Zh,
         );
+        let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
+        ring.push(&[0.5; 512], &[0.5; 512], 48_000);
+        app.pcm_ring = Some(ring);
         let start = Instant::now();
         app.last_frame = start;
         app.player.playback = PlaybackState::Playing;
-        tick_visual_state(&mut app, start + Duration::from_secs(1));
-        assert_eq!(app.scope_gain.value(), 1.0);
+        tick_visual_state(&mut app, start);
+        tick_visual_state(&mut app, start + Duration::from_millis(100));
+        assert!(app.scope_gain.value() > 0.7);
         app.player.playback = PlaybackState::Paused;
         let mut settled = None;
         for frame in 1..=120 {
             let before = app.scope_gain.value();
-            let now = start + Duration::from_secs(1) + Duration::from_millis(frame * 16);
+            let now = start + Duration::from_millis(100 + frame * 16);
             let dirty = tick_visual_state(&mut app, now);
             if before > 0.0 && app.scope_gain.value() == 0.0 {
                 assert!(
@@ -1479,6 +1482,37 @@ mod tests {
             &mut app,
             settled + Duration::from_millis(16)
         ));
+    }
+
+    #[test]
+    fn missing_pcm_releases_scope_without_changing_playback_state() {
+        let config = Config {
+            visualize: VisualizeMode::Oscilloscope,
+            ..Config::default()
+        };
+        let mut app = AppState::new(
+            config,
+            crate::ui::theme::Theme::default(),
+            crate::data::config::Language::En,
+        );
+        let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
+        ring.push(&[0.5; 512], &[-0.5; 512], 48_000);
+        app.pcm_ring = Some(ring);
+        app.player.playback = PlaybackState::Playing;
+        let start = Instant::now();
+        app.last_frame = start;
+        tick_visual_state(&mut app, start);
+        tick_visual_state(&mut app, start + Duration::from_millis(100));
+        assert!(app.scope_gain.value() > 0.7, "fresh PCM opens the scope");
+        tick_visual_state(&mut app, start + Duration::from_millis(160));
+        let dirty = tick_visual_state(&mut app, start + Duration::from_millis(500));
+        assert_eq!(app.player.playback, PlaybackState::Playing);
+        assert_eq!(
+            app.scope_gain.value(),
+            0.0,
+            "stalled PCM must not hold the old waveform open"
+        );
+        assert!(dirty, "the settled scope frame must be submitted");
     }
 
     /// 挂在设置弹窗下面的子页必须全部登记进 `settings_parent`：
@@ -1529,9 +1563,6 @@ mod tests {
             "initial sync is not a track transition"
         );
         app.spectrum.bars.fill(1.0);
-        let mut output = [0.0];
-        app.spectrum_bar_smoother
-            .apply_in_place(&[1.0], &mut output);
         let now = Instant::now();
         app.pending_system_cover_anim = Some((
             crate::tmplayer::app::state::CoverSnapshot::from(&app.player.track),
@@ -1543,11 +1574,38 @@ mod tests {
         assert_eq!(app.cover_anim.as_ref().unwrap().dir, 1);
         assert!(app.pending_system_cover_anim.is_none());
         assert!(app.spectrum.bars.iter().all(|value| *value == 0.0));
-        app.spectrum_bar_smoother
-            .apply_in_place(&[1.0], &mut output);
-        assert_eq!(output, [0.35]);
         sync_from_host_snapshot(&mut app, HostPlaybackSnapshot::default());
         assert!(app.cover_anim.is_none());
         assert!(app.playlist.items.is_empty());
+    }
+    #[test]
+    fn appended_host_page_keeps_playlist_focus_on_the_boundary_row() {
+        let mut app = AppState::new(
+            Config::default(),
+            crate::ui::theme::Theme::default(),
+            crate::data::config::Language::Zh,
+        );
+        let snapshot = |ids: &[&str]| HostPlaybackSnapshot {
+            playlist: ids
+                .iter()
+                .map(|id| crate::tmplayer::FullscreenPlaylistItemSeed {
+                    id: Some(id.to_string()),
+                    title: id.to_string(),
+                    artist: String::new(),
+                    album: String::new(),
+                    duration: Duration::from_secs(60),
+                })
+                .collect(),
+            current_index: Some(0),
+            ..Default::default()
+        };
+        sync_from_host_snapshot(&mut app, snapshot(&["99", "100"]));
+        app.overlay = Overlay::Playlist;
+        app.playlist_view.selected = 1;
+        sync_from_host_snapshot(&mut app, snapshot(&["99", "100", "101"]));
+        assert_eq!(app.playlist_view.selected, 1);
+        assert_eq!(app.playlist_view.items[2].song_id.as_deref(), Some("101"));
+        sync_from_host_snapshot(&mut app, snapshot(&["new-a", "new-b", "new-c"]));
+        assert_eq!(app.playlist_view.selected, 0, "替换来源时聚焦当前播放项");
     }
 }

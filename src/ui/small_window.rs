@@ -1,7 +1,7 @@
 use crate::app::{App, FlatPanel};
 use crate::data::config::BarChannels;
 use crate::data::config::Language;
-use crate::tmplayer::render::spectrum_renderer::{compute_bar_layout, density_char, smooth_char};
+use crate::tmplayer::render::spectrum_renderer::{compute_bar_layout, smooth_char};
 use crate::ui::{page_lyrics, player_bar};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -70,8 +70,9 @@ pub fn draw_narrow(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let (bar_widths, gap, draw_total, x_offset) =
-        compute_bar_layout(width, true, 1, BarChannels::Stereo);
+    let mut bar_widths = [0; 192];
+    let (gap, draw_total, x_offset) =
+        compute_bar_layout(width, true, 1, BarChannels::Stereo, &mut bar_widths);
     if draw_total == 0 {
         return;
     }
@@ -96,14 +97,7 @@ pub fn draw_narrow(frame: &mut Frame, app: &mut App) {
             break;
         }
         let bar_width = bar_widths.get(bar_index).copied().unwrap_or(1);
-        fill_vertical_bar(
-            &mut grid,
-            height,
-            x_cursor,
-            bar_width,
-            level,
-            app.config.super_smooth_bar,
-        );
+        fill_vertical_bar(&mut grid, height, x_cursor, bar_width, level);
         x_cursor = x_cursor.saturating_add(bar_width);
         if bar_index + 1 < draw_total {
             x_cursor = x_cursor.saturating_add(gap);
@@ -218,37 +212,29 @@ fn fill_vertical_bar(
     x: usize,
     bar_width: usize,
     level: f32,
-    super_smooth: bool,
 ) {
     let level = level.clamp(0.0, 1.0);
-    if level <= 0.0 {
+    if level <= 0.0 || height == 0 || grid.is_empty() {
         return;
     }
 
-    for col in x..(x + bar_width).min(grid[0].len()) {
-        if super_smooth {
-            let fill = level * height as f32;
-            let full = fill.floor().clamp(0.0, height as f32) as usize;
-            let frac = fill - full as f32;
-            for y in 0..height {
-                let ch = if y < full {
-                    '█'
-                } else if y == full {
-                    smooth_char(frac)
-                } else {
-                    ' '
-                };
-                let row = height - 1 - y;
-                if ch != ' ' {
-                    grid[row][col] = ch;
-                }
-            }
+    let fill = level * height as f32;
+    let full = fill.floor().clamp(0.0, height as f32) as usize;
+    let frac = fill - full as f32;
+    let end = (x + bar_width).min(grid[0].len());
+    if x >= end {
+        return;
+    }
+    for y in 0..height {
+        let ch = if y < full {
+            '█'
+        } else if y == full {
+            smooth_char(frac)
         } else {
-            let bar_h = (level * height as f32).round() as usize;
-            for y in 0..bar_h.min(height) {
-                let row = height - 1 - y;
-                grid[row][col] = density_char(y, bar_h.max(1));
-            }
+            ' '
+        };
+        if ch != ' ' {
+            grid[height - 1 - y][x..end].fill(ch);
         }
     }
 }
@@ -309,25 +295,5 @@ mod tests {
         );
         assert_eq!(clipped_rect_at(area, 40), Rect::default());
         assert_eq!(clipped_rect_at(area, -30), Rect::default());
-    }
-
-    #[test]
-    fn density_bar_fills_from_bottom() {
-        let mut grid = vec![vec![' '; 1]; 4];
-        fill_vertical_bar(&mut grid, 4, 0, 1, 0.5, false);
-        assert_eq!(grid[3][0], '█');
-        assert_eq!(grid[2][0], '▒');
-        assert_eq!(grid[1][0], ' ');
-        assert_eq!(grid[0][0], ' ');
-    }
-
-    #[test]
-    fn smooth_bar_uses_full_and_partial_chars() {
-        let mut grid = vec![vec![' '; 1]; 4];
-        fill_vertical_bar(&mut grid, 4, 0, 1, 0.5, true);
-        assert_eq!(grid[3][0], '█');
-        assert_eq!(grid[2][0], '█');
-        assert_eq!(grid[1][0], ' ');
-        assert_eq!(grid[0][0], ' ');
     }
 }

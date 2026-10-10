@@ -1,3 +1,4 @@
+use crate::render::wake::WakeSignal;
 use compio::runtime::JoinHandle;
 use futures::{FutureExt, future::Shared};
 use std::pin::Pin;
@@ -32,11 +33,13 @@ impl<T> SharedTask<T> {
 
 pub(super) fn spawn_shared<T: Clone + 'static>(
     future: Pin<Box<dyn Future<Output = Option<T>>>>,
+    wake: WakeSignal,
 ) -> SharedTask<T> {
     let output = future.shared();
     let runner_output = output.clone();
     let runner = compio::runtime::spawn(async move {
         let _ = runner_output.await;
+        wake.notify();
     });
     SharedTask {
         output,
@@ -62,11 +65,14 @@ mod tests {
         let released = Rc::new(Cell::new(0));
         let (started_tx, started_rx) = oneshot::channel();
         let resource = Released(released.clone());
-        let task = spawn_shared(Box::pin(async move {
-            let _resource = resource;
-            let _ = started_tx.send(());
-            futures::future::pending::<Option<usize>>().await
-        }));
+        let task = spawn_shared(
+            Box::pin(async move {
+                let _resource = resource;
+                let _ = started_tx.send(());
+                futures::future::pending::<Option<usize>>().await
+            }),
+            WakeSignal::default(),
+        );
         let clone = task.clone();
         started_rx.await.unwrap();
         drop(task);
@@ -79,7 +85,7 @@ mod tests {
 
     #[compio::test]
     async fn completed_output_remains_available_to_each_owner() {
-        let task = spawn_shared(Box::pin(async { Some(42) }));
+        let task = spawn_shared(Box::pin(async { Some(42) }), WakeSignal::default());
         let clone = task.clone();
         compio::time::sleep(std::time::Duration::from_millis(1)).await;
         assert_eq!(task.peek(), Some(&Some(42)));

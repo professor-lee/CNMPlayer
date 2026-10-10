@@ -95,7 +95,7 @@ fn draw_author_header(frame: &mut Frame, app: &mut App, area: Rect) {
         let text_style = Style::default().fg(app.theme.color_text());
         app.browse.author.cover.render(
             frame,
-            &mut app.graphics_picker,
+            &mut app.covers,
             cover_area,
             text_style,
             Some(bg_style),
@@ -329,7 +329,7 @@ fn draw_author_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             app.browse.author.tiles[index].cover.render(
                 frame,
-                &mut app.graphics_picker,
+                &mut app.covers,
                 cover_rect,
                 text_style,
                 None,

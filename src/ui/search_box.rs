@@ -15,10 +15,7 @@ pub fn draw_search_box_overlay(frame: &mut Frame, app: &App) {
         return;
     }
 
-    let visible_h = app
-        .input
-        .search_box_anim_height
-        .min(TARGET_HEIGHT)
+    let visible_h = ((app.input.search_motion.value() * f32::from(TARGET_HEIGHT)).round() as u16)
         .min(size.height);
     if visible_h == 0 {
         return;

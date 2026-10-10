@@ -94,7 +94,7 @@ fn draw_playlist_header(frame: &mut Frame, app: &mut App, area: Rect) {
         let text_style = Style::default().fg(app.theme.color_text());
         app.browse.playlist.cover.render(
             frame,
-            &mut app.graphics_picker,
+            &mut app.covers,
             cover_area,
             text_style,
             Some(bg_style),
@@ -190,7 +190,10 @@ fn draw_playlist_header(frame: &mut Frame, app: &mut App, area: Rect) {
                     Language::Zh => "共",
                     Language::En => "Total",
                 },
-                app.browse.playlist.tracks.len(),
+                app.browse
+                    .playlist
+                    .total_tracks
+                    .unwrap_or(app.browse.playlist.tracks.len()),
                 match app.config.language {
                     Language::Zh => "首",
                     Language::En => "tracks",

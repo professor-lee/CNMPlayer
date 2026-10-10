@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 const ENV_ASSET_DIR: &str = "CNMPLAYER_ASSET_DIR";
 
-const DEFAULT_CONFIG_TOML: &str = include_str!("../../config/default.toml");
+pub(crate) const DEFAULT_CONFIG_TOML: &str = include_str!("../../config/default.toml");
 
 const THEME_SYSTEM_TOML: &str = include_str!("../../themes/system.toml");
 const THEME_LATTE_TOML: &str = include_str!("../../themes/catppuccin_latte.toml");

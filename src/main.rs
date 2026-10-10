@@ -4,7 +4,7 @@ mod render;
 mod tmplayer;
 mod ui;
 
-use crate::tmplayer::audio::cava::MiniCavaState;
+use crate::render::frame_clock::FrameClock;
 use anyhow::Result;
 use app::App;
 use compio::fs::{create_dir_all, remove_file};
@@ -23,17 +23,15 @@ use directories::BaseDirs;
 use ftail::Ftail;
 use futures::{FutureExt, Stream, StreamExt, select_biased};
 use ratatui::Terminal;
+use ratatui::backend::Backend;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Borders, Clear};
+use ratatui::buffer::Buffer;
 use see::unsync::Receiver;
-use std::future::pending;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct AppFullscreenBridge<'a> {
     app: &'a mut App,
@@ -42,6 +40,17 @@ struct AppFullscreenBridge<'a> {
 impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
     async fn tick(&mut self) {
         self.app.fullscreen_tick_playback().await;
+    }
+
+    fn host_snapshot<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+    ) -> std::result::Result<Buffer, B::Error> {
+        capture_host_snapshot(terminal, self.app)
+    }
+
+    fn wake_signal(&self) -> crate::render::wake::WakeSignal {
+        self.app.wake.clone()
     }
 
     fn metadata_signature(&self) -> u64 {
@@ -185,6 +194,10 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
         self.app.fullscreen_play_queue_index(index).await;
     }
 
+    fn request_queue_page(&mut self) {
+        self.app.fullscreen_request_queue_page();
+    }
+
     fn seek_to_ratio(&mut self, ratio: f32) {
         self.app.fullscreen_seek_to_ratio(ratio);
     }
@@ -310,7 +323,6 @@ async fn main() -> Result<()> {
     let mut terminal = init_terminal()?;
     let run_result = run_app(&mut terminal, &mut app).await;
     let restore_result = restore_terminal(&mut terminal);
-    app.suspend_main_cava_for_fullscreen().await;
     let persistence_result = app.flush_persistence();
     run_result?;
     restore_result?;
@@ -388,48 +400,55 @@ fn input_event() -> impl Stream<Item = impl AsyncFn(&mut App)> {
 
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     let mut input = pin!(input_event());
+    let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
 
     loop {
+        let now = Instant::now();
+        clock.set_fps(app.config.ui_fps, now);
         app.tick().await;
+        let continuous = app.should_continuous_redraw();
+        if app.covers.poll() || continuous {
+            clock.mark_dirty();
+        }
+        clock.set_continuous(continuous);
 
         if app.consume_fullscreen_launch_request() {
             let bootstrap = app.build_fullscreen_bootstrap();
             launch_tmplayer_fullscreen(terminal, app, bootstrap).await?;
+            clock.mark_dirty();
             continue;
         }
-
         if app.should_quit {
             app.persist_playback_memory_on_exit();
             break Ok(());
         }
-        terminal.draw(|frame| {
-            ui::draw(frame, app);
-            ui::draw_settings(frame, app);
-        })?;
 
-        // 动画进行中（进度条脉冲、搜索框滑出、启动加载）加快重绘，
-        // 其余时间保持 1s 空闲节流（省电、减少终端输出）。
-        let redraw_sleep = if app.should_continuous_redraw() {
-            Duration::from_millis(33)
+        if clock.due(Instant::now()) {
+            app.update_main_spectrum(Instant::now())?;
+            terminal.draw(|frame| {
+                ui::draw(frame, app);
+                ui::draw_settings(frame, app);
+            })?;
+            app.covers.prepare();
+            clock.presented(Instant::now());
+        }
+
+        let wait_until = if clock.is_dirty() {
+            clock
+                .next_deadline()
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(1))
         } else {
-            Duration::from_secs(1)
+            Instant::now() + Duration::from_secs(1)
         };
-
+        let wait = wait_until.saturating_duration_since(Instant::now());
         select_biased! {
-            f = input.next().fuse() => if let Some(f) = f { f(app).await },
-            _ = wait_cava_event(&mut app.cava).fuse() => (),
-            _ = sleep(redraw_sleep).fuse() => (),
+            f = input.next().fuse() => if let Some(f) = f {
+                f(app).await;
+                clock.mark_dirty();
+            },
+            _ = app.wake.wait().fuse() => clock.mark_dirty(),
+            _ = sleep(wait).fuse() => clock.mark_dirty(),
         }
-    }
-}
-
-async fn wait_cava_event(cava: &mut Option<MiniCavaState>) {
-    match cava {
-        Some(cava) => {
-            let _ = cava.event.changed().await;
-            cava.event.mark_unchanged();
-        }
-        None => pending().await,
     }
 }
 
@@ -438,26 +457,22 @@ async fn launch_tmplayer_fullscreen(
     app: &mut App,
     bootstrap: tmplayer::FullscreenBootstrap,
 ) -> Result<()> {
-    play_fullscreen_transition(terminal, app, true).await?;
-    app.suspend_main_cava_for_fullscreen().await;
-    restore_terminal(terminal)?;
+    let host_snapshot = capture_host_snapshot(terminal, app)?;
+    app.reset_main_spectrum();
 
     let config = app.config.clone();
     let mut bridge = AppFullscreenBridge { app };
-    let (exit, status_text) = match tmplayer::run_fullscreen(&config, bootstrap, &mut bridge).await
-    {
-        Ok(exit) => (Some(exit), String::new()),
-        Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
-    };
-
-    *terminal = init_terminal()?;
-    app.resume_main_cava_after_fullscreen();
-    play_fullscreen_transition(terminal, app, false).await?;
+    let (exit, status_text) =
+        match tmplayer::run_fullscreen(terminal, &config, bootstrap, host_snapshot, &mut bridge)
+            .await
+        {
+            Ok(exit) => (Some(exit), String::new()),
+            Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
+        };
+    app.reset_main_spectrum();
     if !status_text.is_empty() {
         app.set_runtime_status(status_text);
     }
-
-    // 全屏页里的点击交给宿主接着做：宿主在自己的页面上打开对应页面。
     match exit {
         Some(tmplayer::FullscreenExit::BackToHostOpenSettings) => {
             app.open_settings_from_fullscreen()
@@ -473,45 +488,15 @@ async fn launch_tmplayer_fullscreen(
     Ok(())
 }
 
-async fn play_fullscreen_transition(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+fn capture_host_snapshot<B: Backend>(
+    terminal: &mut Terminal<B>,
     app: &mut App,
-    opening: bool,
-) -> Result<()> {
-    let steps: u16 = 10;
-
-    for step in 0..=steps {
-        let progress = if opening { step } else { steps - step };
-        terminal.draw(|frame| {
-            ui::draw(frame, app);
-
-            let full = frame.area();
-            if full.height == 0 || full.width == 0 {
-                return;
-            }
-
-            let bar_h = 5_u16.min(full.height);
-            let span = full.height.saturating_sub(bar_h);
-            let animated = bar_h + ((span as u32 * progress as u32) / steps as u32) as u16;
-            let overlay = Rect {
-                x: full.x,
-                y: full.y + full.height.saturating_sub(animated),
-                width: full.width,
-                height: animated,
-            };
-
-            frame.render_widget(Clear, overlay);
-            frame.render_widget(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(app.theme.color_surface()))
-                    .style(Style::default().bg(app.theme.color_base())),
-                overlay,
-            );
-        })?;
-
-        sleep(Duration::from_millis(14)).await;
-    }
-
-    Ok(())
+) -> std::result::Result<Buffer, B::Error> {
+    app.covers.poll();
+    let snapshot = render::snapshot::capture(terminal, |frame| {
+        ui::draw(frame, app);
+        ui::draw_settings(frame, app);
+    })?;
+    app.covers.prepare();
+    Ok(snapshot)
 }

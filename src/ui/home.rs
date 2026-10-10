@@ -196,7 +196,7 @@ fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             app.browse.home.tiles[index].cover.render(
                 frame,
-                &mut app.graphics_picker,
+                &mut app.covers,
                 cover_rect,
                 text_style,
                 None,
@@ -276,7 +276,7 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let max_width = (area.width / 3).max(24).min(area.width);
     app.set_home_sidebar_anim_span_cells(max_width);
-    let progress = app.browse.home_sidebar.anim_progress.clamp(0.0, 1.0);
+    let progress = app.browse.home_sidebar.trail.value().clamp(0.0, 1.0);
     let width = ((max_width as f32) * progress).round() as u16;
     if width < 12 {
         return;
@@ -342,7 +342,7 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         app.browse.home_sidebar.user_name.clone()
     };
 
-    let status = if app.browse.home_sidebar.loading {
+    let status = if app.browse.home_sidebar.loading || app.browse.home_sidebar.loading_more {
         match app.config.language {
             Language::Zh => "正在同步歌单...".to_string(),
             Language::En => "Syncing playlists...".to_string(),

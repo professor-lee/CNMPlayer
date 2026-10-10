@@ -1,10 +1,12 @@
 mod api;
 pub(crate) mod controllers;
+mod cover_presentation;
 pub(crate) mod download;
 mod latest_fetch;
 mod mpris_bridge;
 mod owned_task;
 pub(crate) mod player;
+mod playlist_pagination;
 mod startup;
 pub(crate) mod streaming;
 
@@ -24,11 +26,13 @@ use crate::data::private_roam;
 use crate::data::session;
 use crate::data::theme_loader::ThemeLoader;
 use crate::launch;
+use crate::render::cover_pipeline::CoverKey;
 use crate::render::cover_renderer::render_cover_ascii;
-use crate::render::graphics_overlay::cover_viewport;
+use crate::render::motion::{Curve, Toggle, Trail, Transition};
+use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::LyricLine;
-use crate::tmplayer::audio::cava::{CavaChannels, CavaConfig, MiniCavaState};
 use crate::tmplayer::audio::pcm_tap::PcmRing;
+use crate::tmplayer::audio::spectrum::{MINI_BARS, Spectrum};
 use crate::tmplayer::playback::metadata::{parse_lrc, parse_plain_lyrics};
 use crate::ui::page_lyrics;
 use crate::ui::theme::Theme;
@@ -41,14 +45,10 @@ use futures::channel::mpsc as async_mpsc;
 use http::header;
 use image::DynamicImage;
 use ncm_api::ApiResponse;
-use parking_lot::Mutex;
 use ratatui::Frame;
 use ratatui::layout::{Rect, Size};
 use ratatui::style::Style;
 use ratatui::widgets::{Block, Paragraph};
-use ratatui_image::StatefulImage;
-use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
 use see::unsync as watch;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -68,6 +68,7 @@ use crate::data::persistence::{PersistenceHandle, PersistenceKey, PersistenceWor
 use api::ApiState;
 use browse_controller::BrowseController;
 use controllers::SearchController;
+use cover_presentation::CoverPresentation;
 use download::{
     DownloadEvent, DownloadManager, DownloadRequest, DownloadRow, DownloadRowCache, DownloadState,
     DownloadTarget,
@@ -77,6 +78,7 @@ use input_controller::InputController;
 use mpris_bridge::{MprisBridge, MprisControlEvent, MprisSyncPayload};
 use owned_task::{SharedTask, spawn_shared};
 use playback_controller::PlaybackController;
+use playlist_pagination::PlaylistPagination;
 use settings_controller::SettingsController;
 use startup::StartupInit;
 use startup_controller::StartupController;
@@ -93,17 +95,17 @@ static LIST_GENERATION: AtomicU64 = AtomicU64::new(1);
 fn next_list_generation() -> u64 {
     LIST_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
-const SEARCH_RESULT_PAGE_SIZE: usize = 50;
+const SEARCH_RESULT_PAGE_SIZE: usize = 100;
+const ARTIST_ALBUM_PAGE_SIZE: usize = 60;
 /// 无后缀（混合）搜索里作者 / 歌单分区只取最相关的少量条目，不参与分页。
 const MIXED_AUX_RESULT_LIMIT: usize = 5;
-const SEARCH_BOX_TARGET_HEIGHT: u16 = 3;
 /// 搜索框滑出动画时长（time-based，与帧率解耦）
 const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
 /// 侧边栏滑出动画时长（time-based，与帧率解耦）。主页与全屏播放页共用。
 pub(crate) const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
 const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 const SETTINGS_ROOT_ITEMS: usize = 13;
-const SETTINGS_PLAYBACK_ITEMS: usize = 8;
+const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 const SETTINGS_LYRICS_ITEMS: usize = 3;
 pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 22;
@@ -215,13 +217,6 @@ pub enum SmallWindowMode {
 pub enum FlatPanel {
     Player,
     Lyrics,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FlatSwitchAnim {
-    pub from_x: f32,
-    pub to_x: f32,
-    pub started_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,9 +346,45 @@ struct HomeSidebarFetch {
     user_name: String,
     created: Vec<HomeSidebarPlaylist>,
     collected: Vec<HomeSidebarPlaylist>,
+    created_more: bool,
+    collected_more: bool,
 }
 
+#[derive(Clone)]
+struct HomeSidebarPageFetch {
+    section: HomeSidebarSection,
+    items: Vec<HomeSidebarPlaylist>,
+    next_offset: usize,
+    has_more: bool,
+}
+
+type HomeSidebarPageTask =
+    Pin<Box<dyn Future<Output = Option<Result<HomeSidebarPageFetch, String>>>>>;
+
 type HomeSidebarFetchFuture = SharedTask<Result<HomeSidebarFetch, String>>;
+type HomeSidebarPageFetchFuture = SharedTask<Result<HomeSidebarPageFetch, String>>;
+
+fn response_page_has_more(
+    response: &ApiResponse,
+    offset: usize,
+    fetched: usize,
+    limit: usize,
+) -> bool {
+    response
+        .body
+        .pointer("/data/more")
+        .or_else(|| response.body.pointer("/more"))
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            response
+                .body
+                .pointer("/data/count")
+                .or_else(|| response.body.pointer("/count"))
+                .and_then(|value| parse_usize_value(Some(value)))
+                .map(|count| offset.saturating_add(fetched) < count)
+        })
+        .unwrap_or(fetched >= limit)
+}
 
 async fn fetch_home_sidebar_playlists(
     mut api: ApiState,
@@ -424,12 +455,71 @@ async fn fetch_home_sidebar_playlists(
         ));
     }
 
+    let created = parse_home_sidebar_playlists(&created_response);
+    let collected = parse_home_sidebar_playlists(&collected_response);
     Ok(HomeSidebarFetch {
         user_id,
         liked_playlist_id: extract_liked_playlist_id(&account),
         user_name,
-        created: parse_home_sidebar_playlists(&created_response),
-        collected: parse_home_sidebar_playlists(&collected_response),
+        created_more: response_page_has_more(
+            &created_response,
+            0,
+            created.len(),
+            HOME_SIDEBAR_PLAYLIST_LIMIT,
+        ),
+        collected_more: response_page_has_more(
+            &collected_response,
+            0,
+            collected.len(),
+            HOME_SIDEBAR_PLAYLIST_LIMIT,
+        ),
+        created,
+        collected,
+    })
+}
+
+async fn fetch_home_sidebar_page(
+    mut api: ApiState,
+    user_id: String,
+    section: HomeSidebarSection,
+    offset: usize,
+    language: Language,
+) -> Result<HomeSidebarPageFetch, String> {
+    let response = match section {
+        HomeSidebarSection::Created => {
+            api.user_playlist_create(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, offset)
+                .await
+        }
+        HomeSidebarSection::Collected => {
+            api.user_playlist_collect(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, offset)
+                .await
+        }
+    }
+    .map_err(|err| err.to_string())?;
+    let code = response_code(&response);
+    if code != 200 {
+        return Err(format!("请求失败({code}): {}", response_message(&response)));
+    }
+
+    let items = parse_home_sidebar_playlists(&response);
+    if items.is_empty() {
+        return Err(match language {
+            Language::Zh => "侧边栏歌单分页为空".to_string(),
+            Language::En => "Sidebar playlist page is empty".to_string(),
+        });
+    }
+    let item_count = items.len();
+    let next_offset = offset.saturating_add(item_count);
+    Ok(HomeSidebarPageFetch {
+        section,
+        items,
+        next_offset,
+        has_more: response_page_has_more(
+            &response,
+            offset,
+            item_count,
+            HOME_SIDEBAR_PLAYLIST_LIMIT,
+        ),
     })
 }
 type CoverFuture = SharedTask<Arc<DynamicImage>>;
@@ -439,7 +529,9 @@ type AuthorFetchFuture = SharedTask<Result<AuthorFetch, String>>;
 /// 装箱后的任务体（`spawn_shared` 的入参类型）。
 type AuthorFetchTask = Pin<Box<dyn Future<Output = Option<Result<AuthorFetch, String>>>>>;
 
-/// 作者页四个接口的原始回包（`None` = 该请求失败）；解析见 `App::build_author_page`。
+/// 作者页四个接口的原始回包（`None` = 该请求失败）；发行物请求会先完成全部分页。
+///
+/// 解析见 `App::build_author_page`。
 struct AuthorResponses {
     detail: Option<ApiResponse>,
     desc: Option<ApiResponse>,
@@ -464,28 +556,118 @@ struct AuthorFetch {
     singles: Vec<PlaylistTrack>,
 }
 
-/// 四个 `artist/*` 接口一次并发拉取。
+/// 四个 `artist/*` 接口一次并发拉取；发行物接口在自己的后台 future 内顺序遍历分页。
 ///
 /// 它们彼此独立，按仓库既有做法用 `futures::join!`：`cyper::Client` 是 `!Send`，
 /// 只能同一个 runtime 里并发，不能各自 spawn。
-async fn fetch_artist_responses(api: &ApiState, artist_id: &str) -> AuthorResponses {
+async fn fetch_artist_responses(
+    api: &ApiState,
+    artist_id: &str,
+) -> Result<AuthorResponses, String> {
     let mut detail_api = api.clone();
     let mut desc_api = api.clone();
     let mut top_song_api = api.clone();
-    let mut album_api = api.clone();
+    let album_api = api.clone();
+    let album_fetch = fetch_all_artist_albums(album_api, artist_id);
     let (detail, desc, top_song, album) = futures::join!(
         detail_api.artist_detail(artist_id),
         desc_api.artist_desc(artist_id),
         top_song_api.artist_top_song(artist_id),
-        album_api.artist_album(artist_id, 60, 0),
+        album_fetch,
     );
+    let album = album.map_err(|error| format!("artist album pagination failed: {error}"))?;
 
-    AuthorResponses {
+    Ok(AuthorResponses {
         detail: detail.ok(),
         desc: desc.ok(),
         top_song: top_song.ok(),
-        album: album.ok(),
+        album: Some(album),
+    })
+}
+
+/// 后台顺序遍历歌手发行物的所有分页。
+///
+/// 分页中途失败直接返回错误，不把已取得的首批数据冒充成完整列表。
+async fn fetch_all_artist_albums(
+    mut api: ApiState,
+    artist_id: &str,
+) -> Result<ApiResponse, String> {
+    let mut pages = Vec::new();
+    let mut offset = 0usize;
+
+    loop {
+        let page = api
+            .artist_album(artist_id, ARTIST_ALBUM_PAGE_SIZE, offset)
+            .await
+            .map_err(|error| format!("offset {offset}: {error:#}"))?;
+        let item_count = artist_album_items(&page.body)
+            .map(|items| items.len())
+            .ok_or_else(|| format!("offset {offset}: response has no album list"))?;
+        let more = page
+            .body
+            .get("more")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        pages.push(page);
+        if !more {
+            break;
+        }
+        if item_count == 0 {
+            return Err(format!("offset {offset}: empty page marked as more"));
+        }
+        offset = offset
+            .checked_add(item_count)
+            .ok_or_else(|| "artist album pagination offset overflowed".to_string())?;
     }
+
+    merge_artist_album_pages(pages)
+}
+
+fn merge_artist_album_pages(pages: Vec<ApiResponse>) -> Result<ApiResponse, String> {
+    let mut pages = pages.into_iter();
+    let Some(mut merged) = pages.next() else {
+        return Err("artist album pagination returned no pages".to_string());
+    };
+
+    for mut page in pages {
+        let items = take_artist_album_items(&mut page.body)
+            .ok_or_else(|| "artist album page has no album list".to_string())?;
+        let target = artist_album_items_mut(&mut merged.body)
+            .ok_or_else(|| "merged artist album response has no album list".to_string())?;
+        target.extend(items);
+    }
+
+    Ok(merged)
+}
+
+fn artist_album_items(body: &Value) -> Option<&[Value]> {
+    if let Some(items) = body.get("hotAlbums").and_then(Value::as_array) {
+        return Some(items);
+    }
+    body.pointer("/artist/albums")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+}
+
+fn artist_album_items_mut(body: &mut Value) -> Option<&mut Vec<Value>> {
+    if body.get("hotAlbums").and_then(Value::as_array).is_some() {
+        return body.get_mut("hotAlbums").and_then(Value::as_array_mut);
+    }
+    body.pointer_mut("/artist/albums")
+        .and_then(Value::as_array_mut)
+}
+
+fn take_artist_album_items(body: &mut Value) -> Option<Vec<Value>> {
+    if body.get("hotAlbums").and_then(Value::as_array).is_some() {
+        return body
+            .get_mut("hotAlbums")
+            .and_then(Value::as_array_mut)
+            .map(std::mem::take);
+    }
+    body.pointer_mut("/artist/albums")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
 }
 
 /// 全屏页点作者名要拉的东西：先 `song/detail` 解析出段对应的作者 ID，再拉作者页数据。
@@ -521,7 +703,7 @@ async fn fetch_author_page_by_id(
     artist_id: String,
     fallback_cover_url: Option<String>,
 ) -> Result<AuthorFetch, String> {
-    let responses = fetch_artist_responses(&api, &artist_id).await;
+    let responses = fetch_artist_responses(&api, &artist_id).await?;
     let mut fetch = App::build_author_page(&api, language, &artist_id, responses)?;
     if fetch.cover_url.is_none() {
         fetch.cover_url = fallback_cover_url;
@@ -565,9 +747,22 @@ async fn fetch_song_page_refs(mut api: ApiState, song_id: &str) -> SongPageRefs 
     SongPageRefs { artists, album_id }
 }
 
+const PLAYLIST_PAGE_SIZE: usize = 100;
 type PlaylistFetchFuture = SharedTask<Result<PlaylistFetch, String>>;
+type PlaylistPageFetchFuture = SharedTask<Result<PlaylistPageFetch, String>>;
 /// 装箱后的任务体（`spawn_shared` 的入参类型）。
 type PlaylistFetchTask = Pin<Box<dyn Future<Output = Option<Result<PlaylistFetch, String>>>>>;
+
+type PlaylistPageTask = Pin<Box<dyn Future<Output = Option<Result<PlaylistPageFetch, String>>>>>;
+
+#[derive(Clone)]
+struct PlaylistPageFetch {
+    source_id: String,
+    offset: usize,
+    tracks: Vec<PlaylistTrack>,
+    next_offset: usize,
+    has_more: bool,
+}
 
 /// 歌单页 / 专辑页的在途拉取：句柄旁边记下是哪种页面（成功后文案不同）。
 struct PlaylistFetchSlot {
@@ -695,6 +890,10 @@ struct PlaylistFetch {
     description: String,
     cover_url: Option<String>,
     tracks: Vec<PlaylistTrack>,
+    total_tracks: Option<usize>,
+    next_offset: usize,
+    has_more: bool,
+    paginated: bool,
     liked: Option<LikedRefresh>,
 }
 
@@ -733,10 +932,52 @@ async fn fetch_liked_refresh(
     Some(LikedRefresh { ids, profile })
 }
 
-/// 拉一次歌单页数据（不借 `&mut App`，可交给 `spawn_shared` 后台跑）。
+/// 后台获取歌单指定分页的歌曲详情，不持有 `&mut App`。
 ///
-/// `fallback_cover_url` 是搜索结果里那行的封面：接口没给封面时用它兜底。
-/// `liked_playlist_id` / `uid_hint` 只用于判断要不要顺带刷新「我喜欢的音乐」。
+/// 使用 `trackIds` 的分页接口，避免 `playlist.detail` 返回的 `tracks` 截断。
+async fn fetch_playlist_tracks_page(
+    mut api: ApiState,
+    playlist_id: String,
+    offset: usize,
+    total_tracks: Option<usize>,
+) -> Result<PlaylistPageFetch, String> {
+    let response = api
+        .playlist_track_all(&playlist_id, PLAYLIST_PAGE_SIZE, offset)
+        .await
+        .map_err(|err| err.to_string())?;
+    let code = response_code(&response);
+    if code != 200 {
+        return Err(format!("请求失败({code}): {}", response_message(&response)));
+    }
+
+    let tracks = response
+        .body
+        .get("songs")
+        .or_else(|| response.body.pointer("/data/songs"))
+        .or_else(|| response.body.pointer("/playlist/tracks"))
+        .and_then(Value::as_array)
+        .map(|items| parse_tracks(items))
+        .unwrap_or_default();
+    if tracks.is_empty() && total_tracks.is_some_and(|total| offset < total) {
+        return Err("歌单分页返回空数据".to_string());
+    }
+
+    let track_count = tracks.len();
+    let next_offset = total_tracks
+        .map(|total| offset.saturating_add(PLAYLIST_PAGE_SIZE).min(total))
+        .unwrap_or_else(|| offset.saturating_add(track_count));
+    Ok(PlaylistPageFetch {
+        source_id: playlist_id,
+        offset,
+        tracks,
+        next_offset,
+        has_more: total_tracks
+            .map(|total| next_offset < total)
+            .unwrap_or(track_count >= PLAYLIST_PAGE_SIZE),
+    })
+}
+
+/// 拉一次歌单页数据（不借 `&mut App`，可交给 `spawn_shared` 后台跑）。
 async fn fetch_playlist_page(
     mut api: ApiState,
     language: Language,
@@ -789,11 +1030,9 @@ async fn fetch_playlist_page(
 
     let cover_url = first_non_empty(playlist, &["/coverImgUrl", "/picUrl"]).or(fallback_cover_url);
 
-    let tracks = playlist
-        .get("tracks")
-        .and_then(|value| value.as_array())
-        .map(|items| parse_tracks(items))
-        .unwrap_or_default();
+    let total_tracks = parse_usize_value(playlist.get("trackCount"));
+    let first_page =
+        fetch_playlist_tracks_page(api.clone(), playlist_id.clone(), 0, total_tracks).await?;
 
     Ok(PlaylistFetch {
         id: playlist_id,
@@ -801,7 +1040,11 @@ async fn fetch_playlist_page(
         artist,
         description,
         cover_url,
-        tracks,
+        tracks: first_page.tracks,
+        total_tracks,
+        next_offset: first_page.next_offset,
+        has_more: first_page.has_more,
+        paginated: true,
         liked,
     })
 }
@@ -872,6 +1115,10 @@ async fn fetch_album_page(
         artist,
         description,
         cover_url,
+        total_tracks: Some(tracks.len()),
+        next_offset: tracks.len(),
+        has_more: false,
+        paginated: false,
         tracks,
         liked: None,
     })
@@ -1038,6 +1285,9 @@ impl LikeMachine {
 
     /// 期望已被满足（例如连点两次回到原状态）时清掉意图，返回该曲目 id。
     fn drop_satisfied_intent(&mut self) -> Option<String> {
+        if self.toggle.is_some() {
+            return None;
+        }
         let (song_id, target) = self.desired.as_ref()?;
         if self.is_confirmed(song_id) != *target {
             return None;
@@ -1132,35 +1382,26 @@ pub struct CoverFetchState {
     pub image: Option<CoverFuture>,
     ascii: Option<AsciiFuture>,
     size: Size,
-    protocol: Option<Arc<Mutex<StatefulProtocol>>>,
-    /// 协议缓存键：整块图尺寸 + 可见行区间。部分可见时按可见比例裁源图，
-    /// 键包含可见区间，避免缩放时复用错切片。
-    protocol_key: Option<(Size, u16, u16)>,
+    identity: u64,
+    wake: WakeSignal,
 }
 
 impl CoverFetchState {
     pub fn load(&mut self, api: ApiState, url: String) {
+        self.wake = api.wake_signal();
+        self.identity = next_list_generation();
         let cover_url = url.clone();
-        let fut = async move {
-            let bytes = api.fetch_cover_bytes(&cover_url).await.ok();
-            let flatten = bytes.filter(|x| !x.is_empty());
-            let image = flatten.and_then(|x| image::load_from_memory(&x).ok());
-
-            // Downsampling to 500px to save memory.
-            image.map(|x| x.thumbnail(500, 500)).map(Arc::new)
-        };
-        let fut = Box::pin(fut);
-        self.image = Some(spawn_shared(fut));
+        let fut = Box::pin(async move { api.fetch_cover_image(&cover_url).await.ok() });
+        self.image = Some(spawn_shared(fut, self.wake.clone()));
         self.url = Some(url);
         self.size = Size::ZERO;
-        self.protocol = None;
-        self.protocol_key = None;
+        self.ascii = None;
     }
 
     pub fn render(
         &mut self,
         frame: &mut Frame,
-        picker: &mut Picker,
+        covers: &mut CoverPresentation,
         area: Rect,
         text_style: Style,
         bg_style: Option<Style>,
@@ -1168,7 +1409,7 @@ impl CoverFetchState {
     ) {
         self.render_rows(
             frame,
-            picker,
+            covers,
             area,
             area.height,
             0..area.height,
@@ -1178,17 +1419,13 @@ impl CoverFetchState {
         );
     }
 
-    /// 只渲染 `visible` 行（行号相对整块图，`area` 是这些行的落点），其余行不写入。
-    ///
-    /// 部分可见时**按可见比例裁源图**：ASCII 路径取对应的文本行，图形路径先把
-    /// 可见比例换算成 `cover_viewport` 结果里的行切片再生成协议——所以是"裁"而不是
-    /// "压进子矩形"，也不需要画完整块图再擦除。
-    // 参数各管一件事（落点/整块行数/可见区间/三种绘制开关），打包成结构体反而更难读。
+    /// Partial views copy rows of the full-size prepared surface. Scrolling does
+    /// not create additional image geometry, codecs, or cropped cache entries.
     #[allow(clippy::too_many_arguments)]
     pub fn render_rows(
         &mut self,
         frame: &mut Frame,
-        picker: &mut Picker,
+        covers: &mut CoverPresentation,
         area: Rect,
         full_rows: u16,
         visible: Range<u16>,
@@ -1221,7 +1458,12 @@ impl CoverFetchState {
             if (self.ascii.is_none() || self.size != size)
                 && let Some(bytes) = peek_shared_future(&self.image)
             {
-                self.ascii = Some(make_ascii_future(bytes.clone(), area.width, full_rows));
+                self.ascii = Some(make_ascii_future(
+                    bytes.clone(),
+                    area.width,
+                    full_rows,
+                    self.wake.clone(),
+                ));
                 self.size = size;
             }
             let ascii = match peek_shared_future(&self.ascii) {
@@ -1237,49 +1479,35 @@ impl CoverFetchState {
             return;
         }
 
-        let Some(img) = peek_shared_future(&self.image) else {
-            return;
-        };
-
-        let key = (size, visible.start, area.height);
-        if self.protocol_key.as_ref() != Some(&key) {
-            let (crop_x, crop_y, view_w, view_h) =
-                cover_viewport(img.width(), img.height(), area.width, full_rows);
-            let (slice_y, slice_h) =
-                source_rows_for_visible(view_h, full_rows, visible.start, area.height);
-            let slice = img.crop_imm(crop_x, crop_y + slice_y, view_w, slice_h);
-            self.protocol = Some(Arc::new(Mutex::new(picker.new_resize_protocol(slice))));
-            self.protocol_key = Some(key);
-        }
-
-        if let Some(proto) = &self.protocol {
-            let mut proto = proto.lock();
-            let widget = StatefulImage::<StatefulProtocol>::default();
-            frame.render_stateful_widget(widget, area, &mut proto);
+        if let Some(image) = peek_shared_future(&self.image) {
+            covers.show(
+                frame,
+                CoverKey {
+                    hash: self.identity,
+                    width: area.width,
+                    height: full_rows,
+                },
+                image,
+                area,
+                visible.start,
+            );
         }
     }
 }
 
-/// 可见行区间对应的源图行区间（相对 viewport 顶部），按比例取，保证是裁切而非压缩。
-fn source_rows_for_visible(
-    view_h: u32,
-    full_rows: u16,
-    skip: u16,
-    visible_rows: u16,
-) -> (u32, u32) {
-    if view_h == 0 || full_rows == 0 || visible_rows == 0 {
-        return (0, view_h.max(1));
-    }
-
-    let full = u32::from(full_rows);
-    let start = (view_h * u32::from(skip) / full).min(view_h - 1);
-    let end = (view_h * (u32::from(skip) + u32::from(visible_rows)) / full).max(start + 1);
-    (start, end.min(view_h) - start)
-}
-
-fn make_ascii_future(bytes: Arc<DynamicImage>, width: u16, height: u16) -> AsciiFuture {
-    let fut = Box::pin(async move { render_cover_ascii(bytes, width, height) });
-    spawn_shared(fut)
+fn make_ascii_future(
+    image: Arc<DynamicImage>,
+    width: u16,
+    height: u16,
+    wake: WakeSignal,
+) -> AsciiFuture {
+    let fut = Box::pin(async move {
+        compio::runtime::spawn_blocking(move || render_cover_ascii(image, width, height))
+            .await
+            .ok()
+            .flatten()
+    });
+    spawn_shared(fut, wake)
 }
 
 pub struct HomeTile {
@@ -1575,22 +1803,24 @@ fn home_sidebar_wheel_target(
 pub struct HomeSidebarState {
     pub expanded: bool,
     pub loading: bool,
+    pub loading_more: bool,
     pub user_id: Option<String>,
     pub liked_playlist_id: Option<String>,
     pub user_name: String,
     pub created_playlists: Vec<HomeSidebarPlaylist>,
     pub collected_playlists: Vec<HomeSidebarPlaylist>,
+    pub created_has_more: bool,
+    pub collected_has_more: bool,
+    pub created_next_offset: usize,
+    pub collected_next_offset: usize,
     pub focused_section: HomeSidebarSection,
     pub focused_index: usize,
     pub created_focused_index: usize,
     pub collected_focused_index: usize,
     pub created_scroll_offset: usize,
     pub collected_scroll_offset: usize,
-    pub anim_progress: f32,
-    /// 滑出/收起动画起始时刻（None = 无进行中动画）
-    pub anim_started_at: Option<Instant>,
-    /// 动画起始时的 progress 值（支持动画中途反向切换）
-    pub anim_from: f32,
+    pub(crate) motion: Toggle,
+    pub(crate) trail: Trail,
     pub status_line: String,
 }
 
@@ -1599,20 +1829,24 @@ impl Default for HomeSidebarState {
         Self {
             expanded: false,
             loading: false,
+            loading_more: false,
             user_id: None,
             liked_playlist_id: None,
             user_name: String::new(),
             created_playlists: Vec::new(),
             collected_playlists: Vec::new(),
+            created_has_more: false,
+            collected_has_more: false,
+            created_next_offset: 0,
+            collected_next_offset: 0,
             focused_section: HomeSidebarSection::Created,
             focused_index: 0,
             created_focused_index: 0,
             collected_focused_index: 0,
             created_scroll_offset: 0,
             collected_scroll_offset: 0,
-            anim_progress: 0.0,
-            anim_started_at: None,
-            anim_from: 0.0,
+            motion: Toggle::new(false),
+            trail: Trail::new(0.0),
             status_line: String::new(),
         }
     }
@@ -1664,6 +1898,35 @@ impl HomeSidebarState {
             HomeSidebarSection::Created => self.created_playlists.len(),
             HomeSidebarSection::Collected => self.collected_playlists.len(),
         }
+    }
+    fn section_has_more(&self, section: HomeSidebarSection) -> bool {
+        match section {
+            HomeSidebarSection::Created => self.created_has_more,
+            HomeSidebarSection::Collected => self.collected_has_more,
+        }
+    }
+
+    fn section_next_offset(&self, section: HomeSidebarSection) -> usize {
+        match section {
+            HomeSidebarSection::Created => self.created_next_offset,
+            HomeSidebarSection::Collected => self.collected_next_offset,
+        }
+    }
+
+    fn append_section_page(&mut self, page: HomeSidebarPageFetch) {
+        match page.section {
+            HomeSidebarSection::Created => {
+                self.created_playlists.extend(page.items);
+                self.created_next_offset = page.next_offset;
+                self.created_has_more = page.has_more;
+            }
+            HomeSidebarSection::Collected => {
+                self.collected_playlists.extend(page.items);
+                self.collected_next_offset = page.next_offset;
+                self.collected_has_more = page.has_more;
+            }
+        }
+        self.clamp_focus();
     }
 
     pub fn clamp_focus(&mut self) {
@@ -1807,7 +2070,7 @@ impl HomeSidebarState {
     }
 
     pub fn is_visible(&self) -> bool {
-        self.expanded || self.anim_progress > 0.0
+        self.expanded || self.motion.on() || self.trail.value() > 0.0
     }
 }
 
@@ -1959,6 +2222,8 @@ pub struct PlaylistState {
     pub scroll_offset: usize,
     pub visible_rows: usize,
     pub tracks: Vec<PlaylistTrack>,
+    pub total_tracks: Option<usize>,
+    pagination: Option<PlaylistPagination>,
     /// 列表代：内容被整体替换时换号（行内图标缓存据此决定是否重建行数据）。
     generation: u64,
 }
@@ -1975,6 +2240,8 @@ impl Default for PlaylistState {
             scroll_offset: 0,
             visible_rows: 1,
             tracks: Vec::new(),
+            total_tracks: None,
+            pagination: None,
             generation: next_list_generation(),
         }
     }
@@ -2035,11 +2302,24 @@ impl PlaylistState {
     }
 
     pub fn set_tracks(&mut self, tracks: Vec<PlaylistTrack>) {
+        self.cancel_pagination();
+        self.total_tracks = None;
         self.tracks = tracks;
         self.focused_idx = 0;
         self.scroll_offset = 0;
         self.generation = next_list_generation();
         self.ensure_focus_visible();
+    }
+    pub fn append_tracks(&mut self, tracks: Vec<PlaylistTrack>) {
+        self.tracks.extend(tracks);
+        self.generation = next_list_generation();
+        self.ensure_focus_visible();
+    }
+
+    fn cancel_pagination(&mut self) {
+        if let Some(pagination) = self.pagination.take() {
+            pagination.cancel();
+        }
     }
 
     /// 列表代（行内图标的行数据缓存据此失效）。
@@ -2392,6 +2672,19 @@ pub struct PlaybackTrack {
 }
 
 impl PlaybackTrack {
+    fn as_playlist_track(&self) -> PlaylistTrack {
+        PlaylistTrack {
+            kind: PlaylistTrackKind::Song,
+            id: Some(self.song_id.clone()),
+            title: self.title.clone(),
+            artist: self.artist.clone(),
+            album: self.album.clone(),
+            cover_url: self.cover_url.clone(),
+            duration_ms: self.duration_ms,
+            duration: format_duration(self.duration_ms),
+        }
+    }
+
     fn from_playlist_track(track: &PlaylistTrack) -> Option<Self> {
         if track.kind != PlaylistTrackKind::Song {
             return None;
@@ -2666,6 +2959,7 @@ async fn loop_cover_fetch(
     client: Client,
     cache_dir: PathBuf,
     persistence: PersistenceHandle,
+    wake: WakeSignal,
 ) {
     let Ok(api) = ApiState::new(None, client) else {
         return;
@@ -2689,15 +2983,20 @@ async fn loop_cover_fetch(
         let path = cover_cache_path_for_dir(&cache_dir, &req.url)?;
         Some(persist_fetched_cover(&persistence, path, bytes).await)
     };
-    latest_fetch::run_latest(rx, tx, async move |req: CoverFetchRequest| {
-        let bytes = process_fn(&req).await;
-        CoverFetchResult {
-            song_id: req.song_id,
-            url: req.url,
-            generation: req.generation,
-            bytes,
-        }
-    })
+    latest_fetch::run_latest(
+        rx,
+        tx,
+        async move |req: CoverFetchRequest| {
+            let bytes = process_fn(&req).await;
+            CoverFetchResult {
+                song_id: req.song_id,
+                url: req.url,
+                generation: req.generation,
+                bytes,
+            }
+        },
+        wake,
+    )
     .await;
 }
 
@@ -2706,6 +3005,7 @@ async fn loop_lyric_fetch(
     tx: async_mpsc::Sender<LyricFetchResult>,
     mut api: ApiState,
 ) {
+    let wake = api.wake_signal();
     let mut process_fn = async move |req: &LyricFetchRequest| {
         if let Some(cookie) = &req.cookie {
             api.set_cookie(cookie.to_string());
@@ -2715,18 +3015,24 @@ async fn loop_lyric_fetch(
         let lrc = lyric.body.pointer("/lrc/lyric")?.as_str()?;
         parse_lrc(lrc).or_else(|| parse_plain_lyrics(lrc))
     };
-    latest_fetch::run_latest(rx, tx, async move |req: LyricFetchRequest| {
-        let lyrics = process_fn(&req).await;
-        LyricFetchResult {
-            song_id: req.song_id,
-            generation: req.generation,
-            lyrics,
-        }
-    })
+    latest_fetch::run_latest(
+        rx,
+        tx,
+        async move |req: LyricFetchRequest| {
+            let lyrics = process_fn(&req).await;
+            LyricFetchResult {
+                song_id: req.song_id,
+                generation: req.generation,
+                lyrics,
+            }
+        },
+        wake,
+    )
     .await;
 }
 
 pub struct App {
+    pub(crate) wake: WakeSignal,
     pub config: Config,
     pub theme: Theme,
     pub page: Page,
@@ -2748,8 +3054,8 @@ pub struct App {
     pub small_window_mode: Option<SmallWindowMode>,
     /// 扁窗高度恰为播放栏高度时，Alt+X 切换的当前目标面板。
     pub flat_panel: FlatPanel,
-    /// 扁窗切换动画；None 表示已停在目标面板。
-    pub flat_switch_anim: Option<FlatSwitchAnim>,
+    /// Visual transition, separate from the logical target in `flat_panel`.
+    pub(crate) flat_switch_anim: Option<Transition>,
     /// 上一帧是否处于“扁窗高度恰为播放栏高度”的子状态。
     flat_exact_height: bool,
     /// 窄窗音量条的显示端平滑值（LUFS）。以 VU_FLOOR 表示静音。
@@ -2792,7 +3098,7 @@ pub struct App {
     qr_last_poll_at: Option<Instant>,
     last_global_hotkey_at: Option<Instant>,
     last_content_click: Option<(Instant, Page, usize)>,
-    pub cava: Option<MiniCavaState>,
+    mini_spectrum: Spectrum,
     cover_cache_dir: PathBuf,
     cover_fetch_tx: watch::Sender<Option<CoverFetchRequest>>,
     cover_fetch_rx: async_mpsc::Receiver<CoverFetchResult>,
@@ -2812,7 +3118,7 @@ pub struct App {
     persistence: PersistenceWorker,
     /// 下载任务表（异步后台任务；状态行与图标都从这里读）。
     pub downloads: DownloadController,
-    pub graphics_picker: Picker,
+    pub(crate) covers: CoverPresentation,
 }
 
 impl App {
@@ -2839,11 +3145,13 @@ impl App {
             header::HeaderValue::from_static("https://music.163.com/"),
         );
         let http_client = Client::builder().default_headers(headers).build()?;
+        let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
+        let wake = api.wake_signal();
         let cache_root = resolve_cache_root(&config);
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let download_root =
             crate::app::download::resolve_download_root(config.download_path.as_deref());
-        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache);
+        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache, wake.clone());
         if config.cache.clean_on_startup {
             let startup_dir = cover_cache_dir.clone();
             let startup_policy = config.cache.clone();
@@ -2862,10 +3170,10 @@ impl App {
             http_client.clone(),
             cover_cache_dir.clone(),
             persistence.handle(),
+            wake.clone(),
         );
         launch(worker);
 
-        let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
         // 下载任务全局只有一个：管理器起一次常驻 worker，之后只往队列里塞请求。
         let download_manager = DownloadManager::new(api.clone());
 
@@ -2875,6 +3183,7 @@ impl App {
         launch(worker);
 
         let mut app = Self {
+            wake: wake.clone(),
             config,
             theme,
             page: Page::Login,
@@ -2926,7 +3235,7 @@ impl App {
             qr_last_poll_at: None,
             last_global_hotkey_at: None,
             last_content_click: None,
-            cava: None,
+            mini_spectrum: Spectrum::new(MINI_BARS),
             cover_cache_dir,
             cover_fetch_tx,
             cover_fetch_rx,
@@ -2955,16 +3264,11 @@ impl App {
                 page_kind: PlaylistPageKind::Playlist,
                 pending_intents: Default::default(),
             },
-            graphics_picker: Picker::halfblocks(),
+            covers: CoverPresentation::new(wake),
         };
 
         app.load_private_roam_memory().await;
 
-        if let Some(protocol) = app.config.graphics_protocol.to_ratatui_protocol() {
-            app.graphics_picker.set_protocol_type(protocol);
-        }
-
-        app.sync_cava();
         app.sync_terminal_size();
 
         // 先出加载页，网络初始化交给后台任务：登录恢复这几步在旧实现里是
@@ -3005,11 +3309,12 @@ impl App {
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
         let now = Instant::now();
-        self.tick_flat_switch();
+        self.tick_flat_switch(now);
         self.tick_vu_meter(now);
-        self.tick_search_box_animation();
-        self.tick_home_sidebar_animation();
+        self.tick_search_box_animation(now);
+        self.tick_home_sidebar_animation(now);
         self.tick_home_sidebar_fetch();
+        self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
         self.tick_playlist_fetch();
         self.tick_like_sync();
@@ -3057,9 +3362,12 @@ impl App {
         if self.page != Page::Login
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
-            && !matches!(self.overlay, Some(Overlay::SettingsKeybinds))
         {
-            self.open_keybind_settings();
+            if self.overlay == Some(Overlay::SettingsKeybinds) {
+                self.close_overlay();
+            } else {
+                self.open_keybind_settings();
+            }
             return;
         }
 
@@ -3273,6 +3581,7 @@ impl App {
             Page::Playlist => {
                 if forward {
                     let _ = self.browse.playlist.focus_next();
+                    self.maybe_fetch_playlist_page();
                 } else {
                     let _ = self.browse.playlist.focus_prev();
                 }
@@ -3300,6 +3609,9 @@ impl App {
         };
 
         self.browse.home_sidebar.scroll_section_by(section, forward);
+        if forward {
+            self.maybe_fetch_home_sidebar_page();
+        }
     }
 
     async fn advance_search_focus(&mut self) {
@@ -3478,39 +3790,29 @@ impl App {
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
     pub fn should_continuous_redraw(&self) -> bool {
-        if self.is_seeking() {
-            return true;
-        }
-        // 拖歌词浮窗时保持高帧率，鼠标跟手。
-        if self.page_lyrics_grab.is_some() {
-            return true;
-        }
-        if let Some(started_at) = self.input.search_box_anim_started_at
-            && started_at.elapsed() < SEARCH_BOX_ANIM_DURATION
+        if self.mini_spectrum_enabled()
+            && self.playback.now_playing.is_some()
+            && (self.playback.playback_state == PlaybackRuntimeState::Playing
+                || self.mini_spectrum.has_tail())
         {
             return true;
         }
-        if self.browse.home_sidebar.anim_started_at.is_some() {
+        if self.is_seeking() || self.page_lyrics_grab.is_some() {
             return true;
         }
-        // 作者页数据在途：结果一到就上屏，别让 1s 空闲节流把它压住。
-        if self.browse.author_fetch.is_some() {
+        if self.input.search_motion.is_running()
+            || self.browse.home_sidebar.motion.is_running()
+            || self.browse.home_sidebar.trail.value() > 0.0
+        {
             return true;
         }
-        // 歌单页 / 专辑页同理。
-        if self.browse.playlist_fetch.is_some() {
-            return true;
-        }
-        // 下载中：图标要一直转（time-based 帧），别被 1s 空闲节流压成 1fps。
-        if self.downloads.manager.is_active() {
-            return true;
-        }
-        // 加载页全程保持高帧率：进度条本身在缓动，收尾还要等最短可见时长，
-        // 交给 1s 空闲节流会把最后一步拖慢。
-        if self.page == Page::Loading {
-            return true;
-        }
-        if self.flat_switch_anim.is_some() {
+        if self.downloads.manager.is_active()
+            || self.page == Page::Loading
+            || self
+                .flat_switch_anim
+                .as_ref()
+                .is_some_and(Transition::is_running)
+        {
             return true;
         }
         if self.small_window_mode == Some(SmallWindowMode::Flat)
@@ -3523,7 +3825,6 @@ impl App {
         {
             return true;
         }
-        // about 彩蛋：蓄力/迸发在动，激活后边框噪点也持续流动。
         #[cfg(feature = "easter-egg")]
         if self.about_egg.phase != EasterEggPhase::Idle {
             return true;
@@ -3555,10 +3856,6 @@ impl App {
             .as_ref()
             .map(|track| track.artist.clone())
             .unwrap_or_default()
-    }
-
-    pub fn cava_bars(&self) -> [f32; 20] {
-        self.cava.as_ref().map(|x| x.bars()).unwrap_or_default()
     }
 
     /// 播放链路上的 PCM 抽头环句柄，经 `HostPlaybackBridge` 交给全屏页示波器。
@@ -3618,14 +3915,17 @@ impl App {
         let mode = self.compute_small_window_mode();
         if mode == self.small_window_mode {
             if mode == Some(SmallWindowMode::Flat) {
-                let width = self.term_width.max(1) as f32;
-                let current = self.flat_switch_offset().min(width);
-                if let Some(anim) = &mut self.flat_switch_anim {
-                    anim.to_x = match self.flat_panel {
+                if self.flat_switch_anim.is_some() {
+                    let now = Instant::now();
+                    let width = self.term_width.max(1) as f32;
+                    let current = self.flat_switch_offset().min(width);
+                    let target = match self.flat_panel {
                         FlatPanel::Player => 0.0,
                         FlatPanel::Lyrics => width,
                     };
-                    anim.from_x = current;
+                    let mut motion = Transition::new(current);
+                    motion.retarget(target, now, FLAT_SWITCH_ANIM_DURATION, Curve::EaseOut);
+                    self.flat_switch_anim = Some(motion);
                 }
                 let exact = self.term_height == FLAT_SMALL_HEIGHT;
                 if exact && !self.flat_exact_height {
@@ -3678,9 +3978,8 @@ impl App {
             self.close_overlay();
         }
         self.browse.home_sidebar.expanded = false;
-        self.browse.home_sidebar.anim_progress = 0.0;
-        self.browse.home_sidebar.anim_from = 0.0;
-        self.browse.home_sidebar.anim_started_at = None;
+        self.browse.home_sidebar.motion = Toggle::new(false);
+        self.browse.home_sidebar.trail = Trail::new(0.0);
         self.clear_content_hits();
         self.clear_player_bar_hits();
     }
@@ -3688,24 +3987,26 @@ impl App {
     /// 扁窗 5 行视口下两个面板的水平偏移（0=播放栏，width=歌词栏）。
     pub fn flat_switch_offset(&self) -> f32 {
         let width = self.term_width.max(1) as f32;
-        if let Some(anim) = &self.flat_switch_anim {
-            let elapsed = anim.started_at.elapsed().as_secs_f32();
-            let t = if elapsed >= FLAT_SWITCH_ANIM_DURATION.as_secs_f32() {
-                1.0
-            } else {
-                elapsed / FLAT_SWITCH_ANIM_DURATION.as_secs_f32()
-            };
-            let eased = cubic_bezier_y(t, 0.0, 0.7);
-            return anim.from_x + (anim.to_x - anim.from_x) * eased;
-        }
-        match self.flat_panel {
-            FlatPanel::Player => 0.0,
-            FlatPanel::Lyrics => width,
-        }
+        self.flat_switch_anim
+            .as_ref()
+            .map(|anim| {
+                let value = anim.sample(Instant::now());
+                if anim.is_running() {
+                    value
+                } else {
+                    anim.target()
+                }
+            })
+            .unwrap_or(match self.flat_panel {
+                FlatPanel::Player => 0.0,
+                FlatPanel::Lyrics => width,
+            })
     }
 
     pub fn flat_switch_animating(&self) -> bool {
-        self.flat_switch_anim.is_some()
+        self.flat_switch_anim
+            .as_ref()
+            .is_some_and(Transition::is_running)
     }
 
     pub fn toggle_flat_panel(&mut self) {
@@ -3714,7 +4015,7 @@ impl App {
         {
             return;
         }
-
+        let now = Instant::now();
         let width = self.term_width.max(1) as f32;
         let current = self.flat_switch_offset().clamp(0.0, width);
         let visually_lyrics = current >= width * 0.5;
@@ -3723,34 +4024,57 @@ impl App {
         } else {
             FlatPanel::Lyrics
         };
-        let to_x = match self.flat_panel {
-            FlatPanel::Player => 0.0,
-            FlatPanel::Lyrics => width,
+        let target = if self.flat_panel == FlatPanel::Player {
+            0.0
+        } else {
+            width
         };
-        self.flat_switch_anim = Some(FlatSwitchAnim {
-            from_x: current,
-            to_x,
-            started_at: Instant::now(),
-        });
+        let mut anim = Transition::new(current);
+        anim.retarget(target, now, FLAT_SWITCH_ANIM_DURATION, Curve::EaseOut);
+        self.flat_switch_anim = Some(anim);
     }
 
-    fn tick_flat_switch(&mut self) {
-        let Some(anim) = &mut self.flat_switch_anim else {
-            return;
-        };
-        let width = self.term_width.max(1) as f32;
-        let target = match self.flat_panel {
-            FlatPanel::Player => 0.0,
-            FlatPanel::Lyrics => width,
-        };
-        anim.to_x = target;
-        if (anim.from_x - target).abs() < 0.5 {
-            self.flat_switch_anim = None;
-            return;
+    fn tick_flat_switch(&mut self, now: Instant) {
+        if let Some(anim) = &mut self.flat_switch_anim {
+            anim.tick(now);
+            if !anim.is_running() {
+                self.flat_switch_anim = None;
+            }
         }
-        if anim.started_at.elapsed() >= FLAT_SWITCH_ANIM_DURATION {
-            self.flat_switch_anim = None;
-        }
+    }
+    fn tick_search_box_animation(&mut self, now: Instant) {
+        let open = matches!(self.overlay, Some(Overlay::SearchBox));
+        self.input
+            .search_motion
+            .set(open, now, SEARCH_BOX_ANIM_DURATION, Curve::EaseOut);
+        self.input.search_motion.tick(now);
+    }
+
+    fn tick_home_sidebar_animation(&mut self, now: Instant) {
+        self.browse.home_sidebar.motion.tick(now);
+        self.browse.home_sidebar.trail.tick(now);
+    }
+
+    fn animate_home_sidebar(&mut self) {
+        let now = Instant::now();
+        let target = if self.browse.home_sidebar.expanded {
+            1.0
+        } else {
+            0.0
+        };
+        self.browse.home_sidebar.motion.set(
+            target > 0.5,
+            now,
+            SIDEBAR_ANIM_DURATION,
+            Curve::EaseOut,
+        );
+        self.browse.home_sidebar.trail.follow(
+            target,
+            now,
+            Duration::ZERO,
+            SIDEBAR_ANIM_DURATION,
+            Curve::EaseOut,
+        );
     }
 
     fn tick_vu_meter(&mut self, now: Instant) {
@@ -3789,56 +4113,45 @@ impl App {
         self.vu_animating = left_moving || right_moving;
     }
 
-    pub fn main_spectrum_braille(&mut self) -> String {
-        let mut out = String::with_capacity(10);
-        for i in 0..10 {
-            let bar = self.cava_bars();
-            let left = bar[i * 2].clamp(0.0, 1.0);
-            let right = bar[i * 2 + 1].clamp(0.0, 1.0);
-            let left_h = (left * 4.0).round() as u8;
-            let right_h = (right * 4.0).round() as u8;
+    pub fn main_spectrum_braille(&self) -> String {
+        let bars = self.mini_spectrum.mini_bars();
+        let mut out = String::with_capacity(30);
+        for pair in bars.as_chunks::<2>().0 {
+            let left_h = (pair[0].clamp(0.0, 1.0) * 4.0).round() as u8;
+            let right_h = (pair[1].clamp(0.0, 1.0) * 4.0).round() as u8;
             out.push(braille_from_two_bars(left_h.min(4), right_h.min(4)));
         }
         out
     }
 
     pub fn sync_on_change(&mut self) {
-        self.sync_cava();
         self.sync_terminal_size();
     }
 
-    fn sync_cava(&mut self) {
-        let available = crate::tmplayer::audio::cava::is_available();
-        // 两个无可视化档位都把 cava 停掉：折叠视图那 10 格迷你频谱也就没数据可画。
-        let enable = !matches!(
+    fn mini_spectrum_enabled(&self) -> bool {
+        !matches!(
             self.config.visualize,
             VisualizeMode::Lyrics | VisualizeMode::Hidden
-        );
-        if !available || !enable {
-            self.cava = None;
-            return;
-        }
-
-        if self.cava.is_none() {
-            let cfg = CavaConfig {
-                framerate_hz: self.config.spectrum_hz.clamp(1, 30),
-                bars: 20,
-                channels: CavaChannels::Mono,
-                reverse: false,
-            };
-
-            self.cava = MiniCavaState::try_new(cfg).ok();
-        }
+        )
     }
 
-    pub async fn suspend_main_cava_for_fullscreen(&mut self) {
-        if let Some(cava) = self.cava.take() {
-            cava.shutdown().await;
+    /// Called only immediately before a Host frame submission, never during audio callbacks.
+    pub fn update_main_spectrum(&mut self, now: Instant) -> Result<()> {
+        if !self.mini_spectrum_enabled() || self.playback.now_playing.is_none() {
+            self.mini_spectrum.clear();
+            return Ok(());
         }
+        self.mini_spectrum.update(
+            &self.playback.audio_player.pcm_ring(),
+            self.playback.playback_state == PlaybackRuntimeState::Playing,
+            now,
+        )?;
+        Ok(())
     }
 
-    pub fn resume_main_cava_after_fullscreen(&mut self) {
-        self.sync_cava();
+    /// The Host is not rendered while Fullscreen owns the terminal.
+    pub fn reset_main_spectrum(&mut self) {
+        self.mini_spectrum.clear();
     }
 
     fn seek_to_ratio(&mut self, ratio: f32) {
@@ -3877,6 +4190,7 @@ impl App {
                 MprisControlEvent::Pause => self.mpris_pause(),
                 MprisControlEvent::PlayPause => self.toggle_play_pause_hotkey().await,
                 MprisControlEvent::Stop => {
+                    self.playback.page_advance = None;
                     self.playback.audio_player.stop();
                     self.playback.playback_state = PlaybackRuntimeState::Stopped;
                 }
@@ -3905,6 +4219,7 @@ impl App {
     }
 
     fn mpris_pause(&mut self) {
+        self.playback.page_advance = None;
         if self.playback.playback_state == PlaybackRuntimeState::Playing {
             self.playback.audio_player.toggle_play_pause();
             self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
@@ -4190,29 +4505,25 @@ impl App {
         if self.page != Page::Home || self.overlay.is_some() {
             return;
         }
-
-        if self.browse.home_sidebar.expanded {
+        if self.browse.home_sidebar.is_visible() {
             self.browse.home_sidebar.expanded = false;
             self.animate_home_sidebar();
             return;
         }
-
         self.browse.home_sidebar.expanded = true;
         self.animate_home_sidebar();
-
         if !self.browse.home_sidebar.created_playlists.is_empty()
             || !self.browse.home_sidebar.collected_playlists.is_empty()
         {
             self.browse.home_sidebar.reset_focus();
             return;
         }
-
         // 异步填充：立刻返回，动画照常跑，数据由 tick 搬入。
         if self.browse.home_sidebar_fetch.is_none() {
             self.browse.home_sidebar.loading = true;
             let fut = fetch_home_sidebar_playlists(self.api.clone(), self.config.language);
             let fut: HomeSidebarTask = Box::pin(async move { Some(fut.await) });
-            self.browse.home_sidebar_fetch = Some(spawn_shared(fut));
+            self.browse.home_sidebar_fetch = Some(spawn_shared(fut, self.wake.clone()));
         }
     }
 
@@ -4257,6 +4568,12 @@ impl App {
                 self.browse.home_sidebar.user_name = data.user_name;
                 self.browse.home_sidebar.created_playlists = data.created;
                 self.browse.home_sidebar.collected_playlists = data.collected;
+                self.browse.home_sidebar.created_has_more = data.created_more;
+                self.browse.home_sidebar.collected_has_more = data.collected_more;
+                self.browse.home_sidebar.created_next_offset =
+                    self.browse.home_sidebar.created_playlists.len();
+                self.browse.home_sidebar.collected_next_offset =
+                    self.browse.home_sidebar.collected_playlists.len();
                 self.browse.home_sidebar.clamp_focus();
                 self.browse.home_sidebar.status_line = match self.config.language {
                     Language::Zh => format!(
@@ -4283,6 +4600,70 @@ impl App {
                 self.browse.home.status_line = text;
             }
         }
+    }
+    fn tick_home_sidebar_page_fetch(&mut self) {
+        let Some(result) = peek_shared_future(&self.browse.home_sidebar_page_fetch).cloned() else {
+            return;
+        };
+        self.browse.home_sidebar_page_fetch = None;
+        self.browse.home_sidebar.loading_more = false;
+
+        match result {
+            Ok(page) => {
+                self.browse.home_sidebar.append_section_page(page);
+                self.browse.home_sidebar.status_line = match self.config.language {
+                    Language::Zh => format!(
+                        "创建 {} 个，收藏 {} 个",
+                        self.browse.home_sidebar.created_playlists.len(),
+                        self.browse.home_sidebar.collected_playlists.len()
+                    ),
+                    Language::En => format!(
+                        "{} created, {} collected",
+                        self.browse.home_sidebar.created_playlists.len(),
+                        self.browse.home_sidebar.collected_playlists.len()
+                    ),
+                };
+            }
+            Err(error) => {
+                self.browse.home_sidebar.status_line = format!(
+                    "{}: {error}",
+                    self.lang_text("歌单分页加载失败", "Playlist page load failed")
+                );
+            }
+        }
+    }
+
+    fn maybe_fetch_home_sidebar_page(&mut self) {
+        if !self.browse.home_sidebar.expanded
+            || self.browse.home_sidebar.loading
+            || self.browse.home_sidebar.loading_more
+            || self.browse.home_sidebar_page_fetch.is_some()
+        {
+            return;
+        }
+
+        let section = self.browse.home_sidebar.focused_section;
+        let len = self.browse.home_sidebar.section_len(section);
+        if len == 0
+            || self.browse.home_sidebar.focused_index + 1 < len
+            || !self.browse.home_sidebar.section_has_more(section)
+        {
+            return;
+        }
+        let Some(user_id) = self.browse.home_sidebar.user_id.clone() else {
+            return;
+        };
+        let offset = self.browse.home_sidebar.section_next_offset(section);
+        self.browse.home_sidebar.loading_more = true;
+        let fut = fetch_home_sidebar_page(
+            self.api.clone(),
+            user_id,
+            section,
+            offset,
+            self.config.language,
+        );
+        let fut: HomeSidebarPageTask = Box::pin(async move { Some(fut.await) });
+        self.browse.home_sidebar_page_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
     /// 搬运作者页的在途拉取（每帧调用，结果就绪才动状态）。
@@ -4344,6 +4725,72 @@ impl App {
             }
         }
     }
+    fn tick_playlist_page_fetch(&mut self) {
+        let browse = self.browse.playlist.pagination.clone();
+        let playback = self.playback.pagination.clone();
+        for pagination in browse.iter().chain(playback.iter().filter(|pager| {
+            !browse
+                .as_ref()
+                .is_some_and(|browse| browse.same_source(pager))
+        })) {
+            let Some(result) = pagination.take_ready() else {
+                continue;
+            };
+            match result {
+                Ok(page) => {
+                    if playlist_pagination::apply_page(
+                        pagination,
+                        page,
+                        &mut self.browse.playlist,
+                        self.playback.pagination.as_ref(),
+                        &mut self.playback.playback_queue,
+                    ) {
+                        self.persist_playback_memory();
+                    }
+                }
+                Err(error) => {
+                    if self
+                        .playback
+                        .pagination
+                        .as_ref()
+                        .is_some_and(|pager| pager.same_source(pagination))
+                        && self.playback.page_advance.take().is_some()
+                    {
+                        self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                    }
+                    self.set_runtime_status(format!(
+                        "{}: {error}",
+                        self.lang_text("歌单分页加载失败", "Playlist page load failed")
+                    ));
+                }
+            }
+        }
+    }
+
+    fn maybe_fetch_playlist_page(&mut self) {
+        if self.page == Page::Playlist
+            && self.browse.playlist_fetch.is_none()
+            && self.browse.playlist.focused_idx + 1 >= self.browse.playlist.tracks.len()
+            && let Some(pagination) = &self.browse.playlist.pagination
+        {
+            pagination.request(self.api.clone());
+        }
+    }
+
+    fn maybe_prefetch_playback_page(&self) {
+        if let Some(index) = self.playback.playback_index
+            && index.saturating_add(3) >= self.playback.playback_queue.len()
+            && let Some(pagination) = &self.playback.pagination
+        {
+            pagination.prefetch(self.api.clone());
+        }
+    }
+
+    pub fn fullscreen_request_queue_page(&self) {
+        if let Some(pagination) = &self.playback.pagination {
+            pagination.request(self.api.clone());
+        }
+    }
 
     async fn open_focused_home_sidebar_playlist(&mut self) {
         let (playlist_id, title) = {
@@ -4380,12 +4827,12 @@ impl App {
                 self.playlist_return_page = Page::Home;
                 self.playlist_section_return_snapshot = None;
                 self.browse.home_sidebar.expanded = false;
-                let target = if self.browse.home_sidebar.expanded {
-                    1.0
-                } else {
-                    0.0
-                };
-                self.browse.home_sidebar.anim_progress = target;
+                self.browse.home_sidebar.motion.set(
+                    false,
+                    Instant::now(),
+                    SIDEBAR_ANIM_DURATION,
+                    Curve::EaseOut,
+                );
                 self.page = Page::Playlist;
                 self.browse.home.status_line =
                     format!("{} {}", self.lang_text("已打开", "Opened"), title);
@@ -4622,6 +5069,7 @@ impl App {
     }
 
     async fn toggle_play_pause_hotkey(&mut self) {
+        self.playback.page_advance = None;
         if self.playback.now_playing.is_none() {
             self.set_runtime_status(
                 self.lang_text("当前没有可控制的播放", "No controllable playback right now"),
@@ -4680,6 +5128,9 @@ impl App {
             .playback_index
             .unwrap_or(0)
             .min(self.playback.playback_queue.len() - 1);
+        if self.defer_playlist_advance(current, true) {
+            return;
+        }
         let target = match self.playback.playback_repeat_mode {
             PlaybackRepeatMode::Sequence => {
                 if current + 1 < self.playback.playback_queue.len() {
@@ -4759,6 +5210,7 @@ impl App {
                     if !self.browse.playlist.focus_next() {
                         break;
                     }
+                    self.maybe_fetch_playlist_page();
                 }
             }
             _ => {}
@@ -4779,7 +5231,7 @@ impl App {
         let fut: LikeVerifyTask = Box::pin(async move { Some(fut.await) });
         self.playback
             .like_machine
-            .begin_verify(song_id, spawn_shared(fut));
+            .begin_verify(song_id, spawn_shared(fut, self.wake.clone()));
     }
 
     /// 当前曲目 id。
@@ -5195,12 +5647,32 @@ impl App {
 
         let fut = like_song_request(self.api.clone(), song_id.clone(), target);
         let fut: LikeToggleTask = Box::pin(async move { Some(fut.await) });
-        self.playback
-            .like_machine
-            .begin_toggle(song_id, target, spawn_shared(fut));
+        self.playback.like_machine.begin_toggle(
+            song_id,
+            target,
+            spawn_shared(fut, self.wake.clone()),
+        );
     }
 
     async fn tick_audio(&mut self) {
+        self.tick_playlist_page_fetch();
+        self.maybe_prefetch_playback_page();
+        if let Some(announce) = self.playback.page_advance {
+            let current = self.playback.playback_index.unwrap_or(0);
+            if current + 1 < self.playback.playback_queue.len() {
+                self.playback.page_advance = None;
+                self.play_queue_index(current + 1, announce).await;
+            } else if !self
+                .playback
+                .pagination
+                .as_ref()
+                .is_some_and(PlaylistPagination::is_pending)
+            {
+                self.playback.page_advance = None;
+                self.play_next_after_finish().await;
+            }
+            return;
+        }
         let runtime = map_audio_state(self.playback.audio_player.state());
 
         if self.playback.playback_state == PlaybackRuntimeState::Playing
@@ -5224,6 +5696,9 @@ impl App {
             .playback_index
             .unwrap_or(0)
             .min(self.playback.playback_queue.len() - 1);
+        if self.defer_playlist_advance(current, false) {
+            return;
+        }
 
         // 私人漫游：队列（快照）播完后，若列表已追加新歌则从列表继续顺序播放
         if self.playback.playback_repeat_mode == PlaybackRepeatMode::Sequence
@@ -5239,7 +5714,14 @@ impl App {
                     .collect();
                 // 来源仍是漫游本身，封面沿用漫游当前封面（跟随播放歌曲）。
                 let source_cover = self.browse.private_roam.cover_url.clone();
-                self.replace_queue_and_play(queue, 0, source_cover).await;
+                self.replace_queue_and_play(
+                    queue,
+                    0,
+                    source_cover,
+                    Some(HOME_PRIVATE_ROAM_TILE_ID.to_string()),
+                    None,
+                )
+                .await;
                 return;
             }
         }
@@ -5268,10 +5750,26 @@ impl App {
         }
     }
 
+    fn defer_playlist_advance(&mut self, current: usize, announce: bool) -> bool {
+        if matches!(
+            self.playback.playback_repeat_mode,
+            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll
+        ) && current + 1 >= self.playback.playback_queue.len()
+            && let Some(pagination) = &self.playback.pagination
+            && pagination.has_more()
+        {
+            pagination.request(self.api.clone());
+            self.playback.page_advance = Some(announce);
+            return true;
+        }
+        false
+    }
+
     async fn play_queue_index(&mut self, index: usize, announce: bool) {
         let Some(track) = self.playback.playback_queue.get(index).cloned() else {
             return;
         };
+        self.playback.page_advance = None;
 
         // 记录私人漫游播放位置/封面；播放到列表末尾时追加新歌
         self.track_private_roam_playback(&track).await;
@@ -5286,6 +5784,7 @@ impl App {
         self.playback.now_playing = Some(enriched.clone());
         self.refresh_now_playing_like_state();
         self.playback.playback_index = Some(index);
+        self.maybe_prefetch_playback_page();
         self.cover_fetch_inflight_url = None;
         self.cover_fetch_last_attempt_at = None;
         self.maybe_schedule_now_playing_cover_fetch();
@@ -5676,6 +6175,8 @@ impl App {
         queue: Vec<PlaybackTrack>,
         index: usize,
         source_cover_url: Option<String>,
+        source_id: Option<String>,
+        pagination: Option<PlaylistPagination>,
     ) {
         if queue.is_empty() {
             self.set_runtime_status(
@@ -5684,12 +6185,8 @@ impl App {
             return;
         }
 
-        self.playback.replace_queue(
-            queue,
-            None,
-            source_cover_url,
-            self.browse.playlist.id.clone(),
-        );
+        self.playback
+            .replace_queue(queue, None, source_cover_url, source_id, pagination);
         let target = index.min(self.playback.playback_queue.len() - 1);
         self.play_queue_index(target, true).await;
     }
@@ -5744,8 +6241,14 @@ impl App {
             PlaylistTrackKind::Song => {
                 let (queue, target) = self.build_queue_from_playlist();
                 let source_cover = self.browse.playlist.cover.url.clone();
-                self.replace_queue_and_play(queue, target, source_cover)
-                    .await;
+                self.replace_queue_and_play(
+                    queue,
+                    target,
+                    source_cover,
+                    self.browse.playlist.id.clone(),
+                    self.browse.playlist.pagination.clone(),
+                )
+                .await;
             }
             PlaylistTrackKind::Album | PlaylistTrackKind::Ep | PlaylistTrackKind::Single => {
                 self.open_focused_playlist_album().await;
@@ -5756,7 +6259,8 @@ impl App {
     async fn play_focused_search_track(&mut self) {
         let (queue, target) = self.build_queue_from_search();
         // 搜索结果没有"所属列表"，交给首歌封面兜底。
-        self.replace_queue_and_play(queue, target, None).await;
+        self.replace_queue_and_play(queue, target, None, None, None)
+            .await;
     }
 
     async fn play_focused_author_tile(&mut self) {
@@ -5936,7 +6440,7 @@ impl App {
             fallback_cover_url,
         );
         let fut: AuthorFetchTask = Box::pin(async move { Some(fut.await) });
-        self.browse.author_fetch = Some(spawn_shared(fut));
+        self.browse.author_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
     /// 搜索页打开专辑：立即落占位歌单页 + 派发后台拉取（结果由 `tick_playlist_fetch` 搬进来）。
@@ -5965,6 +6469,7 @@ impl App {
             )
         };
 
+        self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
             self.lang_text("正在加载专辑…", "Loading album…")
@@ -5984,7 +6489,7 @@ impl App {
         self.downloads.page_kind = PlaylistPageKind::Album;
         self.browse.playlist_fetch = Some(PlaylistFetchSlot {
             kind: PlaylistPageKind::Album,
-            future: spawn_shared(fut),
+            future: spawn_shared(fut, self.wake.clone()),
         });
     }
 
@@ -6008,6 +6513,7 @@ impl App {
             (playlist_id, item.left_label.clone(), item.cover_url.clone())
         };
 
+        self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
             self.lang_text("正在加载歌单…", "Loading playlist…")
@@ -6029,7 +6535,7 @@ impl App {
         self.downloads.page_kind = PlaylistPageKind::Playlist;
         self.browse.playlist_fetch = Some(PlaylistFetchSlot {
             kind: PlaylistPageKind::Playlist,
-            future: spawn_shared(fut),
+            future: spawn_shared(fut, self.wake.clone()),
         });
     }
 
@@ -6114,10 +6620,9 @@ impl App {
             return;
         }
 
-        let visible_h = self
-            .input
-            .search_box_anim_height
-            .min(crate::ui::search_box::TARGET_HEIGHT)
+        let visible_h = ((self.input.search_motion.value()
+            * f32::from(crate::ui::search_box::TARGET_HEIGHT))
+        .round() as u16)
             .min(term_h);
         if visible_h < crate::ui::search_box::TARGET_HEIGHT {
             return;
@@ -6434,8 +6939,9 @@ impl App {
         }
 
         self.settings.download_reset_armed = false;
-        self.config.download_audio_quality = crate::data::config::default_download_audio_quality();
-        self.config.download_path = None;
+        let defaults = Config::default();
+        self.config.download_audio_quality = defaults.download_audio_quality;
+        self.config.download_path = defaults.download_path;
         self.persist_config();
         self.refresh_download_root();
         self.set_runtime_status(self.lang_text(
@@ -6921,36 +7427,32 @@ impl App {
                 self.persist_config();
             }
             1 => {
-                self.config.super_smooth_bar = !self.config.super_smooth_bar;
-                self.persist_config();
-            }
-            2 => {
                 self.config.bars_gap = !self.config.bars_gap;
                 self.persist_config();
             }
-            3 => {
+            2 => {
                 self.config.bar_number = cycle_bar_number(self.config.bar_number, delta);
                 self.persist_config();
             }
-            4 => {
+            3 => {
                 self.config.bar_channels = match self.config.bar_channels {
                     BarChannels::Mono => BarChannels::Stereo,
                     BarChannels::Stereo => BarChannels::Mono,
                 };
                 self.persist_config();
             }
-            5 => {
+            4 => {
                 self.config.album_border = !self.config.album_border;
                 self.persist_config();
             }
-            6 => {
+            5 => {
                 let next = self
                     .config
                     .audio_quality
                     .cycle(delta, self.vip_audio_unlocked);
                 self.set_audio_quality(next);
             }
-            7 => {
+            6 => {
                 self.config.playback_memory = !self.config.playback_memory;
                 self.persist_config();
                 if self.config.playback_memory {
@@ -7012,7 +7514,7 @@ impl App {
     }
 
     async fn handle_home_key(&mut self, key: KeyEvent) {
-        if self.browse.home_sidebar.expanded {
+        if self.browse.home_sidebar.is_visible() {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
                     KeyCode::Up => {
@@ -7026,14 +7528,23 @@ impl App {
                     _ => {}
                 }
             }
-
             match key.code {
                 KeyCode::Esc => {
                     self.browse.home_sidebar.expanded = false;
                     self.animate_home_sidebar();
                 }
                 KeyCode::Up | KeyCode::BackTab => self.browse.home_sidebar.focus_prev(),
-                KeyCode::Down | KeyCode::Tab => self.browse.home_sidebar.focus_next(),
+                KeyCode::Down | KeyCode::Tab => {
+                    let section = self.browse.home_sidebar.focused_section;
+                    let len = self.browse.home_sidebar.section_len(section);
+                    let at_end = len > 0 && self.browse.home_sidebar.focused_index + 1 == len;
+                    if at_end && self.browse.home_sidebar.section_has_more(section) {
+                        self.maybe_fetch_home_sidebar_page();
+                    } else {
+                        self.browse.home_sidebar.focus_next();
+                        self.maybe_fetch_home_sidebar_page();
+                    }
+                }
                 KeyCode::Enter => self.open_focused_home_sidebar_playlist().await,
                 _ => {}
             }
@@ -7068,9 +7579,13 @@ impl App {
             }
             KeyCode::Down | KeyCode::Tab => {
                 let _ = self.browse.playlist.focus_next();
+                self.maybe_fetch_playlist_page();
             }
             KeyCode::Enter => self.play_focused_playlist_track().await,
             KeyCode::Esc | KeyCode::Left => {
+                if let Some(pagination) = &self.browse.playlist.pagination {
+                    pagination.cancel();
+                }
                 if let Some(snapshot) = self.playlist_section_return_snapshot.take() {
                     self.browse.playlist = snapshot;
                     return;
@@ -7118,29 +7633,6 @@ impl App {
         }
     }
 
-    fn tick_search_box_animation(&mut self) {
-        if matches!(self.overlay, Some(Overlay::SearchBox)) {
-            // time-based：动画时长与驱动帧率解耦，与 startup_loading 同风格
-            let started_at = self
-                .input
-                .search_box_anim_started_at
-                .get_or_insert_with(Instant::now);
-            let elapsed = started_at.elapsed();
-            if elapsed >= SEARCH_BOX_ANIM_DURATION {
-                self.input.search_box_anim_height = SEARCH_BOX_TARGET_HEIGHT;
-                return;
-            }
-            let t = elapsed.as_secs_f32() / SEARCH_BOX_ANIM_DURATION.as_secs_f32();
-            // ease-out：先快后慢（cubic-bezier y 曲线，p2y=0.7）
-            let eased = cubic_bezier_y(t, 0.0, 0.7);
-            self.input.search_box_anim_height =
-                ((SEARCH_BOX_TARGET_HEIGHT as f32) * eased).round() as u16;
-        } else {
-            self.input.search_box_anim_height = 0;
-            self.input.search_box_anim_started_at = None;
-        }
-    }
-
     /// 推进 about 彩蛋的蓄力/迸发阶段（time-based，与帧率解耦）。
     #[cfg(feature = "easter-egg")]
     fn tick_about_easter_egg(&mut self) {
@@ -7182,57 +7674,11 @@ impl App {
         }
     }
 
-    fn tick_home_sidebar_animation(&mut self) {
-        let target = if self.browse.home_sidebar.expanded {
-            1.0
-        } else {
-            0.0
-        };
-        let state = &mut self.browse.home_sidebar;
-        if (state.anim_progress - target).abs() < 0.001 {
-            state.anim_progress = target;
-            state.anim_started_at = None;
-            return;
-        }
-        // time-based：从 anim_from 向 target 插值（ease-out），支持中途反向
-        let started_at = state.anim_started_at.get_or_insert_with(Instant::now);
-        let elapsed = started_at.elapsed();
-        let t = if elapsed >= SIDEBAR_ANIM_DURATION {
-            1.0
-        } else {
-            elapsed.as_secs_f32() / SIDEBAR_ANIM_DURATION.as_secs_f32()
-        };
-        let eased = cubic_bezier_y(t, 0.0, 0.7);
-        state.anim_progress = state.anim_from + (target - state.anim_from) * eased;
-        if t >= 1.0 {
-            state.anim_progress = target;
-            state.anim_started_at = None;
-        }
-    }
-
-    /// 启动一次侧边栏滑出/收起动画（记录当前进度作为动画起点，支持中途反向）。
-    fn animate_home_sidebar(&mut self) {
-        let target = if self.browse.home_sidebar.expanded {
-            1.0
-        } else {
-            0.0
-        };
-        if (self.browse.home_sidebar.anim_progress - target).abs() < 0.001 {
-            // 已在目标态：无需动画，清掉可能的残留状态
-            self.browse.home_sidebar.anim_progress = target;
-            self.browse.home_sidebar.anim_started_at = None;
-            return;
-        }
-        self.browse.home_sidebar.anim_from = self.browse.home_sidebar.anim_progress;
-        self.browse.home_sidebar.anim_started_at = Some(Instant::now());
-    }
-
     fn begin_startup_loading(&mut self, target: Page) {
         self.page = Page::Loading;
-        self.overlay = None;
+        self.close_overlay();
         self.startup.begin(target);
     }
-
     fn finish_startup_loading(&mut self) {
         self.startup.finish();
     }
@@ -7299,6 +7745,7 @@ impl App {
                         if let Some(hit) = sidebar_hit {
                             if self.browse.home_sidebar.expanded {
                                 self.browse.home_sidebar.set_focus(hit.section, hit.index);
+                                self.maybe_fetch_home_sidebar_page();
                                 if self.is_double_content_click(
                                     Page::Home,
                                     Self::home_sidebar_double_click_index(hit),
@@ -7356,6 +7803,7 @@ impl App {
                     && idx < self.browse.playlist.tracks.len()
                 {
                     self.browse.playlist.set_focus(idx);
+                    self.maybe_fetch_playlist_page();
                     if self.is_double_content_click(Page::Playlist, idx) {
                         self.play_focused_playlist_track().await;
                     }
@@ -7416,15 +7864,24 @@ impl App {
             self.search_return_page = Page::Home;
         }
         self.input.set_text(self.search.query.clone());
-        self.input.search_box_anim_height = 0;
-        self.input.search_box_anim_started_at = Some(Instant::now());
+        self.input.search_motion.set(
+            true,
+            Instant::now(),
+            SEARCH_BOX_ANIM_DURATION,
+            Curve::EaseOut,
+        );
         self.overlay = Some(Overlay::SearchBox);
     }
 
     fn close_overlay(&mut self) {
         self.overlay = None;
-        self.input.search_box_anim_height = 0;
-        self.input.search_box_anim_started_at = None;
+        self.settings.keybind_rebinding = None;
+        self.input.search_motion.set(
+            false,
+            Instant::now(),
+            SEARCH_BOX_ANIM_DURATION,
+            Curve::EaseOut,
+        );
         self.settings.last_click = None;
         self.settings.cancel_download_path_edit();
         self.clear_settings_item_hits();
@@ -7513,7 +7970,7 @@ impl App {
             artist_line,
         );
         let fut: AuthorFetchTask = Box::pin(async move { Some(fut.await) });
-        self.browse.author_fetch = Some(spawn_shared(fut));
+        self.browse.author_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
     /// 全屏页点了专辑名：立即落占位专辑页 + 派发后台拉取，结果由 `App::tick_playlist_fetch`
@@ -7543,6 +8000,7 @@ impl App {
             }
         };
 
+        self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
             self.lang_text("正在加载专辑…", "Loading album…")
@@ -7558,7 +8016,7 @@ impl App {
         self.downloads.page_kind = PlaylistPageKind::Album;
         self.browse.playlist_fetch = Some(PlaylistFetchSlot {
             kind: PlaylistPageKind::Album,
-            future: spawn_shared(fut),
+            future: spawn_shared(fut, self.wake.clone()),
         });
     }
 
@@ -7694,7 +8152,10 @@ impl App {
     }
 
     fn persist_playback_memory(&self) {
-        if !self.config.playback_memory || self.playback.playback_queue.is_empty() {
+        if self.playback.restoring_memory
+            || !self.config.playback_memory
+            || self.playback.playback_queue.is_empty()
+        {
             return;
         }
 
@@ -7720,6 +8181,11 @@ impl App {
             ),
             source_playlist_id: self.playback.playback_queue_source_id.clone(),
             source_cover_url: self.playback.playback_queue_cover_url.clone(),
+            source_cursor: self
+                .playback
+                .pagination
+                .as_ref()
+                .map(PlaylistPagination::cursor),
             updated_at: 0,
         };
 
@@ -7782,17 +8248,26 @@ impl App {
             self.playback.playback_repeat_mode = mode;
         }
 
+        let pagination = record
+            .source_cursor
+            .filter(|cursor| {
+                Some(cursor.source_id.as_str()) == record.source_playlist_id.as_deref()
+            })
+            .map(PlaylistPagination::new);
+        self.playback.restoring_memory = true;
         self.playback.replace_queue(
             queue,
             None,
             record.source_cover_url,
             record.source_playlist_id,
+            pagination,
         );
         let target = record
             .current_index
             .unwrap_or(0)
             .min(self.playback.playback_queue.len().saturating_sub(1));
         self.play_queue_index(target, false).await;
+        self.playback.restoring_memory = false;
         self.set_runtime_status(self.lang_text("已恢复播放记忆", "Playback memory restored"));
     }
 
@@ -8168,7 +8643,35 @@ impl App {
     /// 落状态即宣告"这一页换成了新来源"：在途的那次拉取随之作废，否则它迟到时
     /// 会把刚打开的页面覆盖成被放弃的那一份（`tick_playlist_fetch` 只看句柄）。
     fn apply_playlist_fetch(&mut self, fetch: PlaylistFetch) {
+        let playing_source = self
+            .playback
+            .pagination
+            .as_ref()
+            .filter(|pagination| fetch.paginated && pagination.cursor().source_id == fetch.id)
+            .cloned();
+        if let Some(pagination) = &playing_source
+            && self
+                .browse
+                .playlist
+                .pagination
+                .as_ref()
+                .is_some_and(|current| current.same_source(pagination))
+        {
+            // Reopening the playback source must not cancel its shared in-flight page.
+            self.browse.playlist.pagination = None;
+        }
         let liked = self.browse.apply_playlist(fetch, &self.api);
+        if let Some(pagination) = playing_source {
+            self.browse.playlist.set_tracks(
+                self.playback
+                    .playback_queue
+                    .iter()
+                    .map(PlaybackTrack::as_playlist_track)
+                    .collect(),
+            );
+            self.browse.playlist.total_tracks = pagination.cursor().total_tracks;
+            self.browse.playlist.pagination = Some(pagination);
+        }
 
         if let Some(liked) = liked {
             if let Some(profile) = liked.profile {
@@ -8476,13 +8979,9 @@ impl App {
         let Some(url) = self.browse.private_roam.cover_url.clone() else {
             return;
         };
-        if let Some(tile) = self
-            .browse
-            .home
-            .tiles
-            .iter_mut()
-            .find(|tile| tile.title == "私人漫游")
-        {
+        if let Some(tile) = self.browse.home.tiles.iter_mut().find(|tile| {
+            tile.title == "私人漫游" && tile.cover.url.as_deref() != Some(url.as_str())
+        }) {
             tile.cover.load(self.api.clone(), url);
         }
     }
@@ -10630,6 +11129,137 @@ fn placeholder_cover_ascii(width: u16, height: u16, ch: char) -> String {
 mod tests {
     use super::*;
 
+    #[compio::test]
+    async fn home_cover_loads_and_paints_when_multiple_tiles_complete_together() {
+        use std::io::{Read, Write};
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            24,
+            24,
+            image::Rgb([220, 60, 30]),
+        ));
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut request = [0; 2048];
+                assert!(socket.read(&mut request).unwrap() > 0);
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                )
+                .unwrap();
+                socket.write_all(&bytes).unwrap();
+            }
+        });
+        let api = ApiState::new(None, Client::builder().no_proxy().build().unwrap()).unwrap();
+        let mut tiles = [
+            CoverFetchState::default(),
+            CoverFetchState::default(),
+            CoverFetchState::default(),
+        ];
+        for (index, cover) in tiles.iter_mut().enumerate() {
+            cover.load(api.clone(), format!("http://{address}/{index}"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while tiles
+            .iter()
+            .any(|cover| peek_shared_future(&cover.image).is_none())
+        {
+            assert!(Instant::now() < deadline);
+            compio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let mut presentation = CoverPresentation::new(api.wake_signal());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(8, 4)).unwrap();
+        loop {
+            presentation.poll();
+            terminal
+                .draw(|frame| {
+                    presentation.begin_frame();
+                    tiles[2].render(
+                        frame,
+                        &mut presentation,
+                        frame.area(),
+                        Style::default(),
+                        None,
+                        false,
+                    );
+                })
+                .unwrap();
+            presentation.prepare();
+            if terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .any(|cell| matches!(cell.fg, ratatui::style::Color::Rgb(..)))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            compio::time::sleep(Duration::from_millis(1)).await;
+        }
+        server.join().unwrap();
+    }
+
+    fn test_artist_album_response(items: &[Value], more: bool) -> ApiResponse {
+        ApiResponse {
+            status: 200,
+            body: serde_json::json!({
+                "code": 200,
+                "hotAlbums": items,
+                "more": more,
+            }),
+            cookie: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn artist_album_pages_merge_all_release_metadata() {
+        let first = vec![serde_json::json!({"id": 1, "name": "first"})];
+        let second = vec![
+            serde_json::json!({"id": 2, "name": "second"}),
+            serde_json::json!({"id": 3, "name": "third"}),
+        ];
+
+        let merged = merge_artist_album_pages(vec![
+            test_artist_album_response(&first, true),
+            test_artist_album_response(&second, false),
+        ])
+        .unwrap();
+
+        let items = merged
+            .body
+            .get("hotAlbums")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["name"], "first");
+        assert_eq!(items[2]["name"], "third");
+    }
+
+    #[test]
+    fn artist_album_pages_reject_incomplete_page_instead_of_returning_partial_data() {
+        let first = vec![serde_json::json!({"id": 1, "name": "first"})];
+        let malformed = ApiResponse {
+            status: 200,
+            body: serde_json::json!({"code": 200, "more": false}),
+            cookie: Vec::new(),
+        };
+
+        let result =
+            merge_artist_album_pages(vec![test_artist_album_response(&first, true), malformed]);
+
+        assert!(result.is_err());
+    }
+
     #[test]
     fn cached_cover_requires_decodable_image_and_terminal_marker() {
         for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
@@ -10671,22 +11301,6 @@ mod tests {
             parse_search_input("@author"),
             (String::new(), SearchScope::Author)
         );
-    }
-
-    /// 可见行按比例映射到源图行：整体可见取整段，只露下半就只取下半，绝不压缩。
-    #[test]
-    fn source_rows_follow_visible_proportion() {
-        // 全部可见：整段 viewport。
-        assert_eq!(source_rows_for_visible(8, 4, 0, 4), (0, 8));
-        // 只露第 2 行（占四分之一）：取第二段四分之一。
-        assert_eq!(source_rows_for_visible(8, 4, 1, 1), (2, 2));
-        // 头像形状（2 行）：只露下半 → 取源图下半。
-        assert_eq!(source_rows_for_visible(8, 2, 1, 1), (4, 4));
-        // 最后一个四分之一，且不越界。
-        let (start, len) = source_rows_for_visible(8, 4, 3, 1);
-        assert_eq!((start, len), (6, 2));
-        // 源图比行数还小（退化）：至少 1 行且不越界。
-        assert_eq!(source_rows_for_visible(1, 4, 2, 1), (0, 1));
     }
 
     fn search_item(kind: SearchItemKind, label: &str) -> SearchItem {
@@ -10797,6 +11411,58 @@ mod tests {
             duration_ms: 1000,
             duration: "00:01".to_string(),
         }
+    }
+    #[test]
+    fn playlist_state_appends_pages_without_resetting_focus() {
+        let mut state = PlaylistState::default();
+        state.set_tracks(vec![track("a"), track("b")]);
+        state.set_focus(1);
+        state.total_tracks = Some(4);
+
+        state.append_tracks(vec![track("c"), track("d")]);
+
+        let ids: Vec<Option<String>> = state.tracks.iter().map(|item| item.id.clone()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                Some("a".to_string()),
+                Some("b".to_string()),
+                Some("c".to_string()),
+                Some("d".to_string()),
+            ]
+        );
+        assert_eq!(state.focused_idx, 1);
+        assert_eq!(state.total_tracks, Some(4));
+    }
+
+    #[test]
+    fn sidebar_state_appends_requested_section_page() {
+        let mut state = HomeSidebarState {
+            created_has_more: true,
+            created_next_offset: 100,
+            created_playlists: vec![HomeSidebarPlaylist {
+                id: Some("first".to_string()),
+                title: "first".to_string(),
+                creator: "creator".to_string(),
+                track_count: 1,
+            }],
+            ..HomeSidebarState::default()
+        };
+        state.append_section_page(HomeSidebarPageFetch {
+            section: HomeSidebarSection::Created,
+            items: vec![HomeSidebarPlaylist {
+                id: Some("second".to_string()),
+                title: "second".to_string(),
+                creator: "creator".to_string(),
+                track_count: 2,
+            }],
+            next_offset: 101,
+            has_more: false,
+        });
+
+        assert_eq!(state.created_playlists.len(), 2);
+        assert_eq!(state.created_next_offset, 101);
+        assert!(!state.created_has_more);
     }
 
     #[test]
@@ -10947,6 +11613,11 @@ mod tests {
         machine.set_intent("s1".to_string(), false);
 
         assert_eq!(machine.pending_dispatch(), None, "串行化：一次只发一个");
+        assert_eq!(
+            machine.drop_satisfied_intent(),
+            None,
+            "在途写入不能满足新意图"
+        );
         assert!(!machine.displayed("s1"));
     }
 
@@ -10957,6 +11628,7 @@ mod tests {
         machine.set_intent("s1".to_string(), true);
         machine.begin_toggle("s1".to_string(), true, pending_toggle_future());
         machine.set_intent("s1".to_string(), false);
+        assert_eq!(machine.drop_satisfied_intent(), None);
         // 真实路径里 pump 先取走回包句柄，再交给状态机收敛
         machine.toggle = None;
 

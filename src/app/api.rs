@@ -42,6 +42,19 @@ impl CoverValidationGate {
             }
         }
     }
+
+    async fn acquire(&self, timeout: Duration) -> Result<CoverValidationPermit<'_>> {
+        compio::time::timeout(timeout, async {
+            loop {
+                if let Ok(permit) = self.try_acquire() {
+                    break permit;
+                }
+                compio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("cover decoder admission timed out"))
+    }
 }
 
 #[derive(Debug)]
@@ -60,6 +73,7 @@ pub struct ApiState {
     client: ApiClient,
     cookie: Option<String>,
     http: Client,
+    wake: crate::render::wake::WakeSignal,
 }
 
 impl ApiState {
@@ -70,7 +84,12 @@ impl ApiState {
             client,
             cookie,
             http,
+            wake: crate::render::wake::WakeSignal::default(),
         })
+    }
+
+    pub(crate) fn wake_signal(&self) -> crate::render::wake::WakeSignal {
+        self.wake.clone()
     }
 
     pub fn session_cookie(&self) -> Option<&str> {
@@ -227,6 +246,20 @@ impl ApiState {
     pub async fn playlist_detail(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.playlist_detail(&query).await?;
+        Ok(response)
+    }
+    pub async fn playlist_track_all(
+        &mut self,
+        id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("limit", &limit.max(1).to_string())
+            .param("offset", &offset.to_string());
+        let response = self.client.playlist_track_all(&query).await?;
         Ok(response)
     }
 
@@ -441,14 +474,34 @@ impl ApiState {
             .await
     }
 
+    /// UI consumers keep the one validated decode, reduced off the reactor.
+    pub async fn fetch_cover_image(
+        &self,
+        url: &str,
+    ) -> Result<std::sync::Arc<image::DynamicImage>> {
+        self.fetch_cover_with_timeout(url, COVER_NETWORK_TIMEOUT, true)
+            .await?
+            .1
+            .ok_or_else(|| anyhow!("cover image URL was empty"))
+    }
+
     async fn fetch_cover_bytes_with_timeout(
         &self,
         url: &str,
         timeout: Duration,
     ) -> Result<Vec<u8>> {
+        Ok(self.fetch_cover_with_timeout(url, timeout, false).await?.0)
+    }
+
+    async fn fetch_cover_with_timeout(
+        &self,
+        url: &str,
+        timeout: Duration,
+        keep_image: bool,
+    ) -> Result<(Vec<u8>, Option<std::sync::Arc<image::DynamicImage>>)> {
         let url = url.trim();
         if url.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
 
         // Do not reset the budget between headers and individual body chunks.
@@ -497,8 +550,8 @@ impl ApiState {
 
         // Blocking decoders cannot be cancelled. The closure, not its caller,
         // owns admission until it finishes, even if the awaiting task is dropped.
-        let permit = COVER_VALIDATION_GATE.try_acquire()?;
-        let validated = compio::runtime::spawn_blocking(move || -> Result<Vec<u8>> {
+        let permit = COVER_VALIDATION_GATE.acquire(timeout).await?;
+        let validated = compio::runtime::spawn_blocking(move || -> Result<_> {
             let _permit = permit;
             // Decoders can recover incomplete images. A cache entry must carry
             // the format's terminal marker as well as successfully decode.
@@ -515,8 +568,9 @@ impl ApiState {
                 }
                 _ => bail!("unsupported cover image format"),
             }
-            load_from_memory(&bytes)?;
-            Ok(bytes)
+            let decoded = load_from_memory(&bytes)?;
+            let image = keep_image.then(|| std::sync::Arc::new(decoded.thumbnail(500, 500)));
+            Ok((bytes, image))
         })
         .await
         .map_err(|_| anyhow!("cover image validation task panicked"))?
@@ -598,6 +652,25 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[compio::test]
+    async fn busy_cover_decoder_waits_for_capacity_instead_of_losing_image() {
+        static GATE: super::CoverValidationGate = super::CoverValidationGate::new();
+        let first = GATE.try_acquire().unwrap();
+        let second = GATE.try_acquire().unwrap();
+        let release = compio::runtime::spawn(async move {
+            compio::time::sleep(Duration::from_millis(30)).await;
+            drop(first);
+        });
+        let third = GATE.acquire(Duration::from_secs(1)).await.unwrap();
+        assert!(
+            GATE.try_acquire().is_err(),
+            "waiting did not increase decoder concurrency"
+        );
+        drop(third);
+        drop(second);
+        release.await.unwrap();
+    }
 
     #[compio::test]
     async fn cover_network_deadline_is_not_reset_after_headers() {

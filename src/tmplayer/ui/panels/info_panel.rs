@@ -1,5 +1,5 @@
 use crate::data::icons::UiIcons;
-use crate::tmplayer::app::state::{AppState, CoverSnapshot};
+use crate::tmplayer::app::state::{AppState, CoverSnapshot, TrackMetadata};
 use crate::tmplayer::render::cover_cache::CoverKey;
 use crate::tmplayer::ui::borders::SOLID_BORDER;
 use crate::tmplayer::ui::components::{control_buttons, progress_bar, volume_bar};
@@ -13,9 +13,43 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+#[derive(Clone, Copy)]
+struct CoverRef<'a> {
+    title: &'a str,
+    artist: &'a str,
+    album: &'a str,
+    cover: Option<&'a [u8]>,
+    cover_hash: Option<u64>,
+}
+
+impl<'a> From<&'a TrackMetadata> for CoverRef<'a> {
+    fn from(track: &'a TrackMetadata) -> Self {
+        Self {
+            title: &track.title,
+            artist: &track.artist,
+            album: &track.album,
+            cover: track.cover.as_deref(),
+            cover_hash: track.cover_hash,
+        }
+    }
+}
+
+impl<'a> From<&'a CoverSnapshot> for CoverRef<'a> {
+    fn from(snapshot: &'a CoverSnapshot) -> Self {
+        Self {
+            title: &snapshot.title,
+            artist: &snapshot.artist,
+            album: &snapshot.album,
+            cover: snapshot.cover.as_deref(),
+            cover_hash: snapshot.cover_hash,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct InfoPanelLayout {
     pub inner: Rect,
+    /// Outer frame around the image; image cells are returned by cover_content_rect.
     pub cover: Rect,
     pub meta: Rect,
     pub progress: Rect,
@@ -144,21 +178,24 @@ pub fn layout(area: Rect, window_width: u16) -> InfoPanelLayout {
     let time_h = if show_time_line { 1 } else { 0 };
     let volume_label_h = if show_volume_label { 1 } else { 0 };
 
-    // Remaining height is for cover + an optional gap below cover.
+    // Remaining height is for the image, its surrounding frame and an optional gap.
     let used_without_cover = CORE_H.saturating_add(time_h).saturating_add(volume_label_h);
-    let mut cover_h = inner.height.saturating_sub(used_without_cover);
-    let use_cover_gap = cover_h > 1;
+    let mut available_cover_h = inner.height.saturating_sub(used_without_cover);
+    let use_cover_gap = available_cover_h > 3;
     if use_cover_gap {
-        cover_h = cover_h.saturating_sub(1);
+        available_cover_h = available_cover_h.saturating_sub(1);
     }
 
-    // Cover should shrink first. Clamp by panel width and keep as low as 0 for tiny windows.
-    let max_cover_h_by_width = inner.width / 2;
-    cover_h = cover_h.min(max_cover_h_by_width);
-    let cover_w = if cover_h == 0 {
-        0
+    // Fit the square IMAGE first (2 columns = 1 row), then wrap it in one cell
+    // on each side. Reserving this frame even when hidden keeps toggles stable.
+    let image_h = available_cover_h
+        .saturating_sub(2)
+        .min(inner.width.saturating_sub(2) / 2);
+    let (cover_w, cover_h) = if image_h == 0 {
+        // Do not stretch a tiny cover when even a 2x1 image and its frame cannot fit.
+        (0, 0)
     } else {
-        (cover_h.saturating_mul(2)).min(inner.width)
+        (image_h * 2 + 2, image_h + 2)
     };
 
     let stack_h = cover_h
@@ -241,16 +278,12 @@ pub fn layout(area: Rect, window_width: u16) -> InfoPanelLayout {
         time_line,
     }
 }
-/// The content viewport is reserved even when the album border is hidden.
+/// The frame wraps a square image; hiding the border does not resize that image.
 pub fn cover_content_rect(cover: Rect) -> Rect {
-    if cover.width >= 3 && cover.height >= 3 {
-        cover.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
-        })
-    } else {
-        cover
-    }
+    cover.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    })
 }
 
 pub fn heart_cells(meta: Rect, app: &AppState) -> Option<(u16, u16, u16)> {
@@ -295,21 +328,25 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
 
     let l = layout(area, window_width);
 
-    // cover (animated as a whole: content + border)
-    if l.cover.width > 0 && l.cover.height > 0 {
+    // ASCII artwork is exclusively the Off renderer. Halfblocks paints only
+    // prepared colored cells; a missing image leaves this area blank.
+    if l.cover.width > 0
+        && l.cover.height > 0
+        && app.config.graphics_protocol == crate::data::config::GraphicsProtocol::Off
+    {
         let show_border = app.config.album_border;
 
-        if let Some(anim) = app.cover_anim.take() {
+        if let Some(anim) = app.cover_anim.as_ref() {
             let (from_dx, to_dx) = anim.slide_offsets(l.cover.width, app.last_frame);
             let (from_box, from_fg) = cover_box_ascii_for_snapshot(
-                &anim.from,
+                CoverRef::from(&anim.from),
                 l.cover.width,
                 l.cover.height,
                 show_border,
                 app,
             );
             let (to_box, to_fg) = cover_box_ascii_for_snapshot(
-                &anim.to,
+                CoverRef::from(&anim.to),
                 l.cover.width,
                 l.cover.height,
                 show_border,
@@ -332,11 +369,9 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
                 Paragraph::new(composed).style(Style::default().fg(fg)),
                 l.cover,
             );
-            app.cover_anim = Some(anim);
         } else {
-            let snap = CoverSnapshot::from(&app.player.track);
             let (ascii, fg) = cover_box_ascii_for_snapshot(
-                &snap,
+                CoverRef::from(&app.player.track),
                 l.cover.width,
                 l.cover.height,
                 show_border,
@@ -479,11 +514,11 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
 }
 
 fn cover_box_ascii_for_snapshot(
-    snap: &CoverSnapshot,
+    snap: CoverRef<'_>,
     width: u16,
     height: u16,
     show_border: bool,
-    app: &mut AppState,
+    app: &AppState,
 ) -> (String, ratatui::style::Color) {
     if width == 0 || height == 0 {
         return (String::new(), app.theme.color_subtext());
@@ -492,47 +527,33 @@ fn cover_box_ascii_for_snapshot(
     let mut grid: Vec<Vec<char>> = vec![vec![' '; width as usize]; height as usize];
 
     let content = cover_content_rect(Rect::new(0, 0, width, height));
-    let (inner_x, inner_y, inner_w, inner_h) = if content.x > 0 {
-        if show_border {
-            // Border
-            let tl = SOLID_BORDER.top_left.chars().next().unwrap_or(' ');
-            let tr = SOLID_BORDER.top_right.chars().next().unwrap_or(' ');
-            let bl = SOLID_BORDER.bottom_left.chars().next().unwrap_or(' ');
-            let br = SOLID_BORDER.bottom_right.chars().next().unwrap_or(' ');
-            let hch = SOLID_BORDER.horizontal_top.chars().next().unwrap_or(' ');
-            let vl = SOLID_BORDER.vertical_left.chars().next().unwrap_or(' ');
-            let vr = SOLID_BORDER.vertical_right.chars().next().unwrap_or(' ');
+    if show_border {
+        let tl = SOLID_BORDER.top_left.chars().next().unwrap_or(' ');
+        let tr = SOLID_BORDER.top_right.chars().next().unwrap_or(' ');
+        let bl = SOLID_BORDER.bottom_left.chars().next().unwrap_or(' ');
+        let br = SOLID_BORDER.bottom_right.chars().next().unwrap_or(' ');
+        let hch = SOLID_BORDER.horizontal_top.chars().next().unwrap_or(' ');
+        let vl = SOLID_BORDER.vertical_left.chars().next().unwrap_or(' ');
+        let vr = SOLID_BORDER.vertical_right.chars().next().unwrap_or(' ');
 
-            grid[0][0] = tl;
-            grid[0][(width - 1) as usize] = tr;
-            grid[(height - 1) as usize][0] = bl;
-            grid[(height - 1) as usize][(width - 1) as usize] = br;
+        grid[0][0] = tl;
+        grid[0][(width - 1) as usize] = tr;
+        grid[(height - 1) as usize][0] = bl;
+        grid[(height - 1) as usize][(width - 1) as usize] = br;
 
-            for x in 1..(width - 1) {
-                grid[0][x as usize] = hch;
-                grid[(height - 1) as usize][x as usize] = hch;
-            }
-            for y in 1..(height - 1) {
-                grid[y as usize][0] = vl;
-                grid[y as usize][(width - 1) as usize] = vr;
-            }
+        for x in 1..(width - 1) {
+            grid[0][x as usize] = hch;
+            grid[(height - 1) as usize][x as usize] = hch;
         }
+        for y in 1..(height - 1) {
+            grid[y as usize][0] = vl;
+            grid[y as usize][(width - 1) as usize] = vr;
+        }
+    }
 
-        // Always reserve the same inner content area, even when border is hidden.
-        (
-            content.x as usize,
-            content.y as usize,
-            content.width as usize,
-            content.height as usize,
-        )
-    } else {
-        // Too small to reserve padding; render full area.
-        (0usize, 0usize, width as usize, height as usize)
-    };
-
-    let (inner_ascii, fg) = cover_ascii_for_snapshot(snap, inner_w as u16, inner_h as u16, app);
-    let inner_lines = split_lines(&inner_ascii, inner_h);
-    blit_xy(&mut grid, &inner_lines, inner_x as i16, inner_y as i16);
+    let (inner_ascii, fg) = cover_ascii_for_snapshot(snap, content.width, content.height, app);
+    let inner_lines = split_lines(&inner_ascii, content.height as usize);
+    blit_xy(&mut grid, &inner_lines, content.x as i16, content.y as i16);
 
     let mut out = String::with_capacity((width as usize + 1) * height as usize);
     for row in grid {
@@ -542,7 +563,7 @@ fn cover_box_ascii_for_snapshot(
     (out, fg)
 }
 
-fn hash_snapshot_seed(s: &CoverSnapshot) -> u64 {
+fn hash_snapshot_seed(s: CoverRef<'_>) -> u64 {
     let mut h = DefaultHasher::new();
     s.title.hash(&mut h);
     s.artist.hash(&mut h);
@@ -551,12 +572,12 @@ fn hash_snapshot_seed(s: &CoverSnapshot) -> u64 {
 }
 
 fn cover_ascii_for_snapshot(
-    snap: &CoverSnapshot,
+    snap: CoverRef<'_>,
     width: u16,
     height: u16,
-    app: &mut AppState,
+    app: &AppState,
 ) -> (String, ratatui::style::Color) {
-    if let (Some(bytes), Some(hash)) = (snap.cover.as_deref(), snap.cover_hash) {
+    if let (Some(bytes), Some(hash)) = (snap.cover, snap.cover_hash) {
         let key = CoverKey {
             hash,
             width,
@@ -729,4 +750,58 @@ fn compose_left_right_line(left: &str, right: &str, width: usize) -> String {
     let pad = width.saturating_sub(used);
 
     format!("{left_text}{}{right}", " ".repeat(pad))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cover_content_rect, layout};
+    use ratatui::layout::{Constraint, Layout, Rect};
+
+    #[test]
+    fn cover_image_stays_square_in_full_width_and_two_panel_layouts() {
+        for (width, height) in [(80, 24), (120, 24), (120, 40), (200, 50), (51, 13)] {
+            let window = Rect::new(7, 5, width, height);
+            let left = Layout::horizontal([Constraint::Percentage(33), Constraint::Percentage(67)])
+                .split(window)[0];
+            for panel in [left, window] {
+                let info = layout(panel, width);
+                let image = cover_content_rect(info.cover);
+                if info.cover.is_empty() {
+                    assert!(image.is_empty());
+                    continue;
+                }
+                assert_eq!(
+                    image.width,
+                    image.height * 2,
+                    "image={image:?}, panel={panel:?}"
+                );
+                assert_eq!(info.cover.width, image.width + 2);
+                assert_eq!(info.cover.height, image.height + 2);
+                assert_eq!(image.x, info.cover.x + 1);
+                assert_eq!(image.y, info.cover.y + 1);
+                assert_eq!(info.cover.intersection(info.inner), info.cover);
+                let left_gap = info.cover.left() - info.inner.left();
+                let right_gap = info.inner.right() - info.cover.right();
+                assert!(left_gap.abs_diff(right_gap) <= 1);
+                assert!(info.meta.top() >= info.cover.bottom());
+            }
+        }
+    }
+
+    #[test]
+    fn small_cover_space_never_degrades_to_a_non_square_image() {
+        for width in 0..24 {
+            for height in 0..20 {
+                let info = layout(Rect::new(7, 5, width, height), width);
+                let image = cover_content_rect(info.cover);
+                if info.cover.is_empty() {
+                    assert_eq!((info.cover.width, info.cover.height), (0, 0));
+                } else {
+                    assert!(image.height > 0);
+                    assert_eq!(image.width, image.height * 2);
+                    assert_eq!(info.cover.intersection(info.inner), info.cover);
+                }
+            }
+        }
+    }
 }

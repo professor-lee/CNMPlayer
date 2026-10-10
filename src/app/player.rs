@@ -304,12 +304,21 @@ impl AudioPlayer {
         reader: StreamingReader,
         progress_rx: Receiver<(u64, u64)>,
     ) -> Result<()> {
-        let stream_handle = StreamingReaderHandle::from(&reader);
+        struct PendingDecode(Option<StreamingReaderHandle>);
+        impl Drop for PendingDecode {
+            fn drop(&mut self) {
+                if let Some(handle) = self.0.take() {
+                    handle.cancel();
+                }
+            }
+        }
+        let mut pending = PendingDecode(Some(StreamingReaderHandle::from(&reader)));
         let builder = DecoderBuilder::new().with_byte_len(reader.total());
         let f = move || builder.with_data(BufReader::new(reader)).build();
         let decoder = compio::runtime::spawn_blocking(f)
             .await
             .map_err(|_| anyhow::anyhow!("streaming decoder task panicked"))??;
+        let stream_handle = pending.0.take();
         let total_duration = decoder.total_duration();
         let source = EqSource::new(
             decoder,
@@ -318,7 +327,7 @@ impl AudioPlayer {
             self.lufs_meter.clone(),
         );
         self.clear_and_play(source)?;
-        self.stream_handle = Some(stream_handle);
+        self.stream_handle = stream_handle;
         self.total_duration = total_duration;
         self.progress_rx = Some(progress_rx);
         Ok(())

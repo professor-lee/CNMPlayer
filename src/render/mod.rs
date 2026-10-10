@@ -1,6 +1,11 @@
+pub(crate) mod cover_pipeline;
 pub mod cover_renderer;
+pub(crate) mod frame_clock;
 pub mod graphics_overlay;
 #[cfg(feature = "easter-egg")]
 pub mod mascot;
 #[cfg(feature = "easter-egg")]
 pub mod mascot_frames;
+pub(crate) mod motion;
+pub(crate) mod snapshot;
+pub(crate) mod wake;
