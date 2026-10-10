@@ -238,7 +238,6 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `bar_number` | `auto` | `auto`, `16`, `32`, `48`, `64`, `80`, `96` (fullscreen spectrum) |
 | `bar_channels` | `mono` | `stereo`, `mono` |
 | `bar_channel_reverse` | `false` | Draw the right channel on the left (fullscreen spectrum) |
-| `super_smooth_bar` | `false` | "Smooth VU": sub-cell smoothing for the narrow-window LUFS VU meter only; does not change frequency bars |
 | `bars_gap` | `false` | Leave a gap between bars |
 | `ui_fps` | `60` | Defaults come from the embedded template. Positive integer UI submission cap for host and fullscreen, including idle; not clamped to 10–60. Clean frames may be skipped; terminal speed and processing cost determine the actual FPS, which is not guaranteed |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |

@@ -827,11 +827,6 @@ fn render_bar_settings_modal(
         ),
         format!(
             "{}: {}",
-            lang_text(app, "VU 平滑", "Smooth VU"),
-            lang_on_off(app, app.config.super_smooth_bar)
-        ),
-        format!(
-            "{}: {}",
             lang_text(app, "频谱间隔", "Bars Gap"),
             lang_on_off(app, app.config.bars_gap)
         ),

@@ -57,8 +57,6 @@ pub struct Config {
     pub transparent_background: bool,
     pub album_border: bool,
     pub graphics_protocol: GraphicsProtocol,
-    /// Smooth fractional cells for the narrow-window VU meter only.
-    pub super_smooth_bar: bool,
     pub bars_gap: bool,
     pub bar_number: BarNumber,
     pub bar_channels: BarChannels,

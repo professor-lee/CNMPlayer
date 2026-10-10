@@ -710,31 +710,27 @@ async fn handle_action(
                     save_and_sync_host_config(app, host_bridge).await;
                 }
                 1 => {
-                    app.config.super_smooth_bar = !app.config.super_smooth_bar;
-                    save_and_sync_host_config(app, host_bridge).await;
-                }
-                2 => {
                     app.config.bars_gap = !app.config.bars_gap;
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                3 => {
+                2 => {
                     app.config.bar_number = cycle_bar_number(app.config.bar_number, 1);
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                4 => {
+                3 => {
                     app.config.bar_channels = toggle_bar_channels(app.config.bar_channels);
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                5 => {
+                4 => {
                     app.config.album_border = !app.config.album_border;
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                6 => {
+                5 => {
                     app.config.audio_quality =
                         app.config.audio_quality.cycle(1, app.vip_audio_unlocked);
                     save_and_sync_host_config(app, host_bridge).await;
                 }
-                7 => {
+                6 => {
                     app.config.playback_memory = !app.config.playback_memory;
                     save_and_sync_host_config(app, host_bridge).await;
                 }
@@ -787,7 +783,7 @@ async fn handle_action(
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, -1);
             } else if app.overlay == Overlay::BarSettingsModal {
-                let count = 8;
+                let count = 7;
                 if app.bar_settings_selected == 0 {
                     app.bar_settings_selected = count - 1;
                 } else {
@@ -826,7 +822,7 @@ async fn handle_action(
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, 1);
             } else if app.overlay == Overlay::BarSettingsModal {
-                let count = 8;
+                let count = 7;
                 app.bar_settings_selected = (app.bar_settings_selected + 1) % count;
             } else if app.overlay == Overlay::LyricsSettingsModal {
                 let count = 3;
@@ -859,31 +855,27 @@ async fn handle_action(
                         save_and_sync_host_config(app, host_bridge).await;
                     }
                     1 => {
-                        app.config.super_smooth_bar = !app.config.super_smooth_bar;
-                        save_and_sync_host_config(app, host_bridge).await;
-                    }
-                    2 => {
                         app.config.bars_gap = !app.config.bars_gap;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    3 => {
+                    2 => {
                         app.config.bar_number = cycle_bar_number(app.config.bar_number, -1);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    4 => {
+                    3 => {
                         app.config.bar_channels = toggle_bar_channels(app.config.bar_channels);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    5 => {
+                    4 => {
                         app.config.album_border = !app.config.album_border;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    6 => {
+                    5 => {
                         app.config.audio_quality =
                             app.config.audio_quality.cycle(-1, app.vip_audio_unlocked);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    7 => {
+                    6 => {
                         app.config.playback_memory = !app.config.playback_memory;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
@@ -914,31 +906,27 @@ async fn handle_action(
                         save_and_sync_host_config(app, host_bridge).await;
                     }
                     1 => {
-                        app.config.super_smooth_bar = !app.config.super_smooth_bar;
-                        save_and_sync_host_config(app, host_bridge).await;
-                    }
-                    2 => {
                         app.config.bars_gap = !app.config.bars_gap;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    3 => {
+                    2 => {
                         app.config.bar_number = cycle_bar_number(app.config.bar_number, 1);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    4 => {
+                    3 => {
                         app.config.bar_channels = toggle_bar_channels(app.config.bar_channels);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    5 => {
+                    4 => {
                         app.config.album_border = !app.config.album_border;
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    6 => {
+                    5 => {
                         app.config.audio_quality =
                             app.config.audio_quality.cycle(1, app.vip_audio_unlocked);
                         save_and_sync_host_config(app, host_bridge).await;
                     }
-                    7 => {
+                    6 => {
                         app.config.playback_memory = !app.config.playback_memory;
                         save_and_sync_host_config(app, host_bridge).await;
                     }

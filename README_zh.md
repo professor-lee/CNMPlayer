@@ -238,7 +238,6 @@ sudo apt install -y build-essential cmake pkg-config \
 | `bar_number` | `auto` | `auto`、`16`、`32`、`48`、`64`、`80`、`96`（全屏频谱） |
 | `bar_channels` | `mono` | `stereo`、`mono` |
 | `bar_channel_reverse` | `false` | 左右声道反画（全屏频谱） |
-| `super_smooth_bar` | `false` | 「VU 平滑」：仅控制窄窗 LUFS 音量条的子格平滑，不改变频谱条 |
 | `bars_gap` | `false` | 频谱条之间留出间隔 |
 | `ui_fps` | `60` | 默认值来自内嵌模板；正整数，控制主程序与全屏页（包括空闲时）的 UI 提交上限，不再限制为 10–60。无变化的帧可跳过；实际 FPS 取决于终端速度与处理开销，不保证达到设定值 |
 | `cache.path` | 未设置 | 缓存目录覆盖（默认用系统缓存目录） |

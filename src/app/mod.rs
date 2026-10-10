@@ -105,7 +105,7 @@ const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
 pub(crate) const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
 const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 const SETTINGS_ROOT_ITEMS: usize = 13;
-const SETTINGS_PLAYBACK_ITEMS: usize = 8;
+const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 const SETTINGS_LYRICS_ITEMS: usize = 3;
 pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 22;
@@ -7427,36 +7427,32 @@ impl App {
                 self.persist_config();
             }
             1 => {
-                self.config.super_smooth_bar = !self.config.super_smooth_bar;
-                self.persist_config();
-            }
-            2 => {
                 self.config.bars_gap = !self.config.bars_gap;
                 self.persist_config();
             }
-            3 => {
+            2 => {
                 self.config.bar_number = cycle_bar_number(self.config.bar_number, delta);
                 self.persist_config();
             }
-            4 => {
+            3 => {
                 self.config.bar_channels = match self.config.bar_channels {
                     BarChannels::Mono => BarChannels::Stereo,
                     BarChannels::Stereo => BarChannels::Mono,
                 };
                 self.persist_config();
             }
-            5 => {
+            4 => {
                 self.config.album_border = !self.config.album_border;
                 self.persist_config();
             }
-            6 => {
+            5 => {
                 let next = self
                     .config
                     .audio_quality
                     .cycle(delta, self.vip_audio_unlocked);
                 self.set_audio_quality(next);
             }
-            7 => {
+            6 => {
                 self.config.playback_memory = !self.config.playback_memory;
                 self.persist_config();
                 if self.config.playback_memory {

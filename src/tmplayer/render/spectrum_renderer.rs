@@ -198,7 +198,7 @@ fn sample_val(data: &[f32], data_len: usize, draw_len: usize, i: usize) -> f32 {
     data.get(idx).copied().unwrap_or(0.0).clamp(0.0, 1.0)
 }
 
-/// Cava uses eight subcell levels; the VU meter keeps its own legacy helpers.
+/// Cava uses eight subcell levels; the VU meter uses its fractional-cell glyph helper.
 fn spectrum_char(units: usize, y: usize) -> char {
     const GLYPHS: [char; 8] = ['█', '▁', '▂', '▃', '▄', '▅', '▆', '▇'];
     let full = units / 8;
@@ -209,26 +209,6 @@ fn spectrum_char(units: usize, y: usize) -> char {
         GLYPHS[partial]
     } else {
         ' '
-    }
-}
-
-pub(crate) fn density_char(level: usize, height: usize) -> char {
-    // bottom dense, top light
-    if height == 0 {
-        return ' ';
-    }
-    if height == 1 {
-        return '░';
-    }
-    let ratio = level as f32 / height as f32;
-    if ratio < 0.25 {
-        '█'
-    } else if ratio < 0.50 {
-        '▓'
-    } else if ratio < 0.75 {
-        '▒'
-    } else {
-        '░'
     }
 }
 

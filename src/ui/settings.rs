@@ -220,11 +220,6 @@ fn draw_playback_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         ),
         format!(
             "{}: {}",
-            l(app, "VU 平滑", "Smooth VU"),
-            on_off(app, app.config.super_smooth_bar)
-        ),
-        format!(
-            "{}: {}",
             l(app, "频谱间隔", "Bars Gap"),
             on_off(app, app.config.bars_gap)
         ),
