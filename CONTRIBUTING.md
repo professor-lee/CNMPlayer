@@ -52,7 +52,7 @@ sudo pacman -S --needed base-devel cmake pkg-config alsa-lib chafa pipewire open
   must be installed to build, but playback goes through PipeWire and the ALSA
   path is not a supported runtime configuration.
 
-Runtime: PipeWire for audio — the ALSA backend is deprecated, do not test or document it — plus the chafa shared library and an optional `cava` binary for the `bars` visualizer. A Nerd Font is required for playback and navigation icons; the application uses Nerd glyphs directly.
+Runtime: PipeWire for audio — the ALSA backend is deprecated, do not test or document it — plus the chafa shared library. The spectrum visualizers are internal (`bars` is a Rust port of Cava's algorithm), so no external `cava` binary is involved. A Nerd Font is required for playback and navigation icons; the application uses Nerd glyphs directly.
 
 Commands:
 
@@ -65,8 +65,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
 Useful environment variables while developing: `CNMPLAYER_ASSET_DIR` (asset root,
-`~/.config/cnmplayer` by default) and `TMPLAYER_CAVA` (explicit path to the cava
-binary; the name is retained for compatibility).
+`~/.config/cnmplayer` by default).
 
 Cargo features: `default = ["easter-egg"]` — the mascot in the About modal. Build
 with `--no-default-features` to drop it.
@@ -83,11 +82,11 @@ with `--no-default-features` to drop it.
 | `src/tmplayer/` | Embedded fullscreen playback UI, its renderers and audio visualization helpers; playback is owned by the host and configuration uses the shared `Config`. |
 | `ncm-api-rs/` | The `ncm-api` crate vendored from [imsyy/ncm-api-rs](https://github.com/imsyy/ncm-api-rs) as a workspace path dependency. It ships `rustfmt.toml`, `clippy.toml` and `docs/API.md`. |
 | `config/default.toml` | The default configuration template. At startup the app writes and repairs `config/default.toml` under the asset root from it. |
-| `themes/` | TOML color themes: `system`, `latte`, `frappe`, `macchiato`, `mocha`. |
+| `themes/` | 20 built-in TOML color themes (Catppuccin variants, ayu, everforest, monokai, nord, rose pine, solarized, tomorrow, zenburn, zinc and `system`; default `frappe`). |
 | `about/` | Content of the About modal — links, QQ group, braille art. |
 | `assets/`, `tools/` | Mascot source image and the script that regenerates its braille frames. |
 | `.github/` | `workflows/ci.yml`, `workflows/release.yml` and `scripts/aur_sync.sh`. |
-| Root documents | `README.md` / `README_zh.md` (two language variants kept in parallel), `CHANGELOG`-free release notes on the Releases page, `CITATION.cff`, `THIRD_PARTY_NOTICES.md`, `LICENSE` (AGPL-3.0-only). |
+| Root documents | `README.md` / `README_zh.md` (two language variants kept in parallel), `DISCLAIMER.md` / `DISCLAIMER_zh.md`, `CHANGELOG`-free release notes on the Releases page, `CITATION.cff`, `THIRD_PARTY_NOTICES.md`, `LICENSE` (AGPL-3.0-only). |
 
 ## Formatting and CI
 
@@ -143,6 +142,6 @@ A patch that "works on my machine" is not enough for a terminal UI.
   window).
 - **Check both UI languages** (`language = "zh"` / `"en"`) when you add or change
   user-visible strings.
-- **Verify cava-dependent work in both states.** If you touch the spectrum code,
-  test with `cava` installed *and* without it: `bars` is unavailable without
-  cava, and the default visualizer becomes the oscilloscope instead.
+- **The visualizers are internal.** `bars` is a Rust port of Cava's algorithm and
+  needs no external `cava` binary; when you touch the spectrum or the
+  oscilloscope, exercise playing, paused and post-track-change states.

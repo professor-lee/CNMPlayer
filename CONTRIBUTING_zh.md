@@ -38,7 +38,7 @@ sudo pacman -S --needed base-devel cmake pkg-config alsa-lib chafa pipewire open
 - `libclang-dev` 与 `libpipewire-0.3-dev` 是 PipeWire 音频后端在构建期生成绑定所需；
 - `libasound2-dev` / `alsa-lib` **只在构建期需要**：`cpal` 在 Linux 上无条件编译其 ALSA 后端，缺了这个开发包就构建不出来；但播放走 PipeWire，ALSA 路径不属于受支持的运行配置。
 
-运行要求：Linux 上的 PipeWire 音频（ALSA 后端已弃用，不要按它测试或写文档），外加运行时的 chafa 共享库与可选的 `cava` 可执行文件。播放和导航图标要求安装 Nerd Font，程序固定使用 Nerd Font 字形。
+运行要求：Linux 上的 PipeWire 音频（ALSA 后端已弃用，不要按它测试或写文档），外加运行时的 chafa 共享库。频谱可视化全部为内部实现（`bars` 是 Cava 算法的 Rust 移植），不涉及外部 `cava` 可执行文件。播放和导航图标要求安装 Nerd Font，程序固定使用 Nerd Font 字形。
 
 常用命令：
 
@@ -50,7 +50,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-开发时有用的环境变量：`CNMPLAYER_ASSET_DIR`（资产根目录，默认 `~/.config/cnmplayer`）和 `TMPLAYER_CAVA`（显式指定 cava；名称为兼容旧配置而保留）。
+开发时有用的环境变量：`CNMPLAYER_ASSET_DIR`（资产根目录，默认 `~/.config/cnmplayer`）。
 
 Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋，用 `--no-default-features` 可剔除。
 
@@ -66,11 +66,11 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 | `src/tmplayer/` | 内置全屏播放 UI、渲染器与音频可视化辅助模块；播放由主程序负责，配置使用共享 `Config`。 |
 | `ncm-api-rs/` | 以 workspace path 依赖形式 vendored 的 `ncm-api` crate，来自 [imsyy/ncm-api-rs](https://github.com/imsyy/ncm-api-rs)；自带 `rustfmt.toml`、`clippy.toml` 与 `docs/API.md`。 |
 | `config/default.toml` | 默认配置模板。启动时程序会据此在资产根目录下写入并修复 `config/default.toml`。 |
-| `themes/` | TOML 配色主题：`system`、`latte`、`frappe`、`macchiato`、`mocha`。 |
+| `themes/` | 内置 20 款 TOML 配色主题（Catppuccin 各变体、ayu、everforest、monokai、nord、rose pine、solarized、tomorrow、zenburn、zinc 与 `system`；默认 `frappe`）。 |
 | `about/` | About 弹窗的内容 —— 链接、QQ 群、点阵图案。 |
 | `assets/`、`tools/` | 彩蛋形象源图，以及重新生成其点阵帧的脚本。 |
 | `.github/` | `workflows/ci.yml`、`workflows/release.yml` 与 `scripts/aur_sync.sh`。 |
-| 根目录文档 | `README.md` / `README_zh.md`（中英两份并行维护）、`CITATION.cff`、`THIRD_PARTY_NOTICES.md`、`LICENSE`（AGPL-3.0-only）。 |
+| 根目录文档 | `README.md` / `README_zh.md`（中英两份并行维护）、`DISCLAIMER.md` / `DISCLAIMER_zh.md`、`CITATION.cff`、`THIRD_PARTY_NOTICES.md`、`LICENSE`（AGPL-3.0-only）。 |
 
 ## 格式与 CI
 
@@ -105,4 +105,4 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 - **覆盖小窗口阈值。** 主程序内容页低于 README「小窗口模式」一节给出的阈值时会切换为扁平布局；请在边界尺寸上验证，包括 `Terminal too small` 的情况。
 - **改动到的控件要实测键盘路径，有鼠标目标的一并实测鼠标路径**：折叠播放栏的上一首 / 播放暂停 / 下一首、收藏与循环模式按钮，以及进度条都可点击；侧边栏支持滚轮、单击与双击（400 ms 判定窗口）。
 - **新增或修改界面文案时，中英两种界面语言都要检查**（`language = "zh"` / `"en"`）。
-- **涉及 cava 的改动要在装与不装 cava 两种情况下验证。** 若改动了频谱相关代码：没有 cava 时 `bars` 不可用，默认可视化会变成示波器。
+- **可视化全部为内部实现。** `bars` 是 Cava 算法的 Rust 移植，不需要外部 `cava` 可执行文件；改动频谱或示波器时，请在播放、暂停与切歌后都实测一遍。
