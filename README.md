@@ -36,24 +36,24 @@ Playback belongs to the host: streaming with a local cache, queue memory, privat
 
 ## Screenshots
 
-<p align="center">
-	<img src="docs/screenshots/host-home.png" width="420" alt="Host UI: home page">
+<p align="center" width="100%">
+	<img src="docs/screenshots/host-home.png" width="45%" alt="Host UI: home page">
 	&nbsp;
-	<img src="docs/screenshots/host-sidebar.png" width="420" alt="Host UI: home sidebar">
+	<img src="docs/screenshots/host-sidebar.png" width="45%" alt="Host UI: home sidebar">
 	<br><sub>Host UI — home recommendations; sidebar with created / collected playlists</sub>
 </p>
 
-<p align="center">
-	<img src="docs/screenshots/fullscreen-bars.png" width="420" alt="Fullscreen playback page: bars spectrum">
+<p align="center" width="100%">
+	<img src="docs/screenshots/fullscreen-bars.png" width="45%" alt="Fullscreen playback page: bars spectrum">
 	&nbsp;
-	<img src="docs/screenshots/fullscreen-oscilloscope.png" width="420" alt="Fullscreen playback page: oscilloscope waveform">
+	<img src="docs/screenshots/fullscreen-oscilloscope.png" width="45%" alt="Fullscreen playback page: oscilloscope waveform">
 	<br><sub>Fullscreen playback page — <code>bars</code> spectrum; <code>oscilloscope</code> waveform</sub>
 </p>
 
-<p align="center">
-	<img src="docs/screenshots/fullscreen-vector.png" width="420" alt="Fullscreen playback page: vector mode">
+<p align="center" width="100%">
+	<img src="docs/screenshots/fullscreen-vector.png" width="45%" alt="Fullscreen playback page: vector mode">
 	&nbsp;
-	<img src="docs/screenshots/host-search.png" width="420" alt="Host UI: search page">
+	<img src="docs/screenshots/host-search.png" width="45%" alt="Host UI: search page">
 	<br><sub>Fullscreen <code>vector</code> mode; search results for a suffix query</sub>
 </p>
 

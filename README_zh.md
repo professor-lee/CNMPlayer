@@ -36,24 +36,24 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 ## 应用截图
 
-<p align="center">
-	<img src="docs/screenshots/host-home.png" width="420" alt="主程序首页">
+<p align="center" width="100%">
+	<img src="docs/screenshots/host-home.png" width="45%" alt="主程序首页">
 	&nbsp;
-	<img src="docs/screenshots/host-sidebar.png" width="420" alt="首页侧边栏">
+	<img src="docs/screenshots/host-sidebar.png" width="45%" alt="首页侧边栏">
 	<br><sub>主程序首页；侧边栏（用户创建 / 用户收藏歌单）</sub>
 </p>
 
-<p align="center">
-	<img src="docs/screenshots/fullscreen-bars.png" width="420" alt="全屏播放页：bars 频谱">
+<p align="center" width="100%">
+	<img src="docs/screenshots/fullscreen-bars.png" width="45%" alt="全屏播放页：bars 频谱">
 	&nbsp;
-	<img src="docs/screenshots/fullscreen-oscilloscope.png" width="420" alt="全屏播放页：示波器波形">
+	<img src="docs/screenshots/fullscreen-oscilloscope.png" width="45%" alt="全屏播放页：示波器波形">
 	<br><sub>全屏播放页——<code>bars</code> 频谱；<code>oscilloscope</code> 示波器波形</sub>
 </p>
 
-<p align="center">
-	<img src="docs/screenshots/fullscreen-vector.png" width="420" alt="全屏播放页：矢量模式">
+<p align="center" width="100%">
+	<img src="docs/screenshots/fullscreen-vector.png" width="45%" alt="全屏播放页：矢量模式">
 	&nbsp;
-	<img src="docs/screenshots/host-search.png" width="420" alt="主程序搜索页">
+	<img src="docs/screenshots/host-search.png" width="45%" alt="主程序搜索页">
 	<br><sub>全屏 <code>vector</code> 矢量模式；带后缀的搜索结果</sub>
 </p>
 
