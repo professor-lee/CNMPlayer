@@ -1,5 +1,7 @@
-use crate::app::controllers::SearchController;
-use crate::app::{ARTIST_CARD_ROWS, App, SearchItemKind};
+use crate::app::search_controller::SearchController;
+use crate::app::search_controller::ARTIST_CARD_ROWS;
+use crate::app::App;
+use crate::app::search_controller::SearchItemKind;
 use crate::data::config::Language;
 use crate::data::icons::UiIcons;
 use crate::ui::page_lyrics;
@@ -139,7 +141,7 @@ fn draw_result_panel(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         // 命中区覆盖条目可见部分：被裁切的卡片仍能点到露出来的那几行。
         app.push_search_item_hit(
-            crate::app::HitRect {
+            crate::app::input_controller::HitRect {
                 x: visible_rect.x,
                 y: visible_rect.y,
                 width: visible_rect.width,
@@ -432,7 +434,7 @@ fn render_search_row(
         ));
         spans.push(Span::styled(" ", row_style));
         app.push_search_item_download_hit(
-            crate::app::HitRect {
+            crate::app::input_controller::HitRect {
                 x: icon_x,
                 y: row.y,
                 width: 1,
@@ -480,8 +482,8 @@ fn clip_to_display_width(text: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::CoverFetchState;
-    use crate::app::SearchItem;
+    use crate::app::cover_state::CoverFetchState;
+    use crate::app::search_controller::SearchItem;
 
     fn item(kind: SearchItemKind, label: &str) -> SearchItem {
         SearchItem {

@@ -2375,7 +2375,7 @@ mod tests {
     fn download_path_edit_paints_only_the_value_area() {
         let mut app = state(Overlay::DownloadSettingsModal);
         app.download_root = Some(std::path::PathBuf::from("/tmp/cnmplayer"));
-        app.download_path_edit = Some(crate::app::DownloadPathEdit {
+        app.download_path_edit = Some(crate::app::settings_controller::DownloadPathEdit {
             buffer: "/tmp/cnmplayer".to_string(),
             cursor: 5,
             window_col: 0,

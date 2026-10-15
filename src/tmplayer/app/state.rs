@@ -1,4 +1,4 @@
-use crate::app::SIDEBAR_ANIM_DURATION;
+use crate::app::sidebar::SIDEBAR_ANIM_DURATION;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
 use crate::render::motion::{Curve, Transition};
@@ -238,7 +238,7 @@ pub struct AppState {
     /// 「下载设置」页的选中行 / 待确认态 / 路径行编辑状态。
     pub download_settings_selected: usize,
     pub download_reset_armed: bool,
-    pub download_path_edit: Option<crate::app::DownloadPathEdit>,
+    pub download_path_edit: Option<crate::app::settings_controller::DownloadPathEdit>,
     /// 解析后的下载目录（`None` = 不可用，设置页除路径行外全部灰置）。
     pub download_root: Option<PathBuf>,
 

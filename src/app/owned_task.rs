@@ -1,3 +1,13 @@
+
+pub fn peek_shared_future<T>(cover_bytes: &Option<SharedTask<T>>) -> Option<&T> {
+    cover_bytes.as_ref()?.peek()?.as_ref()
+}
+
+/// 句柄不在 `Option` 里时的取值变体。
+pub(super) fn peek_shared<T>(fut: &SharedTask<T>) -> Option<&T> {
+    fut.peek()?.as_ref()
+}
+
 use crate::render::wake::WakeSignal;
 use compio::runtime::JoinHandle;
 use futures::{FutureExt, future::Shared};

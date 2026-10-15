@@ -1,7 +1,362 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginMethod {
+    Qr,
+    Username,
+    Phone,
+}
+
+pub struct LoginState {
+    pub method: LoginMethod,
+    pub focus_index: usize,
+    pub username: String,
+    pub password: String,
+    pub phone: String,
+    pub captcha: String,
+    pub qr_key: String,
+    pub qr_url: String,
+    pub status_line: String,
+}
+
+impl Default for LoginState {
+    fn default() -> Self {
+        Self {
+            method: LoginMethod::Qr,
+            focus_index: 0,
+            username: String::new(),
+            password: String::new(),
+            phone: String::new(),
+            captcha: String::new(),
+            qr_key: String::new(),
+            qr_url: String::new(),
+            status_line: "按 F1 刷新二维码后扫码登录".to_string(),
+        }
+    }
+}
+
+impl LoginState {
+    pub fn set_method(&mut self, method: LoginMethod) {
+        if self.method != method {
+            self.method = method;
+            self.focus_index = 0;
+        }
+    }
+
+    pub fn field_count(&self) -> usize {
+        match self.method {
+            LoginMethod::Qr => 2,
+            LoginMethod::Username => 3,
+            LoginMethod::Phone => 4,
+        }
+    }
+
+    pub fn next_focus(&mut self) {
+        let total = self.field_count();
+        if total == 0 {
+            return;
+        }
+        self.focus_index = (self.focus_index + 1) % total;
+    }
+
+    pub fn prev_focus(&mut self) {
+        let total = self.field_count();
+        if total == 0 {
+            return;
+        }
+        self.focus_index = if self.focus_index == 0 {
+            total - 1
+        } else {
+            self.focus_index - 1
+        };
+    }
+
+    pub(crate) fn is_input_focused(&self) -> bool {
+        match self.method {
+            LoginMethod::Qr => false,
+            LoginMethod::Username => self.focus_index <= 1,
+            LoginMethod::Phone => self.focus_index <= 1,
+        }
+    }
+
+    pub(crate) fn active_input_mut(&mut self) -> Option<&mut String> {
+        match self.method {
+            LoginMethod::Qr => None,
+            LoginMethod::Username => match self.focus_index {
+                0 => Some(&mut self.username),
+                1 => Some(&mut self.password),
+                _ => None,
+            },
+            LoginMethod::Phone => match self.focus_index {
+                0 => Some(&mut self.phone),
+                1 => Some(&mut self.captcha),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn push_char(&mut self, ch: char) {
+        if ch.is_control() || !self.is_input_focused() {
+            return;
+        }
+        if let Some(value) = self.active_input_mut()
+            && value.chars().count() < MAX_INPUT_LEN
+        {
+            value.push(ch);
+        }
+    }
+
+    pub fn pop_char(&mut self) {
+        if !self.is_input_focused() {
+            return;
+        }
+        if let Some(value) = self.active_input_mut() {
+            value.pop();
+        }
+    }
+}
+
+pub(crate) fn extract_qr_key(response: &ApiResponse) -> String {
+    for pointer in ["/data/unikey", "/data/uniKey", "/unikey", "/uniKey"] {
+        if let Some(value) = response
+            .body
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            && !value.trim().is_empty()
+        {
+            return value.to_string();
+        }
+    }
+    String::new()
+}
+
+pub(crate) fn extract_qr_url(response: &ApiResponse) -> String {
+    for pointer in ["/data/qrurl", "/data/qrUrl", "/qrurl", "/qrUrl"] {
+        if let Some(value) = response
+            .body
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            && !value.trim().is_empty()
+        {
+            return value.to_string();
+        }
+    }
+    String::new()
+}
+
+/// 账号档案：uid / 昵称 /「我喜欢的音乐」歌单 id。
+#[derive(Clone)]
+pub(crate) struct AccountProfile {
+    pub(crate) uid: String,
+    pub(crate) name: Option<String>,
+    pub(crate) liked_playlist_id: Option<String>,
+}
+
+/// 当前账号档案：`user/account`，失败时回退 `login/status`。
+pub(crate) async fn fetch_account_profile(api: &mut ApiState, lang: Language) -> Result<AccountProfile> {
+    let account = match api.user_account().await {
+        Ok(response) => response,
+        Err(_) => api.login_status().await?,
+    };
+    let code = response_code(&account);
+    if code != 200 {
+        return Err(anyhow!(
+            "{}({}): {}",
+            lang_text(lang, "账号信息请求失败", "Failed to fetch account profile"),
+            code,
+            response_message(&account)
+        ));
+    }
+
+    let uid = extract_current_user_id(&account).ok_or_else(|| {
+        anyhow!(lang_text(
+            lang,
+            "未找到当前用户 ID",
+            "Current user id not found"
+        ))
+    })?;
+
+    Ok(AccountProfile {
+        uid,
+        name: extract_current_user_name(&account),
+        liked_playlist_id: extract_liked_playlist_id(&account),
+    })
+}
+
+/// 会员音质权限：先查 `vip/info/v2`，未命中再回退 `vip/info`。
+pub(crate) async fn fetch_vip_unlocked(api: &mut ApiState) -> bool {
+    let mut unlocked = false;
+
+    if let Ok(response) = api.vip_info_v2().await {
+        unlocked = response_indicates_vip(&response);
+    }
+
+    if !unlocked && let Ok(response) = api.vip_info().await {
+        unlocked = response_indicates_vip(&response);
+    }
+
+    unlocked
+}
+
+/// 扫码登录二维码：key 与二维码链接。
+pub(crate) struct QrLoginCode {
+    pub(crate) key: String,
+    pub(crate) url: String,
+}
+
+pub(crate) async fn fetch_qr_login_code(api: &mut ApiState, lang: Language) -> Result<QrLoginCode> {
+    let key_resp = api
+        .login_qr_key()
+        .await
+        .with_context(|| lang_text(lang, "二维码 key 获取失败", "Failed to fetch QR login key"))?;
+
+    let key = extract_qr_key(&key_resp);
+    if key.is_empty() {
+        bail!(lang_text(
+            lang,
+            "二维码 key 为空，请重试",
+            "Empty QR login key, please retry"
+        ));
+    }
+
+    let qr_resp = api
+        .login_qr_create(&key)
+        .await
+        .with_context(|| lang_text(lang, "二维码创建失败", "Failed to create QR login code"))?;
+
+    Ok(QrLoginCode {
+        key,
+        url: extract_qr_url(&qr_resp),
+    })
+}
+
+pub(crate) fn extract_current_user_id(response: &ApiResponse) -> Option<String> {
+    for pointer in [
+        "/profile/userId",
+        "/data/profile/userId",
+        "/account/id",
+        "/data/account/id",
+    ] {
+        if let Some(value) = response.body.pointer(pointer)
+            && let Some(id) = parse_value_as_string(Some(value))
+            && !id.trim().is_empty()
+        {
+            return Some(id);
+        }
+    }
+
+    None
+}
+
+pub(crate) fn extract_liked_playlist_id(response: &ApiResponse) -> Option<String> {
+    for pointer in [
+        "/profile/playlistId",
+        "/data/profile/playlistId",
+        "/profile/likesPlaylistId",
+        "/data/profile/likesPlaylistId",
+    ] {
+        if let Some(value) = response.body.pointer(pointer)
+            && let Some(id) = parse_value_as_string(Some(value))
+            && !id.trim().is_empty()
+        {
+            return Some(id);
+        }
+    }
+
+    None
+}
+
+pub(crate) fn extract_current_user_name(response: &ApiResponse) -> Option<String> {
+    for pointer in [
+        "/profile/nickname",
+        "/data/profile/nickname",
+        "/account/userName",
+        "/data/account/userName",
+    ] {
+        if let Some(name) = response
+            .body
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+        {
+            let name = name.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+pub(crate) fn response_indicates_vip(response: &ApiResponse) -> bool {
+    let code = response
+        .body
+        .get("code")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(response.status);
+    if code != 200 {
+        return false;
+    }
+
+    let root = response.body.get("data").unwrap_or(&response.body);
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    for pointer in [
+        "/redVipLevel",
+        "/redplusLevel",
+        "/musicPackage/vipCode",
+        "/associator/vipCode",
+        "/musicVipLevel",
+    ] {
+        if root
+            .pointer(pointer)
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            > 0
+        {
+            return true;
+        }
+    }
+
+    for pointer in [
+        "/vipStatus",
+        "/musicPackage/isSign",
+        "/associator/isSign",
+        "/isVip",
+    ] {
+        if root
+            .pointer(pointer)
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+
+    let music_expire = root
+        .pointer("/musicPackage/expireTime")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    if music_expire > now_ms {
+        return true;
+    }
+
+    let associator_expire = root
+        .pointer("/associator/expireTime")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    if associator_expire > now_ms {
+        return true;
+    }
+
+    false
+}
+
 impl App {
-    pub(super) async fn handle_login_key(&mut self, key: KeyEvent) {
+    pub(crate) async fn handle_login_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::F(1) => {
                 self.login.set_method(LoginMethod::Qr);
@@ -33,17 +388,17 @@ impl App {
         }
     }
 
-    pub(super) async fn refresh_vip_audio_access(&mut self) {
+    pub(crate) async fn refresh_vip_audio_access(&mut self) {
         let unlocked = fetch_vip_unlocked(&mut self.api).await;
         self.apply_vip_audio_access(unlocked);
     }
 
-    pub(super) fn apply_vip_audio_access(&mut self, unlocked: bool) {
+    pub(crate) fn apply_vip_audio_access(&mut self, unlocked: bool) {
         self.vip_audio_unlocked = unlocked;
         self.set_audio_quality(self.config.audio_quality);
     }
 
-    pub(super) fn set_audio_quality(&mut self, quality: AudioQuality) {
+    pub(crate) fn set_audio_quality(&mut self, quality: AudioQuality) {
         let clamped = quality.clamp_for_vip(self.vip_audio_unlocked);
         if self.config.audio_quality != clamped {
             self.config.audio_quality = clamped;
@@ -51,7 +406,7 @@ impl App {
         }
     }
 
-    pub(super) async fn logout_to_login(&mut self) {
+    pub(crate) async fn logout_to_login(&mut self) {
         self.downloads.pending_intents.invalidate_session();
         self.close_overlay();
         self.page = Page::Login;
@@ -99,7 +454,7 @@ impl App {
         self.refresh_qr_login().await;
     }
 
-    pub(super) async fn submit_login_action(&mut self) {
+    pub(crate) async fn submit_login_action(&mut self) {
         match self.login.method {
             LoginMethod::Qr => {
                 if self.login.focus_index == 0 {
@@ -120,7 +475,7 @@ impl App {
         }
     }
 
-    pub(super) async fn refresh_qr_login(&mut self) {
+    pub(crate) async fn refresh_qr_login(&mut self) {
         self.qr_last_poll_at = None;
 
         match fetch_qr_login_code(&mut self.api, self.config.language).await {
@@ -130,7 +485,7 @@ impl App {
     }
 
     /// 应用一个刚拿到的登录二维码（手动刷新与启动初始化共用）。
-    pub(super) fn apply_qr_login_code(&mut self, code: QrLoginCode) {
+    pub(crate) fn apply_qr_login_code(&mut self, code: QrLoginCode) {
         self.login.qr_key = code.key;
         self.login.qr_url = code.url.clone();
         self.login.status_line = if code.url.is_empty() {
@@ -140,7 +495,7 @@ impl App {
         };
     }
 
-    pub(super) async fn check_qr_status_and_login(&mut self) {
+    pub(crate) async fn check_qr_status_and_login(&mut self) {
         if self.login.qr_key.trim().is_empty() {
             self.login.status_line = "请先按 Enter 刷新二维码".to_string();
             return;
@@ -170,7 +525,7 @@ impl App {
         }
     }
 
-    pub(super) async fn submit_username_login(&mut self) {
+    pub(crate) async fn submit_username_login(&mut self) {
         let username = self.login.username.trim().to_string();
         if username.is_empty() || self.login.password.trim().is_empty() {
             self.login.status_line = "请填写用户名和密码".to_string();
@@ -198,7 +553,7 @@ impl App {
         self.login.status_line = format!("登录失败({}): {}", code, response_message(&response));
     }
 
-    pub(super) async fn send_phone_captcha(&mut self) {
+    pub(crate) async fn send_phone_captcha(&mut self) {
         let phone = self.login.phone.trim().to_string();
         if phone.is_empty() {
             self.login.status_line = "请输入手机号".to_string();
@@ -222,7 +577,7 @@ impl App {
         self.login.status_line = format!("发送失败({}): {}", code, response_message(&response));
     }
 
-    pub(super) async fn submit_phone_login(&mut self) {
+    pub(crate) async fn submit_phone_login(&mut self) {
         let phone = self.login.phone.trim().to_string();
         let captcha = self.login.captcha.trim().to_string();
 
@@ -252,7 +607,7 @@ impl App {
         self.login.status_line = format!("登录失败({}): {}", code, response_message(&response));
     }
 
-    pub(super) async fn resolve_current_user_id(&mut self) -> Result<String> {
+    pub(crate) async fn resolve_current_user_id(&mut self) -> Result<String> {
         if let Some(uid) = self.browse.home_sidebar.user_id.as_ref() {
             return Ok(uid.clone());
         }
@@ -263,7 +618,7 @@ impl App {
     }
 
     /// 应用账号档案（侧边栏用户名 / uid / 我喜欢歌单 id）。
-    pub(super) fn apply_account_profile(&mut self, profile: AccountProfile) {
+    pub(crate) fn apply_account_profile(&mut self, profile: AccountProfile) {
         self.browse.home_sidebar.user_id = Some(profile.uid);
         self.browse.home_sidebar.liked_playlist_id = profile.liked_playlist_id;
         if let Some(name) = profile.name {
@@ -271,7 +626,7 @@ impl App {
         }
     }
 
-    pub(super) async fn mark_login_success(&mut self, text: &str) {
+    pub(crate) async fn mark_login_success(&mut self, text: &str) {
         self.session_cookie = self.api.session_cookie().map(|value| value.to_string());
         if let Some(cookie) = self.session_cookie.as_deref() {
             let cookie = cookie.to_string();

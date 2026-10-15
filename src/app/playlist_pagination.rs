@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 /// Browsing and playback share one source-bound cursor and one cancellable request.
 #[derive(Clone)]
-pub(super) struct PlaylistPagination(Rc<RefCell<PaginationState>>);
+pub(crate) struct PlaylistPagination(Rc<RefCell<PaginationState>>);
 
 struct PaginationState {
     cursor: PlaylistCursor,

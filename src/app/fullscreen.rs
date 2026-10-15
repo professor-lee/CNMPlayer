@@ -1,5 +1,30 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+pub struct FullscreenPlaybackSnapshot {
+    pub queue: Vec<PlaybackTrack>,
+    pub playlist_cover: Option<Vec<u8>>,
+    pub current_index: Option<usize>,
+    pub now_playing: Option<PlaybackTrack>,
+    pub now_playing_liked: bool,
+    pub state: PlaybackRuntimeState,
+    pub repeat_mode: PlaybackRepeatMode,
+    pub position: Duration,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FullscreenRuntimeSnapshot {
+    pub current_index: Option<usize>,
+    pub now_playing_liked: bool,
+    pub state: PlaybackRuntimeState,
+    pub repeat_mode: PlaybackRepeatMode,
+    pub position: Duration,
+    pub volume: f32,
+    pub seeking: bool,
+    /// 当前播放歌曲的下载图标状态；`None` = 下载不可用或没有播放中的歌曲。
+    pub download: Option<DownloadState>,
+}
+
 impl App {
     pub async fn fullscreen_tick_playback(&mut self) {
         self.tick_audio().await;

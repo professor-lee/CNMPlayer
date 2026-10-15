@@ -1251,7 +1251,7 @@ fn begin_download_path_edit(app: &mut AppState) {
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| app.download_display_path());
-    app.download_path_edit = Some(crate::app::DownloadPathEdit {
+    app.download_path_edit = Some(crate::app::settings_controller::DownloadPathEdit {
         cursor: current.chars().count(),
         buffer: current,
         window_col: 0,

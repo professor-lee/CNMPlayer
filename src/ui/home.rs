@@ -1,4 +1,6 @@
-use crate::app::{App, HomeSidebarHit, HomeSidebarSection};
+use crate::app::App;
+use crate::app::sidebar::HomeSidebarHit;
+use crate::app::sidebar::HomeSidebarSection;
 use crate::data::config::Language;
 use crate::ui::page_lyrics;
 use crate::ui::player_bar;
@@ -127,7 +129,7 @@ fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         app.push_home_tile_hit(
-            crate::app::HitRect {
+            crate::app::input_controller::HitRect {
                 x: rect.x,
                 y: rect.y,
                 width: rect.width,
@@ -291,7 +293,7 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     frame.render_widget(Clear, sidebar);
 
-    app.set_home_sidebar_panel_hit(Some(crate::app::HitRect {
+    app.set_home_sidebar_panel_hit(Some(crate::app::input_controller::HitRect {
         x: sidebar.x,
         y: sidebar.y,
         width: sidebar.width,
@@ -414,7 +416,7 @@ fn draw_home_sidebar_section(
     app: &mut App,
     area: Rect,
     title: &str,
-    items: &[crate::app::HomeSidebarPlaylist],
+    items: &[crate::app::sidebar::HomeSidebarPlaylist],
     section: HomeSidebarSection,
 ) {
     if area.width < 6 || area.height < 3 {
@@ -423,7 +425,7 @@ fn draw_home_sidebar_section(
 
     // 整块分区都要能接住滚轮：列表短时下方空白处也属于该分区。
     app.push_home_sidebar_section_hit(
-        crate::app::HitRect {
+        crate::app::input_controller::HitRect {
             x: area.x,
             y: area.y,
             width: area.width,
@@ -547,7 +549,7 @@ fn draw_home_sidebar_section(
             let is_focused = section_focused && idx == app.browse.home_sidebar.focused_index;
 
             app.push_home_sidebar_playlist_hit(
-                crate::app::HitRect {
+                crate::app::input_controller::HitRect {
                     x: inner.x,
                     y: inner.y + visual_idx as u16,
                     width: inner.width,

@@ -255,7 +255,7 @@ fn draw_playlist_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         app.push_playlist_track_hit(
-            crate::app::HitRect {
+            crate::app::input_controller::HitRect {
                 x: row.x,
                 y: row.y,
                 width: row.width,
@@ -357,7 +357,7 @@ fn draw_playlist_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
             spans.push(Span::styled(" ", style));
             app.push_playlist_track_download_hit(
-                crate::app::HitRect {
+                crate::app::input_controller::HitRect {
                     x: icon_x,
                     y: row.y,
                     width: 1,
