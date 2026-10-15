@@ -1,4 +1,3 @@
-
 pub fn peek_shared_future<T>(cover_bytes: &Option<SharedTask<T>>) -> Option<&T> {
     cover_bytes.as_ref()?.peek()?.as_ref()
 }

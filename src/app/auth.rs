@@ -153,7 +153,10 @@ pub(crate) struct AccountProfile {
 }
 
 /// 当前账号档案：`user/account`，失败时回退 `login/status`。
-pub(crate) async fn fetch_account_profile(api: &mut ApiState, lang: Language) -> Result<AccountProfile> {
+pub(crate) async fn fetch_account_profile(
+    api: &mut ApiState,
+    lang: Language,
+) -> Result<AccountProfile> {
     let account = match api.user_account().await {
         Ok(response) => response,
         Err(_) => api.login_status().await?,

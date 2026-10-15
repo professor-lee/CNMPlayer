@@ -7,9 +7,11 @@ pub(crate) type PlaylistFetchFuture = SharedTask<Result<PlaylistFetch, String>>;
 pub(crate) type PlaylistPageFetchFuture = SharedTask<Result<PlaylistPageFetch, String>>;
 
 /// 装箱后的任务体（`spawn_shared` 的入参类型）。
-pub(crate) type PlaylistFetchTask = Pin<Box<dyn Future<Output = Option<Result<PlaylistFetch, String>>>>>;
+pub(crate) type PlaylistFetchTask =
+    Pin<Box<dyn Future<Output = Option<Result<PlaylistFetch, String>>>>>;
 
-pub(crate) type PlaylistPageTask = Pin<Box<dyn Future<Output = Option<Result<PlaylistPageFetch, String>>>>>;
+pub(crate) type PlaylistPageTask =
+    Pin<Box<dyn Future<Output = Option<Result<PlaylistPageFetch, String>>>>>;
 
 #[derive(Clone)]
 pub(crate) struct PlaylistPageFetch {

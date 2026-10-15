@@ -31,7 +31,11 @@ pub(crate) async fn fetch_liked_refresh(
 /// 收藏写入请求。成功 `Ok(())`；失败带可展示的原因（接口错误码或传输错误）。
 ///
 /// 返回 `String` 而非 `anyhow::Error`：结果要跨 future 边界搬运，需 `Clone`。
-pub(crate) async fn like_song_request(mut api: ApiState, song_id: String, target: bool) -> Result<(), String> {
+pub(crate) async fn like_song_request(
+    mut api: ApiState,
+    song_id: String,
+    target: bool,
+) -> Result<(), String> {
     match api.like_song(&song_id, target).await {
         Ok(response) => {
             let code = response
@@ -50,7 +54,10 @@ pub(crate) async fn like_song_request(mut api: ApiState, song_id: String, target
 }
 
 /// 服务端收藏态确认请求（切歌后核对账号里的真实状态）。
-pub(crate) async fn song_like_check_request(mut api: ApiState, song_id: String) -> Result<bool, ()> {
+pub(crate) async fn song_like_check_request(
+    mut api: ApiState,
+    song_id: String,
+) -> Result<bool, ()> {
     let Ok(song_id_num) = song_id.parse::<u64>() else {
         return Err(());
     };

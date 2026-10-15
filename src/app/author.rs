@@ -5,7 +5,8 @@ pub(crate) const ARTIST_ALBUM_PAGE_SIZE: usize = 60;
 pub(crate) type AuthorFetchFuture = SharedTask<Result<AuthorFetch, String>>;
 
 /// 装箱后的任务体（`spawn_shared` 的入参类型）。
-pub(crate) type AuthorFetchTask = Pin<Box<dyn Future<Output = Option<Result<AuthorFetch, String>>>>>;
+pub(crate) type AuthorFetchTask =
+    Pin<Box<dyn Future<Output = Option<Result<AuthorFetch, String>>>>>;
 
 /// 作者页四个接口的原始回包（`None` = 该请求失败）；发行物请求会先完成全部分页。
 ///

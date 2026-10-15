@@ -31,7 +31,10 @@ pub(crate) fn playlist_download_rows(
 }
 
 /// 搜索页同理：只有单曲行有图标，且不落专辑子文件夹。
-pub(crate) fn search_download_rows(results: &[SearchItem], root: Option<&Path>) -> Vec<Option<DownloadRow>> {
+pub(crate) fn search_download_rows(
+    results: &[SearchItem],
+    root: Option<&Path>,
+) -> Vec<Option<DownloadRow>> {
     let Some(root) = root else {
         return vec![None; results.len()];
     };

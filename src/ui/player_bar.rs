@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::app::input_controller::HitRect;
-use crate::app::playback_controller::PlaybackRuntimeState;
 use crate::app::input_controller::PlayerBarHitTargets;
+use crate::app::playback_controller::PlaybackRuntimeState;
 use crate::data::icons::UiIcons;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};

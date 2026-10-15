@@ -439,7 +439,11 @@ impl App {
         }
     }
 
-    pub(crate) async fn enrich_track_metadata(&mut self, track: &mut PlaybackTrack, allow_network: bool) {
+    pub(crate) async fn enrich_track_metadata(
+        &mut self,
+        track: &mut PlaybackTrack,
+        allow_network: bool,
+    ) {
         // Queue switches hydrate through the cover worker after the new track is
         // installed. Neither disk IO nor image decoding delays the transition.
         if allow_network

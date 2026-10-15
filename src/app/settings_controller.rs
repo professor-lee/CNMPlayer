@@ -57,7 +57,12 @@ impl App {
     /// 设置弹窗内的鼠标点击：单击聚焦该行，400ms 内再点同一行等同 Enter。
     ///
     /// 弹窗盖住整页，未命中行的点击由调用方直接丢弃（不穿透到底层页面）。
-    pub(crate) async fn handle_settings_modal_click(&mut self, overlay: Overlay, col: u16, row: u16) {
+    pub(crate) async fn handle_settings_modal_click(
+        &mut self,
+        overlay: Overlay,
+        col: u16,
+        row: u16,
+    ) {
         let Some((_, index)) = self
             .settings
             .item_hits
@@ -795,8 +800,6 @@ impl App {
         }
     }
 }
-
-
 
 #[derive(Default)]
 pub(crate) struct SettingsController {

@@ -76,7 +76,8 @@ pub enum SearchScope {
 
 impl SearchScope {
     /// 带后缀的类型；`Mixed` 无后缀，不在此表。
-    pub(crate) const SUFFIXED: [SearchScope; 4] = [Self::Single, Self::Album, Self::Author, Self::Playlist];
+    pub(crate) const SUFFIXED: [SearchScope; 4] =
+        [Self::Single, Self::Album, Self::Author, Self::Playlist];
 
     pub(crate) fn suffix(self) -> &'static str {
         match self {
@@ -916,8 +917,6 @@ impl App {
         Ok(added)
     }
 }
-
-
 
 /// 搜索页控制器：持有结果、焦点、分页游标和渲染布局索引。
 pub(crate) struct SearchController {

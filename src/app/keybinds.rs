@@ -375,7 +375,11 @@ impl App {
         }
     }
 
-    pub(crate) fn find_keybind_conflict(&self, current_index: usize, binding: &str) -> Option<usize> {
+    pub(crate) fn find_keybind_conflict(
+        &self,
+        current_index: usize,
+        binding: &str,
+    ) -> Option<usize> {
         let normalized = normalize_keybind_text(binding)?;
         for other_index in 0..SETTINGS_KEYBIND_ITEMS {
             if other_index == current_index {

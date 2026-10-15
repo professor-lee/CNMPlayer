@@ -5,7 +5,8 @@ pub(crate) const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
 
 pub(crate) const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 
-pub(crate) type HomeSidebarTask = Pin<Box<dyn Future<Output = Option<Result<HomeSidebarFetch, String>>>>>;
+pub(crate) type HomeSidebarTask =
+    Pin<Box<dyn Future<Output = Option<Result<HomeSidebarFetch, String>>>>>;
 
 /// 侧边栏歌单的一次拉取结果。异步任务不持有 `&mut App`，
 /// 取完由 `tick_home_sidebar_fetch` 搬进状态。

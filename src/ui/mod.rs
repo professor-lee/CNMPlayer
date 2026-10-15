@@ -45,8 +45,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             || size.height < crate::app::presentation::SMALL_WINDOW_MIN_HEIGHT)
     {
         match app.small_window_mode {
-            Some(crate::app::presentation::SmallWindowMode::Flat) => small_window::draw_flat(frame, app),
-            Some(crate::app::presentation::SmallWindowMode::Narrow) => small_window::draw_narrow(frame, app),
+            Some(crate::app::presentation::SmallWindowMode::Flat) => {
+                small_window::draw_flat(frame, app)
+            }
+            Some(crate::app::presentation::SmallWindowMode::Narrow) => {
+                small_window::draw_narrow(frame, app)
+            }
             None => draw_small_too_small(frame, app, size),
         }
         return;

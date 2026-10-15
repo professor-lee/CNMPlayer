@@ -1,6 +1,6 @@
 use crate::app::App;
-use crate::app::input_controller::HitRect;
 use crate::app::Overlay;
+use crate::app::input_controller::HitRect;
 use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
 use crate::tmplayer::data::about::{BrailleImage, about_info};
 use crate::tmplayer::ui::borders::SOLID_BORDER;
@@ -404,22 +404,24 @@ fn draw_download_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
 
     // 三行的样式先算好（后面要可变借用 `download_path_edit`，不能再借 `app`）。
     // 不可用时只灰置「音质」：路径行与「恢复默认」都留着当出口。
-    let row_styles: [Style; crate::app::settings_controller::SETTINGS_DOWNLOAD_ITEMS] = std::array::from_fn(|idx| {
-        let disabled = !app.download_settings_enabled() && idx == 0;
-        if idx == selected {
-            if disabled {
+    let row_styles: [Style; crate::app::settings_controller::SETTINGS_DOWNLOAD_ITEMS] =
+        std::array::from_fn(|idx| {
+            let disabled = !app.download_settings_enabled() && idx == 0;
+            if idx == selected {
+                if disabled {
+                    Style::default().fg(subtext)
+                } else {
+                    Style::default().fg(accent2).add_modifier(Modifier::BOLD)
+                }
+            } else if disabled {
                 Style::default().fg(subtext)
             } else {
-                Style::default().fg(accent2).add_modifier(Modifier::BOLD)
+                Style::default().fg(text_color)
             }
-        } else if disabled {
-            Style::default().fg(subtext)
-        } else {
-            Style::default().fg(text_color)
-        }
-    });
+        });
 
-    let mut lines: Vec<Line> = Vec::with_capacity(crate::app::settings_controller::SETTINGS_DOWNLOAD_ITEMS);
+    let mut lines: Vec<Line> =
+        Vec::with_capacity(crate::app::settings_controller::SETTINGS_DOWNLOAD_ITEMS);
     for (idx, style) in row_styles
         .iter()
         .copied()
@@ -715,7 +717,11 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
 
     // 命中区：只登记窗口内可见的快捷键行（渲染带 `scroll` 偏移；末尾三行
     // 是说明文字、不属于任何条目）。
-    for (idx, offset) in scrolled_rows(crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS, visible_rows, scroll) {
+    for (idx, offset) in scrolled_rows(
+        crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS,
+        visible_rows,
+        scroll,
+    ) {
         app.push_settings_item_hit(
             HitRect {
                 x: rows[1].x,
@@ -1402,13 +1408,18 @@ mod tests {
     #[test]
     fn scrolled_rows_match_the_rendered_offsets() {
         for scroll in [0usize, 1, 7, 12] {
-            let rows = scrolled_rows(crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS, 8, scroll);
+            let rows = scrolled_rows(
+                crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS,
+                8,
+                scroll,
+            );
             for (idx, offset) in &rows {
                 assert_eq!(*idx as isize - *offset as isize, scroll as isize);
                 assert!(*offset < 8);
             }
             // 窗口内的条目一个不漏
-            let expected: Vec<usize> = (scroll..crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS)
+            let expected: Vec<usize> = (scroll
+                ..crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS)
                 .take(8)
                 .collect();
             let got: Vec<usize> = rows.iter().map(|(idx, _)| *idx).collect();

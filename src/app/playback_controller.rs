@@ -750,8 +750,6 @@ impl App {
     }
 }
 
-
-
 pub(crate) struct PlaybackController {
     pub audio_player: AudioPlayer,
     pub now_playing: Option<PlaybackTrack>,

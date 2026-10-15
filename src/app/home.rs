@@ -290,7 +290,10 @@ pub(crate) fn normalize_home_pinned_title(title: &str) -> Option<&'static str> {
 }
 
 /// 歌单封面（私人雷达 tile 用）。
-pub(crate) async fn fetch_playlist_cover_url(api: &mut ApiState, playlist_id: &str) -> Option<String> {
+pub(crate) async fn fetch_playlist_cover_url(
+    api: &mut ApiState,
+    playlist_id: &str,
+) -> Option<String> {
     let response = api.playlist_detail(playlist_id).await.ok()?;
     if response_code(&response) != 200 {
         return None;

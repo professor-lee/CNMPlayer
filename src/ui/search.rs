@@ -1,6 +1,6 @@
-use crate::app::search_controller::SearchController;
-use crate::app::search_controller::ARTIST_CARD_ROWS;
 use crate::app::App;
+use crate::app::search_controller::ARTIST_CARD_ROWS;
+use crate::app::search_controller::SearchController;
 use crate::app::search_controller::SearchItemKind;
 use crate::data::config::Language;
 use crate::data::icons::UiIcons;
