@@ -97,6 +97,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use streaming::StreamingReader;
 use unicode_width::UnicodeWidthChar;
 
+#[cfg(feature = "easter-egg")]
 pub(crate) use about::*;
 pub(crate) use auth::*;
 pub(crate) use author::*;
