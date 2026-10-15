@@ -1,0 +1,107 @@
+use super::*;
+
+impl App {
+    pub(super) async fn apply_mpris_control_events(&mut self) {
+        for event in self.mpris_bridge.drain_control_events() {
+            match event {
+                MprisControlEvent::Play => self.mpris_play().await,
+                MprisControlEvent::Pause => self.mpris_pause(),
+                MprisControlEvent::PlayPause => self.toggle_play_pause_hotkey().await,
+                MprisControlEvent::Stop => {
+                    self.playback.page_advance = None;
+                    self.playback.audio_player.stop();
+                    self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                }
+                MprisControlEvent::Next => self.play_next_hotkey().await,
+                MprisControlEvent::Previous => self.play_previous_hotkey().await,
+                MprisControlEvent::SeekRelativeMicros(delta) => self.mpris_seek_relative(delta),
+                MprisControlEvent::SeekAbsoluteMicros(pos) => self.mpris_seek_absolute(pos),
+            }
+        }
+    }
+
+    pub(super) async fn mpris_play(&mut self) {
+        if self.playback.now_playing.is_none() {
+            return;
+        }
+        if self.playback.playback_state == PlaybackRuntimeState::Stopped {
+            if let Some(index) = self.playback.playback_index {
+                self.play_queue_index(index, false).await;
+            }
+            return;
+        }
+        if self.playback.playback_state == PlaybackRuntimeState::Paused {
+            self.playback.audio_player.toggle_play_pause();
+            self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
+        }
+    }
+
+    pub(super) fn mpris_pause(&mut self) {
+        self.playback.page_advance = None;
+        if self.playback.playback_state == PlaybackRuntimeState::Playing {
+            self.playback.audio_player.toggle_play_pause();
+            self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
+        }
+    }
+
+    pub(super) fn mpris_seek_relative(&mut self, delta_micros: i64) {
+        let total = self.playback_duration();
+        let total_micros = total.as_micros();
+        if total_micros == 0 {
+            return;
+        }
+
+        let current_micros = self.playback.audio_player.position().as_micros() as i128;
+        let target = (current_micros + delta_micros as i128).clamp(0, total_micros as i128);
+        let ratio = (target as f64 / total_micros as f64) as f32;
+        self.seek_to_ratio(ratio);
+    }
+
+    pub(super) fn mpris_seek_absolute(&mut self, position_micros: i64) {
+        let total = self.playback_duration();
+        let total_micros = total.as_micros();
+        if total_micros == 0 {
+            return;
+        }
+
+        let target = (position_micros as i128).clamp(0, total_micros as i128);
+        let ratio = (target as f64 / total_micros as f64) as f32;
+        self.seek_to_ratio(ratio);
+    }
+
+    pub(super) fn sync_mpris_exposure(&mut self) {
+        let now = Instant::now();
+        let signature = self
+            .playback
+            .now_playing
+            .as_ref()
+            .map(mpris_metadata_signature)
+            .unwrap_or(0);
+
+        let metadata_changed = self.mpris_last_signature != Some(signature);
+        let playback_changed = self.mpris_last_playback != self.playback.playback_state;
+        let periodic_tick =
+            now.duration_since(self.mpris_last_sync_at) >= Duration::from_millis(900);
+
+        if !metadata_changed && !playback_changed && !periodic_tick {
+            return;
+        }
+
+        let payload = MprisSyncPayload {
+            playback: self.playback.playback_state,
+            position: self.playback.audio_player.display_position(),
+            track: if metadata_changed {
+                self.playback.now_playing.clone()
+            } else {
+                None
+            },
+        };
+
+        self.mpris_bridge.update(payload);
+        self.mpris_last_sync_at = now;
+        self.mpris_last_playback = self.playback.playback_state;
+        if metadata_changed {
+            self.mpris_last_signature = Some(signature);
+        }
+    }
+}
