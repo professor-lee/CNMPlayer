@@ -331,7 +331,6 @@ impl DownloadRow {
             key,
         }
     }
-
 }
 /// 行内图标状态的 memo。
 ///

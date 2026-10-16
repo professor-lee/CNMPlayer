@@ -1,11 +1,14 @@
-use super::*;
-use super::input::{contains, hit_test, progress_for_drag, volume_at, volume_for_drag, wheel_over_playlist};
+use super::input::{
+    contains, hit_test, progress_for_drag, volume_at, volume_for_drag, wheel_over_playlist,
+};
 use super::layout::ModalRows;
 use super::modals::download::render_download_settings_modal;
 use super::modals::help::{help_item_count, help_items, render_help_modal};
 use super::modals::lyrics::render_lyrics_settings_modal;
 use super::modals::settings::render_settings_modal;
 use super::page::{cover_key, slide_page_from_bottom};
+use super::*;
+use crate::data::icons::UiIcons;
 use crate::render::cover_pipeline::CoverKey;
 use crate::render::drawer::translated_clip;
 use crate::tmplayer::app::state::Overlay;
@@ -13,9 +16,8 @@ use crate::tmplayer::ui::components::control_buttons;
 use crate::tmplayer::ui::panels::info_panel::{download_cells, heart_cells};
 use crate::tmplayer::ui::panels::{info_panel, playlist_panel};
 use crate::tmplayer::utils::input::Action;
-use ratatui::style::Style;
-use crate::data::icons::UiIcons;
 use crate::ui::theme::{ColorCapability, Theme, ThemePalette};
+use ratatui::style::Style;
 
 #[test]
 fn fullscreen_drawer_translates_content_and_keeps_cover_geometry() {
@@ -39,8 +41,7 @@ fn fullscreen_drawer_translates_content_and_keeps_cover_geometry() {
     let mut drawer = PlaylistDrawer::default();
 
     // The first, fully offscreen frame still starts real cover preparation.
-    let layout =
-        draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.0).unwrap();
+    let layout = draw_page_reveal(&mut terminal, &mut app, &mut covers, &mut drawer, 0.0).unwrap();
     let content = info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover);
     let key = cover_key(content, 700);
     assert_eq!(covers.status(key), CoverStatus::Loading);
@@ -125,12 +126,9 @@ fn fullscreen_handoff_uses_one_terminal_and_a_fresh_exit_snapshot() {
     fn paint_host(frame: &mut ratatui::Frame, label: &str) {
         for y in frame.area().top()..frame.area().bottom() {
             let area = frame.area();
-            frame.buffer_mut().set_string(
-                area.x,
-                y,
-                format!("{label} row {y}"),
-                Style::default(),
-            );
+            frame
+                .buffer_mut()
+                .set_string(area.x, y, format!("{label} row {y}"), Style::default());
         }
     }
 
@@ -145,8 +143,7 @@ fn fullscreen_handoff_uses_one_terminal_and_a_fresh_exit_snapshot() {
         .draw(|frame| paint_host(frame, "HOST BEFORE"))
         .unwrap();
     let visible_host = terminal.backend().buffer().clone();
-    let host =
-        snapshot::capture(&mut terminal, |frame| paint_host(frame, "HOST BEFORE")).unwrap();
+    let host = snapshot::capture(&mut terminal, |frame| paint_host(frame, "HOST BEFORE")).unwrap();
     assert_eq!(
         terminal.backend().buffer(),
         &visible_host,
@@ -527,16 +524,14 @@ fn sidebar_slides_preserve_exposed_song_chafa_cells() {
     for y in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).top()
         ..info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).bottom()
     {
-        for x in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover)
-            .left()
+        for x in info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).left()
             ..info_panel::cover_content_rect(info_panel::layout(layout.left, 120).cover).right()
         {
             assert_eq!(loading[(x, y)].symbol(), " ");
         }
     }
-    let content = info_panel::cover_content_rect(
-        info_panel::layout(layout.left, layout.full.width).cover,
-    );
+    let content =
+        info_panel::cover_content_rect(info_panel::layout(layout.left, layout.full.width).cover);
     let deadline = Instant::now() + Duration::from_secs(2);
     while halfblocks.status(cover_key(content, 42)) != CoverStatus::Ready {
         assert!(
@@ -563,8 +558,7 @@ fn sidebar_slides_preserve_exposed_song_chafa_cells() {
         };
         for visible in [1, 8, 16, 24, 32, 39, 40] {
             app.playlist_slide_x = visible - layout.left.width as i16;
-            let frame =
-                draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
+            let frame = draw_page(&mut terminal, &mut app, &mut halfblocks, &mut sidebar).unwrap();
             let buffer = terminal.backend().buffer();
             for y in content.top()..content.bottom() {
                 for x in content.left()..content.right() {
@@ -1308,8 +1302,7 @@ fn help_modal_hit_rows_sit_on_the_drawn_rows() {
         assert!(
             items
                 .iter()
-                .any(|(label, key)| text.contains(&compact(label))
-                    && text.contains(&compact(key))),
+                .any(|(label, key)| text.contains(&compact(label)) && text.contains(&compact(key))),
             "命中行落在非条目行上: {text:?}"
         );
         saw_hint |= text.contains(&compact("小窗口"));

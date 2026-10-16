@@ -6,7 +6,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-pub(in crate::tmplayer::ui::tui) fn render_eq_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState) {
+pub(in crate::tmplayer::ui::tui) fn render_eq_modal(
+    f: &mut ratatui::Frame,
+    size: Rect,
+    app: &mut AppState,
+) {
     // 需求：柱状条宽 2 格，高度 +12/-12（含 0 行共 25）
     // 额外预留：顶部提示 1 行 + 底部频率/数值 2 行
     let area = centered_rect(size, 44, 31);

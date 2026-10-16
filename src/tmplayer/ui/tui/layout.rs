@@ -69,7 +69,6 @@ impl ModalRows {
             .map(|(_, rect)| *rect)
     }
 
-
     /// 命中的条目序号。
     pub(super) fn hit(&self, col: u16, row: u16) -> Option<usize> {
         self.rows[..self.len]

@@ -16,8 +16,8 @@ fn upstream_two_tones_match_rounded_blueprint() {
         core.execute(Some((&left, &right)), 512).unwrap();
     }
     let blueprint = [
-        0.0, 0.0, 0.994, 0.004, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        0.683, 0.002, 0.0, 0.0,
+        0.0, 0.0, 0.994, 0.004, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.683,
+        0.002, 0.0, 0.0,
     ];
     for (actual, expected) in core.output[..20].iter().zip(blueprint) {
         let rounded = (actual * 1000.0).round() / 1000.0;

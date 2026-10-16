@@ -42,8 +42,7 @@ fn visualize_keeps_legacy_off_value_loadable() {
     ];
 
     for (raw, expected) in cases {
-        let parsed: VisualizeWrapper =
-            toml::from_str(&format!("visualize = \"{}\"", raw)).unwrap();
+        let parsed: VisualizeWrapper = toml::from_str(&format!("visualize = \"{}\"", raw)).unwrap();
         assert_eq!(parsed.visualize, expected);
     }
 }
@@ -141,8 +140,7 @@ fn invalid_user_values_are_rejected_without_defaulting_or_rewriting() {
 
 #[test]
 fn corrupt_config_is_rejected_without_replacement() {
-    let dir =
-        std::env::temp_dir().join(format!("cnmplayer-config-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("cnmplayer-config-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("default.toml");

@@ -1056,14 +1056,16 @@ async fn handle_action(
         }
         Action::MouseDrag { col, .. } => {
             if app.progress_drag {
-                if let Some(ratio) = crate::tmplayer::ui::tui::input::progress_for_drag(layout, col) {
+                if let Some(ratio) = crate::tmplayer::ui::tui::input::progress_for_drag(layout, col)
+                {
                     host_bridge.seek_to_ratio(ratio);
                     sync_from_host_snapshot(app, host_bridge.snapshot());
                 } else {
                     app.progress_drag = false;
                 }
             } else if app.volume_drag {
-                if let Some(volume) = crate::tmplayer::ui::tui::input::volume_for_drag(layout, col) {
+                if let Some(volume) = crate::tmplayer::ui::tui::input::volume_for_drag(layout, col)
+                {
                     app.player.volume = volume;
                     host_bridge.set_volume(volume);
                 } else {

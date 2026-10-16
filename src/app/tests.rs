@@ -1,4 +1,3 @@
-
 use super::api::ApiState;
 use super::author::merge_artist_album_pages;
 use super::cover_presentation::CoverPresentation;
@@ -89,8 +88,7 @@ async fn home_cover_loads_and_paints_when_multiple_tiles_complete_together() {
         compio::time::sleep(Duration::from_millis(1)).await;
     }
     let mut presentation = CoverPresentation::new(api.wake_signal());
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(8, 4)).unwrap();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(8, 4)).unwrap();
     loop {
         presentation.poll();
         terminal

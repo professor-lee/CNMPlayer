@@ -80,8 +80,7 @@ fn seek_rejects_negative_positions_and_overflow() {
 
 #[test]
 fn reads_only_published_bytes_and_propagates_failure() {
-    let path =
-        std::env::temp_dir().join(format!("cnmplayer-stream-test-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("cnmplayer-stream-test-{}", std::process::id()));
     std::fs::write(&path, b"abcdef").unwrap();
     let state = Arc::new(StreamingState::default());
     state.downloaded.store(3, Ordering::SeqCst);
@@ -118,5 +117,3 @@ fn cancellation_wakes_waiting_reader() {
     state.cancel();
     worker.join().unwrap();
 }
-
-[Showing lines 294-413 of 414. Use :414 to continue]

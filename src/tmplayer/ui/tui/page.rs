@@ -319,7 +319,11 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
     Ok(layout_out)
 }
 
-pub(super) fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32, host_snapshot: Option<&Buffer>) {
+pub(super) fn slide_page_from_bottom(
+    buffer: &mut Buffer,
+    progress: f32,
+    host_snapshot: Option<&Buffer>,
+) {
     let width = usize::from(buffer.area.width);
     let height = usize::from(buffer.area.height);
     if width == 0 || height == 0 {

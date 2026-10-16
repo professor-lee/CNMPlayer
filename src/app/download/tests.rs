@@ -1,5 +1,5 @@
 impl DownloadRow {
-    fn key(&self) -> &str {
+    pub(in crate::app) fn key(&self) -> &str {
         &self.key
     }
 }

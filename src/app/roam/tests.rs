@@ -123,5 +123,3 @@ fn empty_or_coverless_unplayed_roam_clears_stale_cover() {
         assert_eq!(state.cover_url, None);
     }
 }
-
-[Showing lines 410-534 of 535. Use :535 to continue]

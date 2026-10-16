@@ -140,5 +140,3 @@ async fn wrong_source_or_offset_cannot_advance_cursor() {
         assert!(pagination.has_more());
     }
 }
-
-[Showing lines 123-264 of 265. Use :265 to continue]

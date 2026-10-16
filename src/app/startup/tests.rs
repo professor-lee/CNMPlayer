@@ -33,5 +33,3 @@ async fn restore_uses_remaining_budget_and_drops_pending_work() {
     assert!(result.is_none());
     assert!(dropped.get());
 }
-
-[Showing lines 386-420 of 421. Use :421 to continue]

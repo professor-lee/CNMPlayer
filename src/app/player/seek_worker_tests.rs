@@ -100,10 +100,7 @@ impl Probe {
         });
         let (sender, events) = mpsc::channel();
         Self {
-            worker: SeekWorker::with_executor(
-                Arc::new(Mutex::new(SeekState::default())),
-                execute,
-            ),
+            worker: SeekWorker::with_executor(Arc::new(Mutex::new(SeekState::default())), execute),
             mixer,
             events,
             sender,

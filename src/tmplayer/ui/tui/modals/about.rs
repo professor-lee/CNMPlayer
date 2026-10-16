@@ -5,7 +5,11 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-pub(in crate::tmplayer::ui::tui) fn render_about_modal(f: &mut ratatui::Frame, size: Rect, app: &mut AppState) {
+pub(in crate::tmplayer::ui::tui) fn render_about_modal(
+    f: &mut ratatui::Frame,
+    size: Rect,
+    app: &mut AppState,
+) {
     let area = centered_rect(size, 70, 22);
     f.render_widget(ratatui::widgets::Clear, area);
 

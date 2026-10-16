@@ -74,5 +74,3 @@ fn resize_and_focus_keep_visible_range_deterministic() {
     state.set_viewport(2, false);
     assert_eq!(state.effective_scroll_rows(), 5);
 }
-
-[Showing lines 1220-1295 of 1296. Use :1296 to continue]
