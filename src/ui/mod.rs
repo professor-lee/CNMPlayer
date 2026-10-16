@@ -35,6 +35,12 @@ pub fn draw_settings(frame: &mut Frame, app: &mut App) {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    draw_page(frame, app);
+    app.render_page_transition(frame);
+}
+
+/// Untranslated page layout, also used by on-demand transition snapshots.
+pub(crate) fn draw_page(frame: &mut Frame, app: &mut App) {
     app.covers.begin_frame();
     let size = frame.area();
     app.set_terminal_size(size.width, size.height);

@@ -620,15 +620,15 @@ impl App {
         if let Some(x) = section_cover {
             self.browse.playlist.cover.load(self.api.clone(), x)
         }
-        self.page = Page::Playlist;
+        self.open_browse_page(Page::Playlist);
     }
 
     pub(super) async fn handle_author_key(&mut self, key: KeyEvent) {
         // 数据还在路上：占位页上的焦点/条目都没有意义，只留返回键。
         if self.browse.author_fetch.is_some() {
             if key.code == KeyCode::Esc {
-                self.page = self.author_return_page;
                 self.browse.author_fetch = None;
+                self.close_browse_page(self.author_return_page);
             }
             return;
         }
@@ -650,7 +650,7 @@ impl App {
             }
             KeyCode::Enter => self.play_focused_author_tile().await,
             KeyCode::Esc => {
-                self.page = self.author_return_page;
+                self.close_browse_page(self.author_return_page);
             }
             _ => {}
         }

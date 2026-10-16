@@ -17,6 +17,7 @@ mod metadata;
 mod mpris;
 mod mpris_bridge;
 mod owned_task;
+mod page_transition;
 pub(crate) mod playback_controller;
 mod player;
 mod playlist;
@@ -143,6 +144,7 @@ pub(crate) struct App {
     pub(crate) search: SearchController,
     pub(crate) playback: PlaybackController,
     startup: StartupController,
+    page_transition: page_transition::PageTransitionController,
     player_bar_hits: PlayerBarHitTargets,
     /// 最近一次同步到的终端尺寸（单元格）。
     term_width: u16,
@@ -293,6 +295,7 @@ impl App {
             search: SearchController::default(),
             playback: PlaybackController::new(audio_player),
             startup: StartupController::detached(),
+            page_transition: page_transition::PageTransitionController::default(),
             player_bar_hits: PlayerBarHitTargets::default(),
             term_width: 0,
             term_height: 0,
@@ -408,6 +411,7 @@ impl App {
         self.apply_mpris_control_events().await;
         self.sync_mpris_exposure();
         let now = Instant::now();
+        self.tick_page_transition(now);
         self.tick_flat_switch(now);
         self.tick_vu_meter(now);
         self.tick_search_box_animation(now);

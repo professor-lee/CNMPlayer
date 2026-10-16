@@ -563,8 +563,8 @@ impl App {
             Ok(()) => {
                 self.playlist_return_page = Page::Home;
                 self.playlist_section_return_snapshot = None;
-                self.page = Page::Playlist;
                 self.browse.home.status_line = format!("已打开 {}", title);
+                self.open_browse_page(Page::Playlist);
             }
             Err(err) => {
                 self.browse.home.status_line = format!("打开歌单失败: {}", err);

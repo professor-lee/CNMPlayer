@@ -215,6 +215,7 @@ impl App {
             }
         };
 
+        self.preserve_browse_page_for_transition(Page::Author);
         self.browse.author = AuthorState::placeholder(
             title,
             self.lang_text("正在加载作者…", "Loading artist…")
@@ -222,7 +223,6 @@ impl App {
         );
         // 从全屏页进来：Esc 回首页，而不是回搜索页（那里可能不是用户来时的页面）。
         self.author_return_page = Page::Home;
-        self.page = Page::Author;
 
         let fut = fetch_author_page(
             self.api.clone(),
@@ -233,6 +233,7 @@ impl App {
         );
         let fut: AuthorFetchTask = Box::pin(async move { Some(fut.await) });
         self.browse.author_fetch = Some(spawn_shared(fut, self.wake.clone()));
+        self.open_browse_page(Page::Author);
     }
 
     /// 全屏页点了专辑名：立即落占位专辑页 + 派发后台拉取，结果由 `App::tick_playlist_fetch`
@@ -263,6 +264,7 @@ impl App {
         };
 
         self.browse.playlist.cancel_pagination();
+        self.preserve_browse_page_for_transition(Page::Playlist);
         self.browse.playlist = PlaylistState::placeholder(
             title,
             self.lang_text("正在加载专辑…", "Loading album…")
@@ -271,7 +273,6 @@ impl App {
         self.playlist_section_return_snapshot = None;
         // 从全屏页进来：Esc 回首页，而不是回上一次的来源页。
         self.playlist_return_page = Page::Home;
-        self.page = Page::Playlist;
 
         let fut = fetch_album_page_from_song(self.api.clone(), self.config.language, song_id);
         let fut: PlaylistFetchTask = Box::pin(async move { Some(fut.await) });
@@ -280,6 +281,7 @@ impl App {
             kind: PlaylistPageKind::Album,
             future: spawn_shared(fut, self.wake.clone()),
         });
+        self.open_browse_page(Page::Playlist);
     }
 
     pub(crate) fn fullscreen_config_signature(&self) -> u64 {

@@ -638,6 +638,7 @@ impl App {
                     self.lang_text("已打开专辑", "Opened album"),
                     title
                 ));
+                self.open_browse_page(Page::Playlist);
             }
             Err(err) => {
                 self.set_runtime_status(format!(
@@ -653,8 +654,8 @@ impl App {
         // 数据还在路上：占位页上的焦点/条目都没有意义，只留返回键。
         if self.browse.playlist_fetch.is_some() {
             if matches!(key.code, KeyCode::Esc | KeyCode::Left) {
-                self.page = self.playlist_return_page;
                 self.browse.playlist_fetch = None;
+                self.close_browse_page(self.playlist_return_page);
             }
             return;
         }
@@ -673,14 +674,15 @@ impl App {
                     pagination.cancel();
                 }
                 if let Some(snapshot) = self.playlist_section_return_snapshot.take() {
-                    self.browse.playlist = snapshot;
+                    self.close_playlist_section(snapshot);
                     return;
                 }
-                self.page = match self.playlist_return_page {
+                let return_page = match self.playlist_return_page {
                     Page::Author => Page::Author,
                     Page::Search => Page::Search,
                     _ => Page::Home,
                 };
+                self.close_browse_page(return_page);
             }
             _ => {}
         }

@@ -790,9 +790,9 @@ impl App {
                 self.playlist_return_page = Page::Home;
                 self.playlist_section_return_snapshot = None;
                 // 侧边栏只在主页绘制；保留展开与焦点，返回时继续操作原歌单。
-                self.page = Page::Playlist;
                 self.browse.home.status_line =
                     format!("{} {}", self.lang_text("已打开", "Opened"), title);
+                self.open_browse_page(Page::Playlist);
             }
             Err(err) => {
                 self.browse.home.status_line = format!(

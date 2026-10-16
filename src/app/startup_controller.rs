@@ -40,6 +40,7 @@ pub(super) fn startup_loading_progress(
 
 impl App {
     pub(super) fn begin_startup_loading(&mut self, target: Page) {
+        self.cancel_page_transition();
         self.page = Page::Loading;
         self.close_overlay();
         self.startup.begin(target);

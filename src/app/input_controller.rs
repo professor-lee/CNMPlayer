@@ -115,6 +115,13 @@ impl App {
             return;
         }
 
+        if self.page_transition_active()
+            && !(key.code == KeyCode::Esc && self.page_transition_can_go_back())
+            && !matches!(self.keybind_action_from_event(key), Some(KeybindAction::Quit))
+        {
+            return;
+        }
+
         if self.is_small_window_context() {
             self.handle_small_window_key(key).await;
             return;
@@ -197,6 +204,12 @@ impl App {
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
             self.input.player_bar_progress_drag = None;
             self.page_lyrics_release();
+            return;
+        }
+
+        // Layout hit regions are unshifted. Do not dispatch against a moving
+        // page, but always let the release above finish an existing drag.
+        if self.page_transition_active() {
             return;
         }
 

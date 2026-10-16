@@ -488,7 +488,6 @@ impl App {
         );
         self.playlist_section_return_snapshot = None;
         self.author_return_page = Page::Search;
-        self.page = Page::Author;
 
         let fut = fetch_author_page_by_id(
             self.api.clone(),
@@ -498,6 +497,7 @@ impl App {
         );
         let fut: AuthorFetchTask = Box::pin(async move { Some(fut.await) });
         self.browse.author_fetch = Some(spawn_shared(fut, self.wake.clone()));
+        self.open_browse_page(Page::Author);
     }
 
     /// 搜索页打开专辑：立即落占位歌单页 + 派发后台拉取（结果由 `tick_playlist_fetch` 搬进来）。
@@ -534,7 +534,6 @@ impl App {
         );
         self.playlist_section_return_snapshot = None;
         self.playlist_return_page = Page::Search;
-        self.page = Page::Playlist;
 
         let fut = fetch_album_page(
             self.api.clone(),
@@ -548,6 +547,7 @@ impl App {
             kind: PlaylistPageKind::Album,
             future: spawn_shared(fut, self.wake.clone()),
         });
+        self.open_browse_page(Page::Playlist);
     }
 
     /// 搜索页打开歌单：立即落占位歌单页 + 派发后台拉取（结果由 `tick_playlist_fetch` 搬进来）。
@@ -578,7 +578,6 @@ impl App {
         );
         self.playlist_section_return_snapshot = None;
         self.playlist_return_page = Page::Search;
-        self.page = Page::Playlist;
 
         let fut = fetch_playlist_page(
             self.api.clone(),
@@ -594,6 +593,7 @@ impl App {
             kind: PlaylistPageKind::Playlist,
             future: spawn_shared(fut, self.wake.clone()),
         });
+        self.open_browse_page(Page::Playlist);
     }
 
     pub(super) async fn activate_focused_search_result(&mut self) {

@@ -127,6 +127,9 @@ impl App {
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
     pub(crate) fn should_continuous_redraw(&self) -> bool {
+        if self.page_transition_active() {
+            return true;
+        }
         if self.mini_spectrum_enabled()
             && self.playback.now_playing.is_some()
             && (self.playback.playback_state == PlaybackRuntimeState::Playing
@@ -185,6 +188,9 @@ impl App {
         // 上一帧未再登记进度条（或被弹窗遮挡）时，不能把抓取带回后续帧。
         self.cancel_invalid_player_bar_progress_drag();
         if (self.term_width, self.term_height) != (width, height) {
+            // Geometry changed: settle on the logical destination, never stretch
+            // or leave a stale snapshot over the new viewport.
+            self.cancel_page_transition();
             self.input.player_bar_progress_drag = None;
             self.clear_player_bar_hits();
         }

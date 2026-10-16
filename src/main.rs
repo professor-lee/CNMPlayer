@@ -442,6 +442,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         let now = Instant::now();
         clock.set_fps(app.config.ui_fps, now);
         app.tick().await;
+        app.prepare_page_transition(terminal)?;
         let continuous = app.should_continuous_redraw();
         if app.covers.poll() || continuous {
             clock.mark_dirty();
@@ -466,6 +467,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
                 ui::draw_settings(frame, app);
             })?;
             app.covers.prepare();
+            app.page_transition_presented(Instant::now());
             clock.presented(Instant::now());
         }
 
@@ -493,6 +495,7 @@ async fn launch_tmplayer_fullscreen(
     app: &mut App,
     bootstrap: tmplayer::FullscreenBootstrap,
 ) -> Result<()> {
+    app.cancel_page_transition();
     let host_snapshot = capture_host_snapshot(terminal, app)?;
     app.reset_main_spectrum();
 

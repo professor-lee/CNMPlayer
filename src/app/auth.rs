@@ -436,6 +436,7 @@ impl App {
     }
 
     pub(super) async fn logout_to_login(&mut self) {
+        self.cancel_page_transition();
         self.downloads.pending_intents.invalidate_session();
         self.close_overlay();
         self.page = Page::Login;
