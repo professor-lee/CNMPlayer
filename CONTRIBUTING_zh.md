@@ -80,6 +80,7 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 - **直接引用所属模块。** 写 `crate::app::search_controller::SearchController`，而不是 `crate::app::SearchController`：`mod.rs` 不是门面。领域类型、请求与行为归对应职责模块，所以就写在那里，而不是写进 `mod.rs`。
 - **可见性取最小。** 只有确实被其他顶层模块（`src/ui/`、`src/render/`、`src/data/`、`src/tmplayer/`、`src/main.rs`）共用的接口才用 `pub(crate)`；`src/app/` 内部兄弟模块之间共用的用 `pub(super)`；其余保持模块私有，通过所属类型的方法访问。
 - **搬动代码时不留兼容层。** 在同一次改动里更新所有调用方并删掉旧路径；靠 re-export 让旧路径继续编译的写法不予接受。
+- **测试放在独立文件。** Rust 生产模块不得内嵌测试模块、测试专用辅助函数、常量或 impl。`foo.rs` 的测试放到同目录 `foo/tests.rs`，`mod.rs` 的测试放到同目录 `tests.rs`；生产模块不得保留 `cfg(test)` 实现。通过最小可见性保持对私有实现的访问，不得为了测试新增生产 API。
 
 ## 格式与 CI
 
