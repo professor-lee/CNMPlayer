@@ -28,6 +28,25 @@ pub(super) struct PrivateRoamState {
     pub(super) last_refresh_day: Option<i64>,
 }
 
+impl PrivateRoamState {
+    fn refresh_cover(&mut self) {
+        let last_played = self
+            .last_played_index
+            .and_then(|index| self.tracks.get(index));
+        self.cover_url = match last_played {
+            Some(track) => self
+                .last_played_cover_url
+                .as_ref()
+                .or(track.cover_url.as_ref())
+                .cloned(),
+            None => self
+                .tracks
+                .first()
+                .and_then(|track| track.cover_url.clone()),
+        };
+    }
+}
+
 /// 拉取一批私人漫游歌曲（接口每次固定返回 3 首，连拉几次去重）
 pub(super) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<PlaylistTrack> {
     let mut tracks = Vec::new();
@@ -121,14 +140,8 @@ impl App {
                 ));
             }
             self.browse.private_roam.tracks = fetched;
-            if self.browse.private_roam.cover_url.is_none() {
-                self.browse.private_roam.cover_url = self
-                    .browse
-                    .private_roam
-                    .tracks
-                    .first()
-                    .and_then(|track| track.cover_url.clone());
-            }
+            self.browse.private_roam.refresh_cover();
+            self.sync_home_roam_tile_cover();
             self.persist_private_roam();
         }
 
@@ -184,14 +197,8 @@ impl App {
 
         self.browse.private_roam.tracks = new_tracks;
         self.browse.private_roam.last_played_index = new_index;
-        if self.browse.private_roam.cover_url.is_none() {
-            self.browse.private_roam.cover_url = self
-                .browse
-                .private_roam
-                .tracks
-                .first()
-                .and_then(|track| track.cover_url.clone());
-        }
+        self.browse.private_roam.refresh_cover();
+        self.sync_home_roam_tile_cover();
         self.browse.private_roam.last_refresh_day = Some(today);
         self.persist_private_roam();
     }
@@ -348,25 +355,150 @@ impl App {
             })
             .collect();
         self.browse.private_roam.last_played_index = record.last_played_index;
-        self.browse.private_roam.last_played_cover_url = record.last_played_cover_url.clone();
+        self.browse.private_roam.last_played_cover_url = record.last_played_cover_url;
         self.browse.private_roam.last_refresh_day = record.last_refresh_day;
-        self.browse.private_roam.cover_url = record.last_played_cover_url.or_else(|| {
-            self.browse
-                .private_roam
-                .tracks
-                .first()
-                .and_then(|track| track.cover_url.clone())
-        });
+        self.browse.private_roam.refresh_cover();
     }
 
     pub(super) fn sync_home_roam_tile_cover(&mut self) {
-        let Some(url) = self.browse.private_roam.cover_url.clone() else {
-            return;
-        };
+        let url = self.browse.private_roam.cover_url.as_deref();
         if let Some(tile) = self.browse.home.tiles.iter_mut().find(|tile| {
-            tile.title == "私人漫游" && tile.cover.url.as_deref() != Some(url.as_str())
+            tile.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)
+                && tile.cover.url.as_deref() != url
         }) {
-            tile.cover.load(self.api.clone(), url);
+            match url {
+                Some(url) => tile.cover.load(self.api.clone(), url.to_string()),
+                None => tile.cover = Default::default(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrivateRoamState;
+    use super::merge_private_roam_refresh;
+    use crate::app::tracks::{PlaylistTrack, PlaylistTrackKind};
+
+    fn track(id: &str, cover: Option<&str>) -> PlaylistTrack {
+        PlaylistTrack {
+            kind: PlaylistTrackKind::Song,
+            id: Some(id.to_string()),
+            title: id.to_string(),
+            artist: String::new(),
+            album: String::new(),
+            duration: String::new(),
+            duration_ms: 0,
+            cover_url: cover.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn unplayed_roam_uses_first_song_cover_on_load_and_restore() {
+        for previous_cover in [None, Some("stale-first-cover")] {
+            let mut state = PrivateRoamState {
+                tracks: vec![track("first", Some("first-cover"))],
+                cover_url: previous_cover.map(str::to_string),
+                ..PrivateRoamState::default()
+            };
+
+            state.refresh_cover();
+
+            assert_eq!(state.cover_url.as_deref(), Some("first-cover"));
+        }
+    }
+
+    #[test]
+    fn unplayed_roam_uses_new_first_song_cover_after_daily_refresh() {
+        let mut state = PrivateRoamState {
+            tracks: vec![track("old", Some("old-cover"))],
+            cover_url: Some("old-cover".to_string()),
+            ..PrivateRoamState::default()
+        };
+        (state.tracks, state.last_played_index) = merge_private_roam_refresh(
+            &state.tracks,
+            state.last_played_index,
+            vec![track("new", Some("new-cover"))],
+        );
+
+        state.refresh_cover();
+
+        assert_eq!(state.cover_url.as_deref(), Some("new-cover"));
+    }
+
+    #[test]
+    fn last_played_roam_cover_wins_on_restore_and_daily_refresh() {
+        let mut state = PrivateRoamState {
+            tracks: vec![
+                track("first", Some("first-cover")),
+                track("played", Some("track-cover")),
+            ],
+            last_played_index: Some(1),
+            last_played_cover_url: Some("remembered-cover".to_string()),
+            ..PrivateRoamState::default()
+        };
+        state.refresh_cover();
+        assert_eq!(state.cover_url.as_deref(), Some("remembered-cover"));
+
+        (state.tracks, state.last_played_index) = merge_private_roam_refresh(
+            &state.tracks,
+            state.last_played_index,
+            vec![track("new", Some("new-cover"))],
+        );
+        state.refresh_cover();
+
+        assert_eq!(state.last_played_index, Some(0));
+        assert_eq!(state.cover_url.as_deref(), Some("remembered-cover"));
+    }
+
+    #[test]
+    fn last_played_roam_uses_song_cover_when_cover_memory_is_missing() {
+        let mut state = PrivateRoamState {
+            tracks: vec![
+                track("first", Some("first-cover")),
+                track("played", Some("played-cover")),
+            ],
+            last_played_index: Some(1),
+            ..PrivateRoamState::default()
+        };
+
+        state.refresh_cover();
+
+        assert_eq!(state.cover_url.as_deref(), Some("played-cover"));
+    }
+
+    #[test]
+    fn orphaned_last_played_cover_does_not_override_first_song() {
+        for index in [None, Some(5)] {
+            let mut state = PrivateRoamState {
+                tracks: vec![track("first", Some("first-cover"))],
+                last_played_index: index,
+                last_played_cover_url: Some("orphaned-cover".to_string()),
+                ..PrivateRoamState::default()
+            };
+
+            state.refresh_cover();
+
+            assert_eq!(state.cover_url.as_deref(), Some("first-cover"));
+        }
+    }
+
+    #[test]
+    fn empty_or_coverless_unplayed_roam_clears_stale_cover() {
+        for tracks in [
+            Vec::new(),
+            vec![track("first", None), track("second", Some("second-cover"))],
+        ] {
+            let mut state = PrivateRoamState {
+                tracks,
+                cover_url: Some("stale-cover".to_string()),
+                last_played_cover_url: Some("orphaned-cover".to_string()),
+                ..PrivateRoamState::default()
+            };
+
+            state.refresh_cover();
+
+            assert_eq!(state.cover_url, None);
         }
     }
 }
