@@ -65,11 +65,6 @@ pub fn draw_login(frame: &mut Frame, app: &App) {
 
     render_qr(frame, app, login_content[1]);
 
-    let hint_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(areas[2]);
-
     let left_hint = "F1/F2/F3 切换登录方式  Tab/↑↓ 切换焦点  Enter 确认";
     frame.render_widget(
         Paragraph::new(lang_text(
@@ -79,14 +74,7 @@ pub fn draw_login(frame: &mut Frame, app: &App) {
         ))
         .style(Style::default().fg(app.theme.color_subtext()))
         .alignment(Alignment::Left),
-        hint_cols[0],
-    );
-
-    frame.render_widget(
-        Paragraph::new(current_login_method_text(app, app.login.method))
-            .style(Style::default().fg(app.theme.color_subtext()))
-            .alignment(Alignment::Right),
-        hint_cols[1],
+        areas[2],
     );
 }
 
@@ -112,14 +100,6 @@ fn form_height(method: LoginMethod) -> u16 {
         LoginMethod::Qr => 8,
         LoginMethod::Username => 9,
         LoginMethod::Phone => 10,
-    }
-}
-
-fn current_login_method_text(app: &App, method: LoginMethod) -> &'static str {
-    match method {
-        LoginMethod::Qr => lang_text(app, "当前方式：二维码", "Current: QR Code"),
-        LoginMethod::Username => lang_text(app, "当前方式：账户", "Current: Username"),
-        LoginMethod::Phone => lang_text(app, "当前方式：手机号", "Current: Phone"),
     }
 }
 
@@ -213,7 +193,7 @@ fn build_form_lines(app: &App) -> Vec<Line<'static>> {
                 &mut lines,
                 app,
                 2,
-                format!("󰯈 {}", lang_text(app, "发送验证码", "Send Captcha")),
+                format!("\u{f1d8} {}", lang_text(app, "发送验证码", "Send Captcha")),
                 app.login.focus_index == 2,
             );
             push_action_line(
@@ -291,9 +271,7 @@ fn push_input_line(
     is_password: bool,
     focused: bool,
 ) {
-    let shown = if value.is_empty() {
-        "…".to_string()
-    } else if is_password {
+    let shown = if is_password {
         "•".repeat(value.chars().count())
     } else {
         value.to_string()
