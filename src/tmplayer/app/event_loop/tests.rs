@@ -1,0 +1,172 @@
+use super::*;
+
+#[test]
+fn paused_oscilloscope_schedules_the_exact_flat_frame_without_input() {
+    let config = Config {
+        visualize: VisualizeMode::Oscilloscope,
+        ..Config::default()
+    };
+    let mut app = AppState::new(
+        config,
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::Zh,
+    );
+    let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
+    ring.push(&[0.5; 512], &[0.5; 512], 48_000);
+    app.pcm_ring = Some(ring);
+    let start = Instant::now();
+    app.last_frame = start;
+    app.player.playback = PlaybackState::Playing;
+    tick_visual_state(&mut app, start);
+    tick_visual_state(&mut app, start + Duration::from_millis(100));
+    assert!(app.scope_gain.value() > 0.7);
+    app.player.playback = PlaybackState::Paused;
+    let mut settled = None;
+    for frame in 1..=120 {
+        let before = app.scope_gain.value();
+        let now = start + Duration::from_millis(100 + frame * 16);
+        let dirty = tick_visual_state(&mut app, now);
+        if before > 0.0 && app.scope_gain.value() == 0.0 {
+            assert!(
+                dirty,
+                "the final flat frame must be painted even when animation stops"
+            );
+            assert!(
+                !app.should_continuous_redraw(),
+                "the final frame does not require permanent animation"
+            );
+            settled = Some(now);
+            break;
+        }
+    }
+    let settled = settled.expect("pause reaches exact zero without an input event");
+    assert!(!tick_visual_state(
+        &mut app,
+        settled + Duration::from_millis(16)
+    ));
+}
+
+#[test]
+fn missing_pcm_releases_scope_without_changing_playback_state() {
+    let config = Config {
+        visualize: VisualizeMode::Oscilloscope,
+        ..Config::default()
+    };
+    let mut app = AppState::new(
+        config,
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::En,
+    );
+    let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
+    ring.push(&[0.5; 512], &[-0.5; 512], 48_000);
+    app.pcm_ring = Some(ring);
+    app.player.playback = PlaybackState::Playing;
+    let start = Instant::now();
+    app.last_frame = start;
+    tick_visual_state(&mut app, start);
+    tick_visual_state(&mut app, start + Duration::from_millis(100));
+    assert!(app.scope_gain.value() > 0.7, "fresh PCM opens the scope");
+    tick_visual_state(&mut app, start + Duration::from_millis(160));
+    let dirty = tick_visual_state(&mut app, start + Duration::from_millis(500));
+    assert_eq!(app.player.playback, PlaybackState::Playing);
+    assert_eq!(
+        app.scope_gain.value(),
+        0.0,
+        "stalled PCM must not hold the old waveform open"
+    );
+    assert!(dirty, "the settled scope frame must be submitted");
+}
+
+/// 挂在设置弹窗下面的子页必须全部登记进 `settings_parent`：
+/// 漏一个，那个页面按 Esc 就会直接退出全屏页（按键提示弹窗就这么漏过）。
+#[test]
+fn every_settings_child_returns_to_the_settings_modal() {
+    for child in [
+        Overlay::BarSettingsModal,
+        Overlay::LyricsSettingsModal,
+        Overlay::HelpModal,
+        Overlay::AboutModal,
+    ] {
+        assert_eq!(
+            settings_parent(child),
+            Some(Overlay::SettingsModal),
+            "{child:?} 应该回设置弹窗"
+        );
+    }
+
+    // 设置弹窗本身与 EQ/播放列表没有上一级。
+    assert_eq!(settings_parent(Overlay::SettingsModal), None);
+    assert_eq!(settings_parent(Overlay::EqModal), None);
+    assert_eq!(settings_parent(Overlay::Playlist), None);
+    assert_eq!(settings_parent(Overlay::None), None);
+}
+
+#[test]
+fn host_song_identity_starts_cover_slide_and_resets_smoothing() {
+    let mut app = AppState::new(
+        Config::default(),
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::Zh,
+    );
+    let snapshot = |id: &str| HostPlaybackSnapshot {
+        playlist: vec![crate::tmplayer::FullscreenPlaylistItemSeed {
+            id: Some(id.to_string()),
+            title: "Same title".to_string(),
+            artist: "Same artist".to_string(),
+            album: "Same album".to_string(),
+            duration: Duration::from_secs(60),
+        }],
+        current_index: Some(0),
+        ..HostPlaybackSnapshot::default()
+    };
+    sync_from_host_snapshot(&mut app, snapshot("first"));
+    assert!(
+        app.cover_anim.is_none(),
+        "initial sync is not a track transition"
+    );
+    app.spectrum.bars.fill(1.0);
+    let now = Instant::now();
+    app.pending_system_cover_anim = Some((
+        crate::tmplayer::app::state::CoverSnapshot::from(&app.player.track),
+        1,
+        now,
+    ));
+    sync_from_host_snapshot(&mut app, snapshot("second"));
+    assert_eq!(app.playlist.items[0].song_id.as_deref(), Some("second"));
+    assert_eq!(app.cover_anim.as_ref().unwrap().dir, 1);
+    assert!(app.pending_system_cover_anim.is_none());
+    assert!(app.spectrum.bars.iter().all(|value| *value == 0.0));
+    sync_from_host_snapshot(&mut app, HostPlaybackSnapshot::default());
+    assert!(app.cover_anim.is_none());
+    assert!(app.playlist.items.is_empty());
+}
+#[test]
+fn appended_host_page_keeps_playlist_focus_on_the_boundary_row() {
+    let mut app = AppState::new(
+        Config::default(),
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::Zh,
+    );
+    let snapshot = |ids: &[&str]| HostPlaybackSnapshot {
+        playlist: ids
+            .iter()
+            .map(|id| crate::tmplayer::FullscreenPlaylistItemSeed {
+                id: Some(id.to_string()),
+                title: id.to_string(),
+                artist: String::new(),
+                album: String::new(),
+                duration: Duration::from_secs(60),
+            })
+            .collect(),
+        current_index: Some(0),
+        ..Default::default()
+    };
+    sync_from_host_snapshot(&mut app, snapshot(&["99", "100"]));
+    app.overlay = Overlay::Playlist;
+    app.playlist_view.selected = 1;
+    sync_from_host_snapshot(&mut app, snapshot(&["99", "100", "101"]));
+    assert_eq!(app.playlist_view.selected, 1);
+    assert_eq!(app.playlist_view.items[2].song_id.as_deref(), Some("101"));
+    sync_from_host_snapshot(&mut app, snapshot(&["new-a", "new-b", "new-c"]));
+    assert_eq!(app.playlist_view.selected, 0, "替换来源时聚焦当前播放项");
+}
