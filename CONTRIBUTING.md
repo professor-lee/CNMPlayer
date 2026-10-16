@@ -75,7 +75,7 @@ with `--no-default-features` to drop it.
 | Path | Contents |
 | --- | --- |
 | `src/main.rs` | Entry point: terminal setup, asset root, and hand-off to the application. |
-| `src/app/` | Application core: shared state in `mod.rs`, API/streaming/player/download services, MPRIS bridge, `SearchController` in `controllers.rs`, and focused browse/download/input/playback/settings/startup controllers. |
+| `src/app/` | Application core. `mod.rs` is the assembly point and top-level coordinator: the `App` struct with its shared state, sub-controllers and hit regions, plus the event handling that drives them. Domain types, requests and behaviour live in the module that owns the responsibility — `ApiState` and cover fetching in `api.rs`, response-shape helpers in `response.rs`, search in `search_controller.rs`, the focused browse/download/input/playback/settings/startup `*_controller.rs` modules, and the player, streaming, download and MPRIS modules. |
 | `src/ui/` | Host UI panels: login, home, playlist, author, search, settings, player bar, lyrics, loading, small-window and theme modules. |
 | `src/data/` | Shared `Config` plus assets, atomic persistence, sessions, playback/private-roam state, and theme loading. |
 | `src/render/` | Cover and graphics rendering, plus the easter-egg mascot frames. |
@@ -88,6 +88,15 @@ with `--no-default-features` to drop it.
 | `.github/` | `workflows/ci.yml`, `workflows/release.yml` and `scripts/aur_sync.sh`. |
 | Root documents | `README.md` / `README_zh.md` (two language variants kept in parallel), `DISCLAIMER.md` / `DISCLAIMER_zh.md`, `CHANGELOG`-free release notes on the Releases page, `CITATION.cff`, `THIRD_PARTY_NOTICES.md`, `LICENSE` (AGPL-3.0-only). |
 
+## Module conventions
+
+`src/app/` is split by responsibility, and `mod.rs` holds the assembly and the top-level coordination — not the domain pieces. Keep new code in the same shape:
+
+- **Import explicitly.** Name the items you use; do not add glob imports, and do not re-export items through a parent module for convenience. A caller reaches an item by importing the module that defines it.
+- **Reference the owning module.** Write `crate::app::search_controller::SearchController`, not `crate::app::SearchController`: `mod.rs` is not a facade. Domain types, requests and behaviour belong to the module that owns that responsibility, so add them there rather than to `mod.rs`.
+- **Keep visibility minimal.** Use `pub(crate)` only for interfaces genuinely shared with another top-level module (`src/ui/`, `src/render/`, `src/data/`, `src/tmplayer/`, `src/main.rs`); use `pub(super)` for items shared between siblings inside `src/app/`; everything else stays private to its module and is reached through the owning type's methods.
+- **Leave no compatibility shims when you move code.** Update every caller in the same change and delete the old path; a re-export that keeps a stale path compiling is not accepted.
+
 ## Formatting and CI
 
 Formatting is `rustfmt`; the repository pins its own configuration:
@@ -98,19 +107,47 @@ Formatting is `rustfmt`; the repository pins its own configuration:
   `cargo fmt --manifest-path ncm-api-rs/Cargo.toml` when you touch the vendored
   crate.
 
-Linting is `cargo clippy --all-targets`; `ncm-api-rs/clippy.toml` relaxes
+Linting is `cargo clippy --all-targets` — a quick local check. The gates below
+run it with `-D warnings`; `ncm-api-rs/clippy.toml` relaxes
 `too-many-arguments-threshold` to 8 and `type-complexity-threshold` to 300.
 
-CI (`.github/workflows/ci.yml`) runs on pull requests targeting `main` / `develop` and on pushes to `develop`. It installs the system dependencies listed above on `ubuntu-24.04`, checks Rust 1.95 and stable with both default and `--no-default-features`, and runs fmt/clippy gates for the root and vendored crates.
+CI (`.github/workflows/ci.yml`) runs on pull requests targeting `main` / `develop` and on pushes to `develop`. Every job runs on `ubuntu-24.04`; `build-and-test` and `quality` install the system dependencies listed above:
 
-The equivalent local commands are:
+- `build-and-test` runs `cargo check` and `cargo test`
+  (`--workspace --locked --all-targets`) across a four-way matrix: Rust 1.95.0
+  and stable, each with default features and with `--no-default-features`.
+- `quality` runs on stable with the `rustfmt` and `clippy` components:
+  `cargo fmt --all -- --check` and
+  `cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check`, then three
+  clippy runs with `-D warnings` — the root crate with `--all-features`, the
+  root crate with `--no-default-features`, and the vendored crate through its
+  manifest.
+- `vendored-tests` runs
+  `cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets`.
+
+The equivalent local commands, job by job:
 
 ```bash
+# build-and-test: default features and --no-default-features, once per toolchain.
+# Plain `cargo` already selects the pinned 1.95.0; use `cargo +stable` for the
+# stable half of the matrix.
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked --all-targets
-cargo fmt --all -- --check
-cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+cargo check --workspace --locked --all-targets --no-default-features
+cargo test --workspace --locked --all-targets --no-default-features
+
+# quality (stable only)
+cargo +stable fmt --all -- --check
+cargo +stable fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
+cargo +stable clippy --locked --all-targets --all-features -- -D warnings
+cargo +stable clippy --locked --all-targets --no-default-features -- -D warnings
+cargo +stable clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
+
+# vendored-tests
+cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 ```
+
+A bare `cargo clippy` is not the gate: the `quality` job adds `-D warnings`, covers both feature sets, and lints the vendored crate through its own manifest, so passing it locally does not mean that job will pass.
 
 Version bumps and packaging are not part of a normal pull request: releases are
 triggered by a `v*` tag, the tag must equal the version in `Cargo.toml`, and
