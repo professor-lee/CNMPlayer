@@ -96,6 +96,7 @@ with `--no-default-features` to drop it.
 - **Reference the owning module.** Write `crate::app::search_controller::SearchController`, not `crate::app::SearchController`: `mod.rs` is not a facade. Domain types, requests and behaviour belong to the module that owns that responsibility, so add them there rather than to `mod.rs`.
 - **Keep visibility minimal.** Use `pub(crate)` only for interfaces genuinely shared with another top-level module (`src/ui/`, `src/render/`, `src/data/`, `src/tmplayer/`, `src/main.rs`); use `pub(super)` for items shared between siblings inside `src/app/`; everything else stays private to its module and is reached through the owning type's methods.
 - **Leave no compatibility shims when you move code.** Update every caller in the same change and delete the old path; a re-export that keeps a stale path compiling is not accepted.
+- **Keep tests in sibling files.** Production Rust modules must not embed test modules, test-only helpers, constants, or impls. Put tests for `foo.rs` in `foo/tests.rs` (and tests for `mod.rs` in the sibling `tests.rs`); keep production modules free of `cfg(test)` implementations. Preserve private access through the narrowest module visibility; do not add production APIs only for tests.
 
 ## Formatting and CI
 
