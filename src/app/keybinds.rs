@@ -1,53 +1,57 @@
-use super::*;
+use super::App;
+use super::settings_controller::SETTINGS_KEYBIND_ITEMS;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 
-pub(crate) const RESERVED_RESET_KEYBIND: &str = "Ctrl+Alt+R";
+pub(super) const RESERVED_RESET_KEYBIND: &str = "Ctrl+Alt+R";
 
-pub(crate) const DEFAULT_KEYBIND_SEARCH_BOX: &str = "Ctrl+S";
+const DEFAULT_KEYBIND_SEARCH_BOX: &str = "Ctrl+S";
 
-pub(crate) const DEFAULT_KEYBIND_FULLSCREEN: &str = "Ctrl+F";
+const DEFAULT_KEYBIND_FULLSCREEN: &str = "Ctrl+F";
 
-pub(crate) const DEFAULT_KEYBIND_SETTINGS: &str = "T";
+const DEFAULT_KEYBIND_SETTINGS: &str = "T";
 
-pub(crate) const DEFAULT_KEYBIND_SIDEBAR: &str = "P";
+const DEFAULT_KEYBIND_SIDEBAR: &str = "P";
 
-pub(crate) const DEFAULT_KEYBIND_QUIT: &str = "Q";
+const DEFAULT_KEYBIND_QUIT: &str = "Q";
 
-pub(crate) const DEFAULT_KEYBIND_PAGE_UP: &str = "pageUP";
+const DEFAULT_KEYBIND_PAGE_UP: &str = "pageUP";
 
-pub(crate) const DEFAULT_KEYBIND_PAGE_DOWN: &str = "pageDown";
+const DEFAULT_KEYBIND_PAGE_DOWN: &str = "pageDown";
 
-pub(crate) const DEFAULT_KEYBIND_PREV: &str = "Alt+Left";
+const DEFAULT_KEYBIND_PREV: &str = "Alt+Left";
 
-pub(crate) const DEFAULT_KEYBIND_NEXT: &str = "Alt+Right";
+const DEFAULT_KEYBIND_NEXT: &str = "Alt+Right";
 
-pub(crate) const DEFAULT_KEYBIND_TOGGLE_PLAY_PAUSE: &str = "Alt+Space";
+const DEFAULT_KEYBIND_TOGGLE_PLAY_PAUSE: &str = "Alt+Space";
 
-pub(crate) const DEFAULT_KEYBIND_TOGGLE_MODE: &str = "Alt+M";
+const DEFAULT_KEYBIND_TOGGLE_MODE: &str = "Alt+M";
 
-pub(crate) const DEFAULT_KEYBIND_FULLSCREEN_PREV: &str = "Left";
+const DEFAULT_KEYBIND_FULLSCREEN_PREV: &str = "Left";
 
-pub(crate) const DEFAULT_KEYBIND_FULLSCREEN_NEXT: &str = "Right";
+const DEFAULT_KEYBIND_FULLSCREEN_NEXT: &str = "Right";
 
-pub(crate) const DEFAULT_KEYBIND_FULLSCREEN_TOGGLE_PLAY_PAUSE: &str = "Space";
+const DEFAULT_KEYBIND_FULLSCREEN_TOGGLE_PLAY_PAUSE: &str = "Space";
 
-pub(crate) const DEFAULT_KEYBIND_FULLSCREEN_TOGGLE_MODE: &str = "M";
+const DEFAULT_KEYBIND_FULLSCREEN_TOGGLE_MODE: &str = "M";
 
-pub(crate) const DEFAULT_KEYBIND_FULLSCREEN_EQ: &str = "E";
+const DEFAULT_KEYBIND_FULLSCREEN_EQ: &str = "E";
 
-pub(crate) const DEFAULT_KEYBIND_FULLSCREEN_EQ_RESET: &str = "Alt+R";
+const DEFAULT_KEYBIND_FULLSCREEN_EQ_RESET: &str = "Alt+R";
 
-pub(crate) const DEFAULT_KEYBIND_TOGGLE_LIKE_FULLSCREEN: &str = "L";
+const DEFAULT_KEYBIND_TOGGLE_LIKE_FULLSCREEN: &str = "L";
 
-pub(crate) const DEFAULT_KEYBIND_TOGGLE_LIKE_COLLAPSED: &str = "Alt+L";
+const DEFAULT_KEYBIND_TOGGLE_LIKE_COLLAPSED: &str = "Alt+L";
 
-pub(crate) const DEFAULT_KEYBIND_SMALL_WINDOW_TOGGLE: &str = "Alt+X";
+const DEFAULT_KEYBIND_SMALL_WINDOW_TOGGLE: &str = "Alt+X";
 
-pub(crate) const DEFAULT_KEYBIND_DOWNLOAD: &str = "Ctrl+Alt+D";
+const DEFAULT_KEYBIND_DOWNLOAD: &str = "Ctrl+Alt+D";
 
-pub(crate) const DEFAULT_KEYBIND_DOWNLOAD_FULLSCREEN: &str = "Ctrl+D";
+const DEFAULT_KEYBIND_DOWNLOAD_FULLSCREEN: &str = "Ctrl+D";
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum KeybindAction {
+pub(super) enum KeybindAction {
     SearchBox,
     Fullscreen,
     Settings,
@@ -74,7 +78,7 @@ pub(crate) enum KeybindAction {
     DownloadFullscreen,
 }
 
-pub(crate) fn keybind_matches(binding: &str, key: KeyEvent) -> bool {
+pub(super) fn keybind_matches(binding: &str, key: KeyEvent) -> bool {
     let Some(expected) = normalize_keybind_text(binding) else {
         return false;
     };
@@ -84,13 +88,13 @@ pub(crate) fn keybind_matches(binding: &str, key: KeyEvent) -> bool {
     expected.eq_ignore_ascii_case(actual.as_str())
 }
 
-pub(crate) fn is_reserved_reset_combo(key: KeyEvent) -> bool {
+pub(super) fn is_reserved_reset_combo(key: KeyEvent) -> bool {
     key_event_to_keybind_text(key)
         .map(|value| value.eq_ignore_ascii_case(RESERVED_RESET_KEYBIND))
         .unwrap_or(false)
 }
 
-pub(crate) fn key_event_to_keybind_text(key: KeyEvent) -> Option<String> {
+pub(super) fn key_event_to_keybind_text(key: KeyEvent) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
 
     if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -115,7 +119,7 @@ pub(crate) fn key_event_to_keybind_text(key: KeyEvent) -> Option<String> {
     Some(out)
 }
 
-pub(crate) fn normalize_keybind_text(raw: &str) -> Option<String> {
+fn normalize_keybind_text(raw: &str) -> Option<String> {
     let mut ctrl = false;
     let mut alt = false;
     let mut shift = false;
@@ -170,7 +174,7 @@ pub(crate) fn normalize_keybind_text(raw: &str) -> Option<String> {
     Some(out)
 }
 
-pub(crate) fn normalize_keybind_token(token: &str) -> Option<String> {
+fn normalize_keybind_token(token: &str) -> Option<String> {
     let token = token.trim();
     if token.is_empty() {
         return None;
@@ -225,7 +229,7 @@ pub(crate) fn normalize_keybind_token(token: &str) -> Option<String> {
     Some(ch.to_string())
 }
 
-pub(crate) fn key_code_to_keybind_token(code: KeyCode) -> Option<String> {
+fn key_code_to_keybind_token(code: KeyCode) -> Option<String> {
     match code {
         KeyCode::Backspace => Some("Backspace".to_string()),
         KeyCode::Enter => Some("Enter".to_string()),
@@ -259,7 +263,7 @@ pub(crate) fn key_code_to_keybind_token(code: KeyCode) -> Option<String> {
 }
 
 impl App {
-    pub(crate) fn keybind_action_from_event(&self, key: KeyEvent) -> Option<KeybindAction> {
+    pub(super) fn keybind_action_from_event(&self, key: KeyEvent) -> Option<KeybindAction> {
         let actions = [
             KeybindAction::SearchBox,
             KeybindAction::Fullscreen,
@@ -290,7 +294,7 @@ impl App {
             .find(|&action| keybind_matches(self.keybind_value_for_action(action), key))
     }
 
-    pub(crate) fn keybind_value_for_action(&self, action: KeybindAction) -> &str {
+    fn keybind_value_for_action(&self, action: KeybindAction) -> &str {
         match action {
             KeybindAction::SearchBox => &self.config.keybind_search_box,
             KeybindAction::Fullscreen => &self.config.keybind_fullscreen,
@@ -319,7 +323,7 @@ impl App {
         }
     }
 
-    pub(crate) fn keybind_value_mut_for_index(&mut self, index: usize) -> Option<&mut String> {
+    pub(super) fn keybind_value_mut_for_index(&mut self, index: usize) -> Option<&mut String> {
         match index {
             0 => Some(&mut self.config.keybind_search_box),
             1 => Some(&mut self.config.keybind_fullscreen),
@@ -347,7 +351,7 @@ impl App {
         }
     }
 
-    pub(crate) fn keybind_value_for_index(&self, index: usize) -> Option<&str> {
+    fn keybind_value_for_index(&self, index: usize) -> Option<&str> {
         match index {
             0 => Some(self.config.keybind_search_box.as_str()),
             1 => Some(self.config.keybind_fullscreen.as_str()),
@@ -375,7 +379,7 @@ impl App {
         }
     }
 
-    pub(crate) fn find_keybind_conflict(
+    pub(super) fn find_keybind_conflict(
         &self,
         current_index: usize,
         binding: &str,
@@ -398,7 +402,7 @@ impl App {
         None
     }
 
-    pub(crate) fn keybind_name_for_index(&self, index: usize) -> &'static str {
+    pub(super) fn keybind_name_for_index(&self, index: usize) -> &'static str {
         match index {
             0 => self.lang_text("搜索框", "Search Box"),
             1 => self.lang_text("全屏播放页", "Fullscreen"),
@@ -426,7 +430,7 @@ impl App {
         }
     }
 
-    pub(crate) fn reset_keybinds_to_default(&mut self) {
+    pub(super) fn reset_keybinds_to_default(&mut self) {
         self.config.keybind_search_box = DEFAULT_KEYBIND_SEARCH_BOX.to_string();
         self.config.keybind_fullscreen = DEFAULT_KEYBIND_FULLSCREEN.to_string();
         self.config.keybind_settings = DEFAULT_KEYBIND_SETTINGS.to_string();
@@ -455,7 +459,7 @@ impl App {
         self.config.keybind_download_fullscreen = DEFAULT_KEYBIND_DOWNLOAD_FULLSCREEN.to_string();
     }
 
-    pub fn keybind_label_for_index(&self, index: usize) -> String {
+    pub(crate) fn keybind_label_for_index(&self, index: usize) -> String {
         let value = self.keybind_value_for_action(match index {
             0 => KeybindAction::SearchBox,
             1 => KeybindAction::Fullscreen,

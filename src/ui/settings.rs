@@ -1309,6 +1309,7 @@ fn on_off(app: &App, enabled: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS;
     /// 编辑态横向窗口：光标在窗口内不动；撞到边界时**一次只挪一个字符**。
     #[test]
     fn path_window_only_scrolls_at_the_edges() {
@@ -1429,6 +1430,6 @@ mod tests {
 
     #[test]
     fn scrolled_rows_is_empty_without_room() {
-        assert!(scrolled_rows(crate::app::SETTINGS_KEYBIND_ITEMS, 0, 3).is_empty());
+        assert!(scrolled_rows(SETTINGS_KEYBIND_ITEMS, 0, 3).is_empty());
     }
 }

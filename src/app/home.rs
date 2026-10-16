@@ -1,14 +1,26 @@
-use super::*;
+use super::App;
+use super::Page;
+use super::api::ApiState;
+use super::cover_state::CoverFetchState;
+use super::response::first_non_empty;
+use super::response::parse_value_as_string;
+use super::response::response_code;
+use anyhow::Result;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use ncm_api::ApiResponse;
+use serde_json::Value;
 
-pub struct HomeTile {
-    pub id: Option<String>,
-    pub title: String,
-    pub subtitle: String,
-    pub cover: CoverFetchState,
+pub(crate) struct HomeTile {
+    pub(crate) id: Option<String>,
+    pub(crate) title: String,
+    pub(crate) subtitle: String,
+    pub(crate) cover: CoverFetchState,
 }
 
 impl HomeTile {
-    pub(crate) fn placeholder_daily() -> Self {
+    fn placeholder_daily() -> Self {
         Self {
             id: Some(HOME_DAILY_RECOMMEND_TILE_ID.to_string()),
             title: "每日推荐".to_string(),
@@ -17,7 +29,7 @@ impl HomeTile {
         }
     }
 
-    pub(crate) fn from_recommendation(
+    fn from_recommendation(
         api: &ApiState,
         id: Option<String>,
         title: String,
@@ -37,13 +49,13 @@ impl HomeTile {
     }
 }
 
-pub struct HomeState {
-    pub focused_idx: usize,
-    pub columns: usize,
-    pub tiles: Vec<HomeTile>,
-    pub status_line: String,
-    pub scroll_row_offset: usize,
-    pub visible_rows: usize,
+pub(crate) struct HomeState {
+    pub(crate) focused_idx: usize,
+    pub(super) columns: usize,
+    pub(crate) tiles: Vec<HomeTile>,
+    pub(crate) status_line: String,
+    pub(super) scroll_row_offset: usize,
+    pub(super) visible_rows: usize,
 }
 
 impl Default for HomeState {
@@ -60,7 +72,7 @@ impl Default for HomeState {
 }
 
 impl HomeState {
-    pub(crate) fn total_virtual_rows(&self) -> usize {
+    fn total_virtual_rows(&self) -> usize {
         if self.tiles.is_empty() {
             return 0;
         }
@@ -70,16 +82,16 @@ impl HomeState {
         last_virtual / columns + 1
     }
 
-    pub(crate) fn max_scroll_row_offset(&self) -> usize {
+    pub(super) fn max_scroll_row_offset(&self) -> usize {
         self.total_virtual_rows()
             .saturating_sub(self.visible_rows.max(1))
     }
 
-    pub(crate) fn clamp_scroll_row_offset(&mut self) {
+    pub(super) fn clamp_scroll_row_offset(&mut self) {
         self.scroll_row_offset = self.scroll_row_offset.min(self.max_scroll_row_offset());
     }
 
-    pub(crate) fn ensure_focus_visible(&mut self) {
+    pub(super) fn ensure_focus_visible(&mut self) {
         if self.tiles.is_empty() {
             self.focused_idx = 0;
             self.scroll_row_offset = 0;
@@ -105,21 +117,21 @@ impl HomeState {
         self.clamp_scroll_row_offset();
     }
 
-    pub fn set_columns(&mut self, columns: usize) {
+    pub(crate) fn set_columns(&mut self, columns: usize) {
         self.columns = columns.max(1);
         self.ensure_focus_visible();
     }
 
-    pub fn set_visible_rows(&mut self, visible_rows: usize) {
+    pub(crate) fn set_visible_rows(&mut self, visible_rows: usize) {
         self.visible_rows = visible_rows.max(1);
         self.ensure_focus_visible();
     }
 
-    pub fn effective_scroll_row_offset(&self) -> usize {
+    pub(crate) fn effective_scroll_row_offset(&self) -> usize {
         self.scroll_row_offset.min(self.max_scroll_row_offset())
     }
 
-    pub fn set_tiles(&mut self, mut tiles: Vec<HomeTile>) {
+    pub(super) fn set_tiles(&mut self, mut tiles: Vec<HomeTile>) {
         if tiles.is_empty() {
             tiles.push(HomeTile::placeholder_daily());
         }
@@ -129,7 +141,7 @@ impl HomeState {
         self.ensure_focus_visible();
     }
 
-    pub fn focus_next(&mut self) {
+    pub(super) fn focus_next(&mut self) {
         if self.tiles.is_empty() {
             return;
         }
@@ -137,7 +149,7 @@ impl HomeState {
         self.ensure_focus_visible();
     }
 
-    pub fn focus_prev(&mut self) {
+    pub(super) fn focus_prev(&mut self) {
         if self.tiles.is_empty() {
             return;
         }
@@ -149,15 +161,15 @@ impl HomeState {
         self.ensure_focus_visible();
     }
 
-    pub fn focus_left(&mut self) {
+    pub(super) fn focus_left(&mut self) {
         self.focus_prev();
     }
 
-    pub fn focus_right(&mut self) {
+    pub(super) fn focus_right(&mut self) {
         self.focus_next();
     }
 
-    pub fn focus_up(&mut self) {
+    pub(super) fn focus_up(&mut self) {
         if self.tiles.is_empty() {
             return;
         }
@@ -182,7 +194,7 @@ impl HomeState {
         }
     }
 
-    pub fn focus_down(&mut self) {
+    pub(super) fn focus_down(&mut self) {
         if self.tiles.is_empty() {
             return;
         }
@@ -211,13 +223,13 @@ impl HomeState {
     }
 }
 
-pub(crate) const HOME_DAILY_RECOMMEND_TILE_ID: &str = "__cnm_daily_recommend_songs__";
+pub(super) const HOME_DAILY_RECOMMEND_TILE_ID: &str = "__cnm_daily_recommend_songs__";
 
-pub(crate) const HOME_PRIVATE_ROAM_TILE_ID: &str = "__cnm_private_roam__";
+pub(super) const HOME_PRIVATE_ROAM_TILE_ID: &str = "__cnm_private_roam__";
 
-pub(crate) const HOME_PINNED_TITLES: [&str; 3] = ["每日推荐", "私人雷达", "私人漫游"];
+const HOME_PINNED_TITLES: [&str; 3] = ["每日推荐", "私人雷达", "私人漫游"];
 
-pub(crate) fn home_tile_real_to_virtual_index(index: usize, columns: usize) -> usize {
+fn home_tile_real_to_virtual_index(index: usize, columns: usize) -> usize {
     let cols = columns.max(1);
     if cols <= 3 || index < 3 {
         index
@@ -226,7 +238,7 @@ pub(crate) fn home_tile_real_to_virtual_index(index: usize, columns: usize) -> u
     }
 }
 
-pub(crate) fn home_tile_virtual_to_real_index(
+fn home_tile_virtual_to_real_index(
     virtual_index: usize,
     columns: usize,
     tile_len: usize,
@@ -249,14 +261,14 @@ pub(crate) fn home_tile_virtual_to_real_index(
     (real_index < tile_len).then_some(real_index)
 }
 
-pub(crate) struct RecommendCard {
-    pub(crate) id: Option<String>,
-    pub(crate) title: String,
-    pub(crate) subtitle: String,
-    pub(crate) cover_url: Option<String>,
+struct RecommendCard {
+    pub(super) id: Option<String>,
+    pub(super) title: String,
+    pub(super) subtitle: String,
+    pub(super) cover_url: Option<String>,
 }
 
-pub(crate) fn home_daily_song_items(body: &Value) -> Option<&[Value]> {
+pub(super) fn home_daily_song_items(body: &Value) -> Option<&[Value]> {
     body.pointer("/data/dailySongs")
         .and_then(|value| value.as_array().map(Vec::as_slice))
         .or_else(|| {
@@ -273,7 +285,7 @@ pub(crate) fn home_daily_song_items(body: &Value) -> Option<&[Value]> {
         })
 }
 
-pub(crate) fn normalize_home_pinned_title(title: &str) -> Option<&'static str> {
+fn normalize_home_pinned_title(title: &str) -> Option<&'static str> {
     let compact: String = title.chars().filter(|ch| !ch.is_whitespace()).collect();
 
     if compact.contains("私人漫游") {
@@ -290,10 +302,7 @@ pub(crate) fn normalize_home_pinned_title(title: &str) -> Option<&'static str> {
 }
 
 /// 歌单封面（私人雷达 tile 用）。
-pub(crate) async fn fetch_playlist_cover_url(
-    api: &mut ApiState,
-    playlist_id: &str,
-) -> Option<String> {
+async fn fetch_playlist_cover_url(api: &mut ApiState, playlist_id: &str) -> Option<String> {
     let response = api.playlist_detail(playlist_id).await.ok()?;
     if response_code(&response) != 200 {
         return None;
@@ -315,7 +324,7 @@ pub(crate) async fn fetch_playlist_cover_url(
 }
 
 /// 首页推荐 tile：每日推荐 + 推荐歌单卡片，已按固定顺序排好。
-pub(crate) async fn fetch_home_tiles(api: &mut ApiState, show_more: bool) -> Vec<HomeTile> {
+pub(super) async fn fetch_home_tiles(api: &mut ApiState, show_more: bool) -> Vec<HomeTile> {
     let mut daily_tile = HomeTile::placeholder_daily();
     if let Ok(response) = api.recommend_songs().await
         && response_code(&response) == 200
@@ -368,7 +377,7 @@ pub(crate) async fn fetch_home_tiles(api: &mut ApiState, show_more: bool) -> Vec
     prioritize_home_tiles(api, tiles, show_more)
 }
 
-pub(crate) fn prioritize_home_tiles(
+fn prioritize_home_tiles(
     api: &ApiState,
     mut tiles: Vec<HomeTile>,
     show_more: bool,
@@ -418,7 +427,7 @@ pub(crate) fn prioritize_home_tiles(
     pinned
 }
 
-pub(crate) fn parse_recommend_cards(response: &ApiResponse, limit: usize) -> Vec<RecommendCard> {
+fn parse_recommend_cards(response: &ApiResponse, limit: usize) -> Vec<RecommendCard> {
     response
         .body
         .get("recommend")
@@ -446,7 +455,7 @@ pub(crate) fn parse_recommend_cards(response: &ApiResponse, limit: usize) -> Vec
         .unwrap_or_default()
 }
 
-pub(crate) fn parse_personalized_cards(response: &ApiResponse, limit: usize) -> Vec<RecommendCard> {
+fn parse_personalized_cards(response: &ApiResponse, limit: usize) -> Vec<RecommendCard> {
     response
         .body
         .get("result")
@@ -475,7 +484,7 @@ pub(crate) fn parse_personalized_cards(response: &ApiResponse, limit: usize) -> 
 }
 
 impl App {
-    pub(crate) async fn handle_home_key(&mut self, key: KeyEvent) {
+    pub(super) async fn handle_home_key(&mut self, key: KeyEvent) {
         if self.browse.home_sidebar.is_visible() {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 match key.code {
@@ -525,7 +534,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn enter_home_tile(&mut self) {
+    pub(super) async fn enter_home_tile(&mut self) {
         if self.browse.home.tiles.is_empty() {
             return;
         }
@@ -563,14 +572,14 @@ impl App {
         }
     }
 
-    pub(crate) async fn load_home_recommendations(&mut self) -> Result<()> {
+    pub(super) async fn load_home_recommendations(&mut self) -> Result<()> {
         let tiles = fetch_home_tiles(&mut self.api, self.config.home_more_recommend).await;
         self.apply_home_tiles(tiles);
         Ok(())
     }
 
     /// 应用首页推荐 tile（首页刷新与启动初始化共用）。
-    pub(crate) fn apply_home_tiles(&mut self, tiles: Vec<HomeTile>) {
+    pub(super) fn apply_home_tiles(&mut self, tiles: Vec<HomeTile>) {
         self.browse.home.set_tiles(tiles);
         // 私人漫游 tile 封面：未播放过时为首歌封面，播放后为最后播放歌曲的封面
         self.sync_home_roam_tile_cover();

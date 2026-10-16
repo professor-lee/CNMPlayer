@@ -1,20 +1,24 @@
-use super::{AuthorState, HomeSidebarState, HomeState, PlaylistState, PrivateRoamState};
+use super::author::AuthorState;
+use super::home::HomeState;
+use super::playlist::PlaylistState;
+use super::roam::PrivateRoamState;
+use super::sidebar::HomeSidebarState;
 
 #[derive(Default)]
 pub(crate) struct BrowseController {
-    pub home: HomeState,
-    pub home_sidebar: HomeSidebarState,
-    pub playlist: PlaylistState,
-    pub private_roam: PrivateRoamState,
-    pub author: AuthorState,
-    pub(super) home_sidebar_fetch: Option<super::HomeSidebarFetchFuture>,
-    pub(super) home_sidebar_page_fetch: Option<super::HomeSidebarPageFetchFuture>,
-    pub(super) author_fetch: Option<super::AuthorFetchFuture>,
-    pub(super) playlist_fetch: Option<super::PlaylistFetchSlot>,
+    pub(crate) home: HomeState,
+    pub(crate) home_sidebar: HomeSidebarState,
+    pub(crate) playlist: PlaylistState,
+    pub(super) private_roam: PrivateRoamState,
+    pub(crate) author: AuthorState,
+    pub(super) home_sidebar_fetch: Option<super::sidebar::HomeSidebarFetchFuture>,
+    pub(super) home_sidebar_page_fetch: Option<super::sidebar::HomeSidebarPageFetchFuture>,
+    pub(super) author_fetch: Option<super::author::AuthorFetchFuture>,
+    pub(super) playlist_fetch: Option<super::playlist::PlaylistFetchSlot>,
 }
 
 impl BrowseController {
-    pub fn reset_pages(&mut self) {
+    pub(super) fn reset_pages(&mut self) {
         self.home_sidebar_fetch = None;
         self.home_sidebar_page_fetch = None;
         self.author_fetch = None;
@@ -28,9 +32,9 @@ impl BrowseController {
 
     pub(super) fn apply_playlist(
         &mut self,
-        fetch: super::PlaylistFetch,
-        api: &super::ApiState,
-    ) -> Option<super::LikedRefresh> {
+        fetch: super::playlist::PlaylistFetch,
+        api: &super::api::ApiState,
+    ) -> Option<super::likes::LikedRefresh> {
         self.playlist_fetch = None;
         self.playlist.cancel_pagination();
         self.playlist.id = Some(fetch.id);
@@ -55,7 +59,11 @@ impl BrowseController {
         fetch.liked
     }
 
-    pub(super) fn apply_author(&mut self, fetch: super::AuthorFetch, api: &super::ApiState) {
+    pub(super) fn apply_author(
+        &mut self,
+        fetch: super::author::AuthorFetch,
+        api: &super::api::ApiState,
+    ) {
         self.author_fetch = None;
         self.author.id = Some(fetch.id);
         self.author.title = fetch.title;

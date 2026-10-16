@@ -1,10 +1,13 @@
-use super::*;
+use super::api::ApiState;
+use super::response::first_non_empty;
+use super::response::parse_value_as_string;
+use serde_json::Value;
 
 /// `song/detail` →「点名字进页面」要用的作者 / 专辑 ID。
 ///
 /// 队列与搜索结果只带歌曲 ID 与拼好的显示名（曲目行没有 `ar`/`al` 的 ID），
 /// 所以按需解析一次。
-pub(crate) async fn fetch_song_page_refs(mut api: ApiState, song_id: &str) -> SongPageRefs {
+pub(super) async fn fetch_song_page_refs(mut api: ApiState, song_id: &str) -> SongPageRefs {
     let Ok(detail) = api.song_detail(song_id).await else {
         return SongPageRefs::default();
     };
@@ -37,26 +40,26 @@ pub(crate) async fn fetch_song_page_refs(mut api: ApiState, song_id: &str) -> So
 }
 
 #[derive(Debug, Clone)]
-pub struct PlaylistTrack {
-    pub kind: PlaylistTrackKind,
-    pub id: Option<String>,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub cover_url: Option<String>,
-    pub duration_ms: i64,
-    pub duration: String,
+pub(crate) struct PlaylistTrack {
+    pub(crate) kind: PlaylistTrackKind,
+    pub(crate) id: Option<String>,
+    pub(crate) title: String,
+    pub(crate) artist: String,
+    pub(crate) album: String,
+    pub(crate) cover_url: Option<String>,
+    pub(crate) duration_ms: i64,
+    pub(crate) duration: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaylistTrackKind {
+pub(crate) enum PlaylistTrackKind {
     Song,
     Album,
     Ep,
     Single,
 }
 
-pub(crate) fn parse_tracks(items: &[Value]) -> Vec<PlaylistTrack> {
+pub(super) fn parse_tracks(items: &[Value]) -> Vec<PlaylistTrack> {
     let mut tracks = Vec::new();
 
     for item in items {
@@ -106,17 +109,17 @@ pub(crate) fn artist_name_segments(line: &str) -> Vec<&str> {
 
 /// 全屏页点名字进页面时，`song/detail` 里用得上的两样东西。
 #[derive(Debug, Default)]
-pub(crate) struct SongPageRefs {
+pub(super) struct SongPageRefs {
     /// `ar`：显示顺序的作者（名称 + ID；缺 ID 的条目保留占位，别让后面的下标错位）。
-    pub(crate) artists: Vec<(String, Option<String>)>,
-    pub(crate) album_id: Option<String>,
+    pub(super) artists: Vec<(String, Option<String>)>,
+    pub(super) album_id: Option<String>,
 }
 
 /// `song/detail` 里显示串第 `index` 段对应的作者 ID。
 ///
 /// 先按名字匹配（显示串由同一份 `ar` 拼出来，正常都能命中；`ar` 顺序或名字带后缀时也稳），
 /// 再按位置兜底（`ar` 顺序 = 显示顺序）；两者都没有就返回 `None`，让调用方只报状态、不换页。
-pub(crate) fn pick_artist_id(
+pub(super) fn pick_artist_id(
     artists: &[(String, Option<String>)],
     line: &str,
     index: usize,
@@ -132,7 +135,7 @@ pub(crate) fn pick_artist_id(
     artists.get(index).and_then(|(_, id)| id.clone())
 }
 
-pub(crate) fn parse_artists(track: &Value) -> Option<String> {
+pub(super) fn parse_artists(track: &Value) -> Option<String> {
     let artists = track
         .get("ar")
         .and_then(|value| value.as_array())
@@ -151,7 +154,7 @@ pub(crate) fn parse_artists(track: &Value) -> Option<String> {
     }
 }
 
-pub(crate) fn format_duration(duration_ms: i64) -> String {
+pub(super) fn format_duration(duration_ms: i64) -> String {
     let total = (duration_ms.max(0) / 1000) as u64;
     let mm = total / 60;
     let ss = total % 60;

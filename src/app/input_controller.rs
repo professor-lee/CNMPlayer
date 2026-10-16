@@ -1,22 +1,43 @@
-use super::*;
+use super::App;
+use super::Overlay;
+use super::Page;
+use super::keybinds::KeybindAction;
+use super::keybinds::keybind_matches;
+use super::presentation::SmallWindowMode;
+use super::search_controller::SEARCH_BOX_ANIM_DURATION;
+use super::sidebar::HomeSidebarHit;
+use super::sidebar::HomeSidebarSection;
+use crate::render::motion::Curve;
+use crate::render::motion::Toggle;
+use crate::ui::page_lyrics;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use ratatui::layout::Rect;
+use std::time::Duration;
+use std::time::Instant;
 
 /// 全屏页普通布局的最小宽度；主程序小于该宽度时不响应打开全屏。
-pub(crate) const FULLSCREEN_MIN_WIDTH: u16 = 50;
+const FULLSCREEN_MIN_WIDTH: u16 = 50;
 
-pub(crate) const CONTENT_DOUBLE_CLICK_MS: u64 = 400;
+pub(super) const CONTENT_DOUBLE_CLICK_MS: u64 = 400;
 
-pub(crate) const GLOBAL_HOTKEY_COOLDOWN_MS: u64 = 120;
+const GLOBAL_HOTKEY_COOLDOWN_MS: u64 = 120;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct HitRect {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
+pub(crate) struct HitRect {
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
 }
 
 impl HitRect {
-    pub fn contains(self, col: u16, row: u16) -> bool {
+    pub(crate) fn contains(self, col: u16, row: u16) -> bool {
         self.width > 0
             && self.height > 0
             && col >= self.x
@@ -42,13 +63,13 @@ impl From<ratatui::layout::Rect> for HitRect {
 /// 拖拽与"点击浮窗不穿透到下面的 tile"都以这份为准（每帧由
 /// `page_lyrics::draw_page_lyrics_overlay` 重登记）。
 #[derive(Debug, Clone, Copy)]
-pub struct PageLyricsLayout {
-    pub content: HitRect,
-    pub panel: HitRect,
+pub(super) struct PageLyricsLayout {
+    pub(super) content: HitRect,
+    pub(super) panel: HitRect,
 }
 
 impl PageLyricsLayout {
-    pub fn content_rect(self) -> Rect {
+    fn content_rect(self) -> Rect {
         Rect {
             x: self.content.x,
             y: self.content.y,
@@ -57,7 +78,7 @@ impl PageLyricsLayout {
         }
     }
 
-    pub fn panel_rect(self) -> Rect {
+    fn panel_rect(self) -> Rect {
         Rect {
             x: self.panel.x,
             y: self.panel.y,
@@ -68,21 +89,21 @@ impl PageLyricsLayout {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PlayerBarHitTargets {
-    pub prev: Option<HitRect>,
-    pub play_pause: Option<HitRect>,
-    pub next: Option<HitRect>,
-    pub progress: Option<HitRect>,
+pub(crate) struct PlayerBarHitTargets {
+    pub(crate) prev: Option<HitRect>,
+    pub(crate) play_pause: Option<HitRect>,
+    pub(crate) next: Option<HitRect>,
+    pub(crate) progress: Option<HitRect>,
     /// 收藏爱心（左列右端）。
-    pub like: Option<HitRect>,
+    pub(crate) like: Option<HitRect>,
     /// 下载按钮（爱心左侧隔一格；下载不可用时不登记）。
-    pub download: Option<HitRect>,
+    pub(crate) download: Option<HitRect>,
     /// 播放模式符号（控制串最后一个字符）。
-    pub mode: Option<HitRect>,
+    pub(crate) mode: Option<HitRect>,
 }
 
 impl App {
-    pub async fn handle_key(&mut self, key: KeyEvent) {
+    pub(crate) async fn handle_key(&mut self, key: KeyEvent) {
         if key.kind != KeyEventKind::Press {
             return;
         }
@@ -142,7 +163,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn handle_small_window_key(&mut self, key: KeyEvent) {
+    async fn handle_small_window_key(&mut self, key: KeyEvent) {
         if keybind_matches(self.config.keybind_small_window_toggle.as_str(), key) {
             if self.small_window_mode == Some(SmallWindowMode::Flat) {
                 self.toggle_flat_panel();
@@ -170,7 +191,7 @@ impl App {
         }
     }
 
-    pub async fn handle_mouse(&mut self, mouse: MouseEvent) {
+    pub(crate) async fn handle_mouse(&mut self, mouse: MouseEvent) {
         // 松开左键总是收尾拖拽：即使中途切到小窗口/弹窗也不会卡住拖动状态
         // （卡住会让 should_continuous_redraw 一直按高帧率重绘）。
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
@@ -248,7 +269,7 @@ impl App {
     ///
     /// 命中区每帧由 `draw_collapsed_player_bar` 重注册，这里只查表；
     /// 新增按钮必须同时登记进 `PlayerBarHitTargets` 与 `player_bar_contains`。
-    pub(crate) async fn dispatch_player_bar_click(&mut self, col: u16, row: u16) {
+    async fn dispatch_player_bar_click(&mut self, col: u16, row: u16) {
         let hits = self.player_bar_hits;
 
         if hits.download.is_some_and(|rect| rect.contains(col, row)) {
@@ -289,7 +310,7 @@ impl App {
         }
     }
 
-    pub(crate) fn player_bar_contains(&self, col: u16, row: u16) -> bool {
+    fn player_bar_contains(&self, col: u16, row: u16) -> bool {
         let hits = self.player_bar_hits;
         [
             hits.prev,
@@ -305,7 +326,7 @@ impl App {
         .any(|rect| rect.contains(col, row))
     }
 
-    pub(crate) async fn handle_content_scroll(&mut self, col: u16, row: u16, forward: bool) {
+    async fn handle_content_scroll(&mut self, col: u16, row: u16, forward: bool) {
         if self.overlay.is_some() || self.player_bar_contains(col, row) {
             return;
         }
@@ -331,15 +352,15 @@ impl App {
         };
     }
 
-    pub fn clear_player_bar_hits(&mut self) {
+    pub(crate) fn clear_player_bar_hits(&mut self) {
         self.player_bar_hits = PlayerBarHitTargets::default();
     }
 
-    pub fn set_player_bar_hits(&mut self, hits: PlayerBarHitTargets) {
+    pub(crate) fn set_player_bar_hits(&mut self, hits: PlayerBarHitTargets) {
         self.player_bar_hits = hits;
     }
 
-    pub fn clear_content_hits(&mut self) {
+    pub(crate) fn clear_content_hits(&mut self) {
         self.home_sidebar_panel_hit = None;
         self.home_sidebar_playlist_hits.clear();
         self.home_sidebar_section_hits.clear();
@@ -353,12 +374,12 @@ impl App {
     }
 
     /// 歌词浮窗位置（归一化，内容区内左上角）。
-    pub fn page_lyrics_pos(&self) -> (f32, f32) {
+    pub(crate) fn page_lyrics_pos(&self) -> (f32, f32) {
         (self.config.page_lyrics_pos_x, self.config.page_lyrics_pos_y)
     }
 
     /// 登记本帧歌词浮窗几何（由 `page_lyrics::draw_page_lyrics_overlay` 调用）。
-    pub fn set_page_lyrics_layout(&mut self, content: Rect, panel: Rect) {
+    pub(crate) fn set_page_lyrics_layout(&mut self, content: Rect, panel: Rect) {
         self.page_lyrics_layout = Some(PageLyricsLayout {
             content: content.into(),
             panel: panel.into(),
@@ -367,7 +388,7 @@ impl App {
 
     /// 鼠标按下：落在歌词浮窗上就吞掉这次点击（不穿透到下面的 tile），
     /// 并按配置决定是否开始拖动。返回是否已消费。
-    pub(crate) fn page_lyrics_press(&mut self, col: u16, row: u16) -> bool {
+    fn page_lyrics_press(&mut self, col: u16, row: u16) -> bool {
         let Some(layout) = self.page_lyrics_layout else {
             return false;
         };
@@ -385,7 +406,7 @@ impl App {
     }
 
     /// 拖动中：把浮窗移到光标处（保持抓取偏移，钳在内容区内）。
-    pub(crate) fn page_lyrics_drag(&mut self, col: u16, row: u16) {
+    pub(super) fn page_lyrics_drag(&mut self, col: u16, row: u16) {
         let (Some(layout), Some(grab)) = (self.page_lyrics_layout, self.page_lyrics_grab) else {
             return;
         };
@@ -397,7 +418,7 @@ impl App {
     }
 
     /// 松开：按配置吸附到最近的角，并把位置写回配置。
-    pub(crate) fn page_lyrics_release(&mut self) {
+    fn page_lyrics_release(&mut self) {
         if self.page_lyrics_grab.take().is_none() {
             return;
         }
@@ -417,55 +438,59 @@ impl App {
         self.persist_config();
     }
 
-    pub fn clear_settings_item_hits(&mut self) {
+    pub(crate) fn clear_settings_item_hits(&mut self) {
         self.settings.item_hits.clear();
     }
 
-    pub fn push_settings_item_hit(&mut self, rect: HitRect, index: usize) {
+    pub(crate) fn push_settings_item_hit(&mut self, rect: HitRect, index: usize) {
         self.settings.item_hits.push((rect, index));
     }
 
-    pub fn set_home_sidebar_panel_hit(&mut self, rect: Option<HitRect>) {
+    pub(crate) fn set_home_sidebar_panel_hit(&mut self, rect: Option<HitRect>) {
         self.home_sidebar_panel_hit = rect;
     }
 
-    pub fn set_home_sidebar_anim_span_cells(&mut self, span_cells: u16) {
+    pub(crate) fn set_home_sidebar_anim_span_cells(&mut self, span_cells: u16) {
         self.home_sidebar_anim_span_cells = span_cells.max(1);
     }
 
-    pub fn push_home_sidebar_playlist_hit(&mut self, rect: HitRect, hit: HomeSidebarHit) {
+    pub(crate) fn push_home_sidebar_playlist_hit(&mut self, rect: HitRect, hit: HomeSidebarHit) {
         self.home_sidebar_playlist_hits.push((rect, hit));
     }
 
-    pub fn push_home_sidebar_section_hit(&mut self, rect: HitRect, section: HomeSidebarSection) {
+    pub(crate) fn push_home_sidebar_section_hit(
+        &mut self,
+        rect: HitRect,
+        section: HomeSidebarSection,
+    ) {
         self.home_sidebar_section_hits.push((rect, section));
     }
 
-    pub fn push_home_tile_hit(&mut self, rect: HitRect, index: usize) {
+    pub(crate) fn push_home_tile_hit(&mut self, rect: HitRect, index: usize) {
         self.home_tile_hits.push((rect, index));
     }
 
-    pub fn push_playlist_track_hit(&mut self, rect: HitRect, index: usize) {
+    pub(crate) fn push_playlist_track_hit(&mut self, rect: HitRect, index: usize) {
         self.playlist_track_hits.push((rect, index));
     }
 
-    pub fn push_playlist_track_download_hit(&mut self, rect: HitRect, index: usize) {
+    pub(crate) fn push_playlist_track_download_hit(&mut self, rect: HitRect, index: usize) {
         self.playlist_track_download_hits.push((rect, index));
     }
 
-    pub fn push_search_item_download_hit(&mut self, rect: HitRect, index: usize) {
+    pub(crate) fn push_search_item_download_hit(&mut self, rect: HitRect, index: usize) {
         self.search_item_download_hits.push((rect, index));
     }
 
-    pub fn push_author_tile_hit(&mut self, rect: HitRect, index: usize) {
+    pub(crate) fn push_author_tile_hit(&mut self, rect: HitRect, index: usize) {
         self.author_tile_hits.push((rect, index));
     }
 
-    pub fn push_search_item_hit(&mut self, rect: HitRect, index: usize) {
+    pub(crate) fn push_search_item_hit(&mut self, rect: HitRect, index: usize) {
         self.search_item_hits.push((rect, index));
     }
 
-    pub(crate) async fn handle_overlay_key(&mut self, overlay: Overlay, key: KeyEvent) {
+    async fn handle_overlay_key(&mut self, overlay: Overlay, key: KeyEvent) {
         match overlay {
             Overlay::Settings => self.handle_settings_root_key(key).await,
             Overlay::SettingsPlayback => self.handle_settings_playback_key(key),
@@ -477,7 +502,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn try_handle_configured_hotkey(&mut self, key: KeyEvent) -> bool {
+    async fn try_handle_configured_hotkey(&mut self, key: KeyEvent) -> bool {
         let Some(action) = self.keybind_action_from_event(key) else {
             return false;
         };
@@ -504,7 +529,7 @@ impl App {
         true
     }
 
-    pub(crate) fn can_execute_global_hotkey(&mut self) -> bool {
+    fn can_execute_global_hotkey(&mut self) -> bool {
         let now = Instant::now();
         if let Some(last_at) = self.last_global_hotkey_at
             && now.duration_since(last_at) < Duration::from_millis(GLOBAL_HOTKEY_COOLDOWN_MS)
@@ -515,7 +540,7 @@ impl App {
         true
     }
 
-    pub(crate) async fn trigger_keybind_action(&mut self, action: KeybindAction) {
+    async fn trigger_keybind_action(&mut self, action: KeybindAction) {
         match action {
             KeybindAction::SearchBox => self.open_search_box(),
             KeybindAction::Fullscreen => {
@@ -551,7 +576,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn quick_page_up_hotkey(&mut self) {
+    async fn quick_page_up_hotkey(&mut self) {
         match self.page {
             Page::Search => {
                 let step = self.search.page_items();
@@ -573,7 +598,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn quick_page_down_hotkey(&mut self) {
+    async fn quick_page_down_hotkey(&mut self) {
         match self.page {
             Page::Search => {
                 let step = self.search.page_items();
@@ -601,7 +626,7 @@ impl App {
         }
     }
 
-    pub(crate) fn is_double_content_click(&mut self, page: Page, index: usize) -> bool {
+    fn is_double_content_click(&mut self, page: Page, index: usize) -> bool {
         let now = Instant::now();
         let is_double = self
             .last_content_click
@@ -615,7 +640,7 @@ impl App {
         is_double
     }
 
-    pub(crate) fn home_sidebar_double_click_index(hit: HomeSidebarHit) -> usize {
+    fn home_sidebar_double_click_index(hit: HomeSidebarHit) -> usize {
         const CREATED_BASE: usize = 10_000;
         const COLLECTED_BASE: usize = 20_000;
         match hit.section {
@@ -624,7 +649,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn handle_content_click(&mut self, col: u16, row: u16) -> bool {
+    async fn handle_content_click(&mut self, col: u16, row: u16) -> bool {
         match self.page {
             Page::Home => {
                 if self.browse.home_sidebar.is_visible() {
@@ -768,12 +793,10 @@ impl App {
     }
 }
 
-use crate::render::motion::Toggle;
-
 /// Search-box input and animation state.
 pub(crate) struct InputController {
-    pub search_box_input: String,
-    pub search_box_cursor: usize,
+    pub(crate) search_box_input: String,
+    pub(crate) search_box_cursor: usize,
     pub(crate) search_motion: Toggle,
 }
 
@@ -788,32 +811,32 @@ impl Default for InputController {
 }
 
 impl InputController {
-    pub fn set_text(&mut self, text: String) {
+    pub(super) fn set_text(&mut self, text: String) {
         self.search_box_input = text;
         self.search_box_cursor = self.search_box_input.chars().count();
     }
 
-    pub fn insert(&mut self, ch: char) -> bool {
-        if self.search_box_input.chars().count() >= super::MAX_INPUT_LEN {
+    pub(crate) fn insert(&mut self, ch: char) -> bool {
+        if self.search_box_input.chars().count() >= super::text::MAX_INPUT_LEN {
             return false;
         }
-        super::insert_char_at(&mut self.search_box_input, self.search_box_cursor, ch);
+        super::text::insert_char_at(&mut self.search_box_input, self.search_box_cursor, ch);
         self.search_box_cursor += 1;
         true
     }
 
-    pub fn backspace(&mut self) {
+    pub(super) fn backspace(&mut self) {
         if self.search_box_cursor > 0 {
             self.search_box_cursor =
-                super::remove_char_before(&mut self.search_box_input, self.search_box_cursor);
+                super::text::remove_char_before(&mut self.search_box_input, self.search_box_cursor);
         }
     }
 
-    pub fn delete(&mut self) {
-        super::remove_char_at(&mut self.search_box_input, self.search_box_cursor);
+    pub(super) fn delete(&mut self) {
+        super::text::remove_char_at(&mut self.search_box_input, self.search_box_cursor);
     }
 
-    pub fn move_cursor(&mut self, delta: isize) {
+    pub(super) fn move_cursor(&mut self, delta: isize) {
         let len = self.search_box_input.chars().count() as isize;
         self.search_box_cursor = (self.search_box_cursor as isize + delta).clamp(0, len) as usize;
     }

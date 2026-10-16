@@ -1,22 +1,35 @@
-use super::*;
+use super::App;
+use super::api::ApiState;
+use super::home::HOME_PRIVATE_ROAM_TILE_ID;
+use super::playback_controller::PlaybackTrack;
+use super::response::response_code;
+use super::tracks::PlaylistTrack;
+use super::tracks::PlaylistTrackKind;
+use super::tracks::format_duration;
+use super::tracks::parse_tracks;
+use crate::data::persistence::PersistenceKey;
+use crate::data::private_roam;
+use anyhow::Result;
+use anyhow::anyhow;
+use serde_json::Value;
 
 /// 私人漫游状态：歌曲列表、最后播放位置与展示封面
 #[derive(Debug, Clone, Default)]
-pub struct PrivateRoamState {
+pub(super) struct PrivateRoamState {
     /// 漫游歌曲列表（权威副本，进入漫游时填充到 playlist）
-    pub tracks: Vec<PlaylistTrack>,
+    pub(super) tracks: Vec<PlaylistTrack>,
     /// 最后播放歌曲在列表中的索引（每日刷新后若保留在首位则为 0）
-    pub last_played_index: Option<usize>,
+    pub(super) last_played_index: Option<usize>,
     /// 最后播放的漫游歌曲封面（切到别的列表播放后仍保留）
-    pub last_played_cover_url: Option<String>,
+    pub(super) last_played_cover_url: Option<String>,
     /// 当前应展示的封面：未播放过时为首歌封面，播放后为播放中的歌曲封面
-    pub cover_url: Option<String>,
+    pub(super) cover_url: Option<String>,
     /// 每日刷新标记：上次刷新的 UTC 天数
-    pub last_refresh_day: Option<i64>,
+    pub(super) last_refresh_day: Option<i64>,
 }
 
 /// 拉取一批私人漫游歌曲（接口每次固定返回 3 首，连拉几次去重）
-pub(crate) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<PlaylistTrack> {
+pub(super) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<PlaylistTrack> {
     let mut tracks = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -44,7 +57,7 @@ pub(crate) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<Playlist
 }
 
 /// 当前 UTC 日期对应的天数（每日刷新标记用）
-pub(crate) fn today_day_number() -> i64 {
+fn today_day_number() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs() as i64 / 86400)
@@ -52,7 +65,7 @@ pub(crate) fn today_day_number() -> i64 {
 }
 
 /// 每日刷新合并规则：上次最后播放的歌曲保留在首位，其后追加新歌（按 id 去重）
-pub(crate) fn merge_private_roam_refresh(
+pub(super) fn merge_private_roam_refresh(
     old_tracks: &[PlaylistTrack],
     last_played_index: Option<usize>,
     fetched: Vec<PlaylistTrack>,
@@ -77,7 +90,7 @@ pub(crate) fn merge_private_roam_refresh(
 }
 
 /// 私人 FM/漫游接口的歌曲对象用 `album`/`artists` 字段，规整为歌单通用的 `al`/`ar`
-pub(crate) fn normalize_fm_song_items(items: &[Value]) -> Vec<Value> {
+pub(super) fn normalize_fm_song_items(items: &[Value]) -> Vec<Value> {
     items
         .iter()
         .map(|item| {
@@ -98,7 +111,7 @@ pub(crate) fn normalize_fm_song_items(items: &[Value]) -> Vec<Value> {
 }
 
 impl App {
-    pub(crate) async fn load_private_roam_playlist(&mut self) -> Result<()> {
+    pub(super) async fn load_private_roam_playlist(&mut self) -> Result<()> {
         // 兜底：内存列表为空（首次使用且启动刷新失败过）时现场拉取
         if self.browse.private_roam.tracks.is_empty() {
             let fetched = fetch_private_roam_songs(&mut self.api).await;
@@ -151,12 +164,12 @@ impl App {
     }
 
     /// 今天是否已刷新过私人漫游（刷新判据只有这一处）。
-    pub(crate) fn private_roam_refreshed_today(&self) -> bool {
+    pub(super) fn private_roam_refreshed_today(&self) -> bool {
         self.browse.private_roam.last_refresh_day == Some(today_day_number())
     }
 
     /// 应用一批新拉取的漫游歌曲（启动初始化与每日刷新共用）。
-    pub(crate) fn apply_private_roam_refresh(&mut self, fetched: Vec<PlaylistTrack>) {
+    pub(super) fn apply_private_roam_refresh(&mut self, fetched: Vec<PlaylistTrack>) {
         let today = today_day_number();
         if fetched.is_empty() {
             // 拉取失败保留旧列表，下次启动再试
@@ -184,7 +197,7 @@ impl App {
     }
 
     /// 播放到列表末尾时追加一批新歌
-    pub(crate) async fn append_private_roam_songs(&mut self) {
+    async fn append_private_roam_songs(&mut self) {
         let fetched = fetch_private_roam_songs(&mut self.api).await;
         if fetched.is_empty() {
             return;
@@ -226,7 +239,7 @@ impl App {
     }
 
     /// 播放队列切到某首歌时，记录漫游播放位置与封面；播放到最后一首时追加新歌
-    pub(crate) async fn track_private_roam_playback(&mut self, track: &PlaybackTrack) {
+    pub(super) async fn track_private_roam_playback(&mut self, track: &PlaybackTrack) {
         let Some(pos) = self
             .browse
             .private_roam
@@ -272,11 +285,11 @@ impl App {
     ///
     /// 判据是随播放记忆持久化的来源 id，而非 `self.playlist.id`——后者是
     /// 当前浏览页面，重启后为 None，会让漫游退化成普通歌单。
-    pub(crate) fn playback_queue_is_roam(&self) -> bool {
+    pub(super) fn playback_queue_is_roam(&self) -> bool {
         self.playback.playback_queue_source_id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)
     }
 
-    pub(crate) fn persist_private_roam(&self) {
+    fn persist_private_roam(&self) {
         let record = private_roam::PrivateRoamRecord {
             tracks: self
                 .browse
@@ -304,7 +317,7 @@ impl App {
             });
     }
 
-    pub(crate) async fn load_private_roam_memory(&mut self) {
+    pub(super) async fn load_private_roam_memory(&mut self) {
         let result = compio::runtime::spawn_blocking(private_roam::load).await;
         let record = match result {
             Ok(Ok(Some(record))) => record,
@@ -346,7 +359,7 @@ impl App {
         });
     }
 
-    pub(crate) fn sync_home_roam_tile_cover(&mut self) {
+    pub(super) fn sync_home_roam_tile_cover(&mut self) {
         let Some(url) = self.browse.private_roam.cover_url.clone() else {
             return;
         };

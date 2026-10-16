@@ -1,6 +1,16 @@
-use super::*;
+use super::App;
+use super::mpris_bridge::MprisControlEvent;
+use super::mpris_bridge::MprisSyncPayload;
+use super::playback_controller::PlaybackRuntimeState;
+use super::playback_controller::PlaybackTrack;
+use super::playback_controller::map_audio_state;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
+use std::time::Duration;
+use std::time::Instant;
 
-pub(crate) fn mpris_metadata_signature(track: &PlaybackTrack) -> u64 {
+fn mpris_metadata_signature(track: &PlaybackTrack) -> u64 {
     let mut hasher = DefaultHasher::new();
     track.song_id.hash(&mut hasher);
     track.duration_ms.hash(&mut hasher);
@@ -31,7 +41,7 @@ pub(crate) fn mpris_metadata_signature(track: &PlaybackTrack) -> u64 {
 }
 
 impl App {
-    pub(crate) async fn apply_mpris_control_events(&mut self) {
+    pub(super) async fn apply_mpris_control_events(&mut self) {
         for event in self.mpris_bridge.drain_control_events() {
             match event {
                 MprisControlEvent::Play => self.mpris_play().await,
@@ -50,7 +60,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn mpris_play(&mut self) {
+    async fn mpris_play(&mut self) {
         if self.playback.now_playing.is_none() {
             return;
         }
@@ -66,7 +76,7 @@ impl App {
         }
     }
 
-    pub(crate) fn mpris_pause(&mut self) {
+    fn mpris_pause(&mut self) {
         self.playback.page_advance = None;
         if self.playback.playback_state == PlaybackRuntimeState::Playing {
             self.playback.audio_player.toggle_play_pause();
@@ -74,7 +84,7 @@ impl App {
         }
     }
 
-    pub(crate) fn mpris_seek_relative(&mut self, delta_micros: i64) {
+    fn mpris_seek_relative(&mut self, delta_micros: i64) {
         let total = self.playback_duration();
         let total_micros = total.as_micros();
         if total_micros == 0 {
@@ -87,7 +97,7 @@ impl App {
         self.seek_to_ratio(ratio);
     }
 
-    pub(crate) fn mpris_seek_absolute(&mut self, position_micros: i64) {
+    fn mpris_seek_absolute(&mut self, position_micros: i64) {
         let total = self.playback_duration();
         let total_micros = total.as_micros();
         if total_micros == 0 {
@@ -99,7 +109,7 @@ impl App {
         self.seek_to_ratio(ratio);
     }
 
-    pub(crate) fn sync_mpris_exposure(&mut self) {
+    pub(super) fn sync_mpris_exposure(&mut self) {
         let now = Instant::now();
         let signature = self
             .playback

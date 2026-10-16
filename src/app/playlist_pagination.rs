@@ -1,14 +1,17 @@
-use super::{
-    ApiState, PlaylistPageFetch, PlaylistPageFetchFuture, PlaylistPageTask,
-    fetch_playlist_tracks_page, peek_shared, spawn_shared,
-};
+use super::api::ApiState;
+use super::owned_task::peek_shared;
+use super::owned_task::spawn_shared;
+use super::playlist::PlaylistPageFetch;
+use super::playlist::PlaylistPageFetchFuture;
+use super::playlist::PlaylistPageTask;
+use super::playlist::fetch_playlist_tracks_page;
 use crate::data::playback_session::PlaylistCursor;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Browsing and playback share one source-bound cursor and one cancellable request.
 #[derive(Clone)]
-pub(crate) struct PlaylistPagination(Rc<RefCell<PaginationState>>);
+pub(super) struct PlaylistPagination(Rc<RefCell<PaginationState>>);
 
 struct PaginationState {
     cursor: PlaylistCursor,
@@ -17,7 +20,7 @@ struct PaginationState {
 }
 
 impl PlaylistPagination {
-    pub fn new(cursor: PlaylistCursor) -> Self {
+    pub(super) fn new(cursor: PlaylistCursor) -> Self {
         Self(Rc::new(RefCell::new(PaginationState {
             cursor,
             pending: None,
@@ -25,29 +28,29 @@ impl PlaylistPagination {
         })))
     }
 
-    pub fn same_source(&self, other: &Self) -> bool {
+    pub(super) fn same_source(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
-    pub fn cursor(&self) -> PlaylistCursor {
+    pub(super) fn cursor(&self) -> PlaylistCursor {
         self.0.borrow().cursor.clone()
     }
 
-    pub fn has_more(&self) -> bool {
+    pub(super) fn has_more(&self) -> bool {
         self.0.borrow().cursor.has_more
     }
 
-    pub fn is_pending(&self) -> bool {
+    pub(super) fn is_pending(&self) -> bool {
         self.0.borrow().pending.is_some()
     }
 
-    pub fn cancel(&self) {
+    pub(super) fn cancel(&self) {
         let mut state = self.0.borrow_mut();
         state.pending = None;
         state.attempted_offset = None;
     }
 
-    pub fn prefetch(&self, api: ApiState) {
+    pub(super) fn prefetch(&self, api: ApiState) {
         let state = self.0.borrow();
         if state.attempted_offset == Some(state.cursor.next_offset) {
             return;
@@ -55,7 +58,7 @@ impl PlaylistPagination {
         drop(state);
         self.request(api);
     }
-    pub fn request(&self, api: ApiState) {
+    pub(super) fn request(&self, api: ApiState) {
         let mut state = self.0.borrow_mut();
         if state.pending.is_some() || !state.cursor.has_more {
             return;
@@ -73,7 +76,7 @@ impl PlaylistPagination {
     }
 
     /// A shared response is consumed once; only its original source and offset may advance.
-    pub fn take_ready(&self) -> Option<Result<PlaylistPageFetch, String>> {
+    pub(super) fn take_ready(&self) -> Option<Result<PlaylistPageFetch, String>> {
         let mut state = self.0.borrow_mut();
         let result = peek_shared(state.pending.as_ref()?).cloned()?;
         state.pending = None;
@@ -92,16 +95,16 @@ impl PlaylistPagination {
 pub(super) fn apply_page(
     pagination: &PlaylistPagination,
     page: PlaylistPageFetch,
-    browse: &mut super::PlaylistState,
+    browse: &mut super::playlist::PlaylistState,
     playback_pagination: Option<&PlaylistPagination>,
-    queue: &mut Vec<super::PlaybackTrack>,
+    queue: &mut Vec<super::playback_controller::PlaybackTrack>,
 ) -> bool {
     let playing = playback_pagination.is_some_and(|pager| pager.same_source(pagination));
     if playing {
         queue.extend(
             page.tracks
                 .iter()
-                .filter_map(super::PlaybackTrack::from_playlist_track),
+                .filter_map(super::playback_controller::PlaybackTrack::from_playlist_track),
         );
     }
     if browse
@@ -117,8 +120,16 @@ pub(super) fn apply_page(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::app::{PlaybackTrack, PlaylistState, PlaylistTrack, PlaylistTrackKind};
+    use super::super::owned_task::spawn_shared;
+    use super::super::playback_controller::PlaybackTrack;
+    use super::super::playlist::PlaylistPageFetch;
+    use super::super::playlist::PlaylistPageTask;
+    use super::super::playlist::PlaylistState;
+    use super::super::playlist_pagination::PlaylistPagination;
+    use super::super::playlist_pagination::apply_page;
+    use super::super::tracks::PlaylistTrack;
+    use super::super::tracks::PlaylistTrackKind;
+    use crate::data::playback_session::PlaylistCursor;
     use crate::render::wake::WakeSignal;
 
     fn track(id: &str) -> PlaylistTrack {

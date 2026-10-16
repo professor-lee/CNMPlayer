@@ -28,8 +28,11 @@ pub(super) async fn run_latest<Request: Clone, Response>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::latest_fetch::run_latest;
+    use crate::render::wake::WakeSignal;
+    use futures::channel::mpsc;
     use futures::channel::oneshot;
+    use see::unsync as watch;
     use std::cell::RefCell;
     use std::rc::Rc;
 

@@ -1,4 +1,4 @@
-pub fn peek_shared_future<T>(cover_bytes: &Option<SharedTask<T>>) -> Option<&T> {
+pub(super) fn peek_shared_future<T>(cover_bytes: &Option<SharedTask<T>>) -> Option<&T> {
     cover_bytes.as_ref()?.peek()?.as_ref()
 }
 
@@ -9,7 +9,8 @@ pub(super) fn peek_shared<T>(fut: &SharedTask<T>) -> Option<&T> {
 
 use crate::render::wake::WakeSignal;
 use compio::runtime::JoinHandle;
-use futures::{FutureExt, future::Shared};
+use futures::FutureExt;
+use futures::future::Shared;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -18,13 +19,13 @@ type SharedOutput<T> = Shared<Pin<Box<dyn Future<Output = Option<T>>>>>;
 /// The last UI owner cancels the runner. The runner never owns this guard.
 /// A completed output can be shared cheaply without detaching pending requests.
 #[derive(Clone)]
-pub struct SharedTask<T> {
+pub(crate) struct SharedTask<T> {
     output: SharedOutput<T>,
     _runner: Option<Rc<JoinHandle<()>>>,
 }
 
 impl<T> SharedTask<T> {
-    pub fn peek(&self) -> Option<&Option<T>> {
+    fn peek(&self) -> Option<&Option<T>> {
         self.output.peek()
     }
 
@@ -58,9 +59,11 @@ pub(super) fn spawn_shared<T: Clone + 'static>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::owned_task::spawn_shared;
+    use crate::render::wake::WakeSignal;
     use futures::channel::oneshot;
     use std::cell::Cell;
+    use std::rc::Rc;
 
     struct Released(Rc<Cell<usize>>);
     impl Drop for Released {

@@ -1,45 +1,67 @@
-use super::*;
+use super::App;
+use super::Page;
+use super::api::ApiState;
+use super::cover_state::CoverFetchState;
+use super::owned_task::SharedTask;
+use super::owned_task::peek_shared_future;
+use super::response::first_non_empty;
+use super::response::parse_value_as_string;
+use super::response::response_code;
+use super::text::lang_text;
+use super::tracks::PlaylistTrack;
+use super::tracks::PlaylistTrackKind;
+use super::tracks::fetch_song_page_refs;
+use super::tracks::parse_artists;
+use super::tracks::parse_tracks;
+use super::tracks::pick_artist_id;
+use crate::data::config::Language;
+use anyhow::Result;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use ncm_api::ApiResponse;
+use serde_json::Value;
+use std::pin::Pin;
 
-pub(crate) const ARTIST_ALBUM_PAGE_SIZE: usize = 60;
+const ARTIST_ALBUM_PAGE_SIZE: usize = 60;
 
-pub(crate) type AuthorFetchFuture = SharedTask<Result<AuthorFetch, String>>;
+pub(super) type AuthorFetchFuture = SharedTask<Result<AuthorFetch, String>>;
 
 /// 装箱后的任务体（`spawn_shared` 的入参类型）。
-pub(crate) type AuthorFetchTask =
+pub(super) type AuthorFetchTask =
     Pin<Box<dyn Future<Output = Option<Result<AuthorFetch, String>>>>>;
 
 /// 作者页四个接口的原始回包（`None` = 该请求失败）；发行物请求会先完成全部分页。
 ///
 /// 解析见 `App::build_author_page`。
-pub(crate) struct AuthorResponses {
-    pub(crate) detail: Option<ApiResponse>,
-    pub(crate) desc: Option<ApiResponse>,
-    pub(crate) top_song: Option<ApiResponse>,
-    pub(crate) album: Option<ApiResponse>,
+struct AuthorResponses {
+    pub(super) detail: Option<ApiResponse>,
+    desc: Option<ApiResponse>,
+    top_song: Option<ApiResponse>,
+    pub(super) album: Option<ApiResponse>,
 }
 
 /// 作者页的一次拉取结果：`AuthorState` 里除封面句柄与视口字段外的全部字段。
 ///
 /// 结果要经 `spawn_shared` 搬运，故实现 `Clone`（封面句柄共享输出与取消所有权）。
 #[derive(Clone)]
-pub(crate) struct AuthorFetch {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) artist: String,
-    pub(crate) description: String,
-    pub(crate) cover_url: Option<String>,
-    pub(crate) tiles: Vec<AuthorTile>,
-    pub(crate) hot_songs: Vec<PlaylistTrack>,
-    pub(crate) albums: Vec<PlaylistTrack>,
-    pub(crate) eps: Vec<PlaylistTrack>,
-    pub(crate) singles: Vec<PlaylistTrack>,
+pub(super) struct AuthorFetch {
+    pub(super) id: String,
+    pub(super) title: String,
+    pub(super) artist: String,
+    pub(super) description: String,
+    pub(super) cover_url: Option<String>,
+    pub(super) tiles: Vec<AuthorTile>,
+    pub(super) hot_songs: Vec<PlaylistTrack>,
+    pub(super) albums: Vec<PlaylistTrack>,
+    pub(super) eps: Vec<PlaylistTrack>,
+    pub(super) singles: Vec<PlaylistTrack>,
 }
 
 /// 四个 `artist/*` 接口一次并发拉取；发行物接口在自己的后台 future 内顺序遍历分页。
 ///
 /// 它们彼此独立，按仓库既有做法用 `futures::join!`：`cyper::Client` 是 `!Send`，
 /// 只能同一个 runtime 里并发，不能各自 spawn。
-pub(crate) async fn fetch_artist_responses(
+async fn fetch_artist_responses(
     api: &ApiState,
     artist_id: &str,
 ) -> Result<AuthorResponses, String> {
@@ -67,7 +89,7 @@ pub(crate) async fn fetch_artist_responses(
 /// 后台顺序遍历歌手发行物的所有分页。
 ///
 /// 分页中途失败直接返回错误，不把已取得的首批数据冒充成完整列表。
-pub(crate) async fn fetch_all_artist_albums(
+async fn fetch_all_artist_albums(
     mut api: ApiState,
     artist_id: &str,
 ) -> Result<ApiResponse, String> {
@@ -103,7 +125,7 @@ pub(crate) async fn fetch_all_artist_albums(
     merge_artist_album_pages(pages)
 }
 
-pub(crate) fn merge_artist_album_pages(pages: Vec<ApiResponse>) -> Result<ApiResponse, String> {
+pub(super) fn merge_artist_album_pages(pages: Vec<ApiResponse>) -> Result<ApiResponse, String> {
     let mut pages = pages.into_iter();
     let Some(mut merged) = pages.next() else {
         return Err("artist album pagination returned no pages".to_string());
@@ -120,7 +142,7 @@ pub(crate) fn merge_artist_album_pages(pages: Vec<ApiResponse>) -> Result<ApiRes
     Ok(merged)
 }
 
-pub(crate) fn artist_album_items(body: &Value) -> Option<&[Value]> {
+fn artist_album_items(body: &Value) -> Option<&[Value]> {
     if let Some(items) = body.get("hotAlbums").and_then(Value::as_array) {
         return Some(items);
     }
@@ -129,7 +151,7 @@ pub(crate) fn artist_album_items(body: &Value) -> Option<&[Value]> {
         .map(Vec::as_slice)
 }
 
-pub(crate) fn artist_album_items_mut(body: &mut Value) -> Option<&mut Vec<Value>> {
+fn artist_album_items_mut(body: &mut Value) -> Option<&mut Vec<Value>> {
     if body.get("hotAlbums").and_then(Value::as_array).is_some() {
         return body.get_mut("hotAlbums").and_then(Value::as_array_mut);
     }
@@ -137,7 +159,7 @@ pub(crate) fn artist_album_items_mut(body: &mut Value) -> Option<&mut Vec<Value>
         .and_then(Value::as_array_mut)
 }
 
-pub(crate) fn take_artist_album_items(body: &mut Value) -> Option<Vec<Value>> {
+fn take_artist_album_items(body: &mut Value) -> Option<Vec<Value>> {
     if body.get("hotAlbums").and_then(Value::as_array).is_some() {
         return body
             .get_mut("hotAlbums")
@@ -152,7 +174,7 @@ pub(crate) fn take_artist_album_items(body: &mut Value) -> Option<Vec<Value>> {
 /// 全屏页点作者名要拉的东西：先 `song/detail` 解析出段对应的作者 ID，再拉作者页数据。
 ///
 /// 整段不借 `&mut App`，交给 `spawn_shared` 后台跑，宿主循环照常重绘。
-pub(crate) async fn fetch_author_page(
+pub(super) async fn fetch_author_page(
     api: ApiState,
     language: Language,
     song_id: String,
@@ -176,7 +198,7 @@ pub(crate) async fn fetch_author_page(
 /// 拉一次作者页数据（作者 ID 已确定）。
 ///
 /// `fallback_cover_url` 是搜索结果里那行的封面：接口没给头像时用它兜底。
-pub(crate) async fn fetch_author_page_by_id(
+pub(super) async fn fetch_author_page_by_id(
     api: ApiState,
     language: Language,
     artist_id: String,
@@ -191,7 +213,7 @@ pub(crate) async fn fetch_author_page_by_id(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuthorTileKind {
+pub(crate) enum AuthorTileKind {
     HotSong,
     Album,
     Ep,
@@ -199,15 +221,15 @@ pub enum AuthorTileKind {
 }
 
 #[derive(Clone)]
-pub struct AuthorTile {
-    pub kind: AuthorTileKind,
-    pub title: String,
-    pub subtitle: String,
-    pub cover: CoverFetchState,
+pub(crate) struct AuthorTile {
+    pub(crate) kind: AuthorTileKind,
+    pub(crate) title: String,
+    pub(crate) subtitle: String,
+    pub(crate) cover: CoverFetchState,
 }
 
 impl AuthorTile {
-    pub(crate) fn placeholder() -> Self {
+    pub(super) fn placeholder() -> Self {
         Self {
             kind: AuthorTileKind::Album,
             title: "暂无内容".to_string(),
@@ -216,7 +238,7 @@ impl AuthorTile {
         }
     }
 
-    pub(crate) fn from_album(
+    fn from_album(
         api: &ApiState,
         title: String,
         subtitle: String,
@@ -236,21 +258,21 @@ impl AuthorTile {
     }
 }
 
-pub struct AuthorState {
-    pub id: Option<String>,
-    pub title: String,
-    pub artist: String,
-    pub description: String,
-    pub cover: CoverFetchState,
-    pub focused_idx: usize,
-    pub columns: usize,
-    pub scroll_row_offset: usize,
-    pub visible_rows: usize,
-    pub tiles: Vec<AuthorTile>,
-    pub hot_songs: Vec<PlaylistTrack>,
-    pub albums: Vec<PlaylistTrack>,
-    pub eps: Vec<PlaylistTrack>,
-    pub singles: Vec<PlaylistTrack>,
+pub(crate) struct AuthorState {
+    pub(crate) id: Option<String>,
+    pub(crate) title: String,
+    pub(crate) artist: String,
+    pub(crate) description: String,
+    pub(crate) cover: CoverFetchState,
+    pub(crate) focused_idx: usize,
+    pub(super) columns: usize,
+    pub(super) scroll_row_offset: usize,
+    pub(super) visible_rows: usize,
+    pub(crate) tiles: Vec<AuthorTile>,
+    pub(crate) hot_songs: Vec<PlaylistTrack>,
+    pub(crate) albums: Vec<PlaylistTrack>,
+    pub(crate) eps: Vec<PlaylistTrack>,
+    pub(crate) singles: Vec<PlaylistTrack>,
 }
 
 impl Default for AuthorState {
@@ -277,7 +299,7 @@ impl Default for AuthorState {
 impl AuthorState {
     /// 点作者名后先落地的占位状态：标题就是点中的那段名字，数据由 `App::tick_author_fetch`
     /// 搬进来（数据没到之前 `App::author_fetch` 为 `Some`，作者页不响应翻页键）。
-    pub fn placeholder(title: String, description: String) -> Self {
+    pub(super) fn placeholder(title: String, description: String) -> Self {
         Self {
             title,
             artist: String::new(),
@@ -287,7 +309,7 @@ impl AuthorState {
         }
     }
 
-    pub(crate) fn total_rows(&self) -> usize {
+    pub(super) fn total_rows(&self) -> usize {
         if self.tiles.is_empty() {
             0
         } else {
@@ -295,15 +317,15 @@ impl AuthorState {
         }
     }
 
-    pub(crate) fn max_scroll_row_offset(&self) -> usize {
+    pub(super) fn max_scroll_row_offset(&self) -> usize {
         self.total_rows().saturating_sub(self.visible_rows.max(1))
     }
 
-    pub(crate) fn clamp_scroll_row_offset(&mut self) {
+    pub(super) fn clamp_scroll_row_offset(&mut self) {
         self.scroll_row_offset = self.scroll_row_offset.min(self.max_scroll_row_offset());
     }
 
-    pub(crate) fn ensure_focus_visible(&mut self) {
+    pub(super) fn ensure_focus_visible(&mut self) {
         if self.tiles.is_empty() {
             self.focused_idx = 0;
             self.scroll_row_offset = 0;
@@ -328,7 +350,7 @@ impl AuthorState {
         self.clamp_scroll_row_offset();
     }
 
-    pub fn set_tiles(&mut self, mut tiles: Vec<AuthorTile>) {
+    pub(super) fn set_tiles(&mut self, mut tiles: Vec<AuthorTile>) {
         if tiles.is_empty() {
             tiles.push(AuthorTile::placeholder());
         }
@@ -338,21 +360,21 @@ impl AuthorState {
         self.ensure_focus_visible();
     }
 
-    pub fn set_columns(&mut self, columns: usize) {
+    pub(crate) fn set_columns(&mut self, columns: usize) {
         self.columns = columns.max(1);
         self.ensure_focus_visible();
     }
 
-    pub fn set_visible_rows(&mut self, visible_rows: usize) {
+    pub(crate) fn set_visible_rows(&mut self, visible_rows: usize) {
         self.visible_rows = visible_rows.max(1);
         self.ensure_focus_visible();
     }
 
-    pub fn effective_scroll_row_offset(&self) -> usize {
+    pub(crate) fn effective_scroll_row_offset(&self) -> usize {
         self.scroll_row_offset.min(self.max_scroll_row_offset())
     }
 
-    pub fn set_focus(&mut self, index: usize) {
+    pub(super) fn set_focus(&mut self, index: usize) {
         if self.tiles.is_empty() {
             self.focused_idx = 0;
             self.scroll_row_offset = 0;
@@ -363,7 +385,7 @@ impl AuthorState {
         self.ensure_focus_visible();
     }
 
-    pub fn focus_next(&mut self) -> bool {
+    pub(super) fn focus_next(&mut self) -> bool {
         if self.tiles.is_empty() {
             return false;
         }
@@ -377,7 +399,7 @@ impl AuthorState {
         true
     }
 
-    pub fn focus_prev(&mut self) -> bool {
+    pub(super) fn focus_prev(&mut self) -> bool {
         if self.tiles.is_empty() {
             return false;
         }
@@ -391,15 +413,15 @@ impl AuthorState {
         true
     }
 
-    pub fn focus_left(&mut self) {
+    pub(super) fn focus_left(&mut self) {
         self.focus_prev();
     }
 
-    pub fn focus_right(&mut self) {
+    pub(super) fn focus_right(&mut self) {
         self.focus_next();
     }
 
-    pub fn focus_up(&mut self) -> bool {
+    pub(super) fn focus_up(&mut self) -> bool {
         if self.tiles.is_empty() {
             return false;
         }
@@ -419,7 +441,7 @@ impl AuthorState {
         true
     }
 
-    pub fn focus_down(&mut self) -> bool {
+    pub(super) fn focus_down(&mut self) -> bool {
         if self.tiles.is_empty() {
             return false;
         }
@@ -447,7 +469,7 @@ impl AuthorState {
     }
 }
 
-pub(crate) fn first_non_empty_intro_text(value: &Value) -> Option<String> {
+fn first_non_empty_intro_text(value: &Value) -> Option<String> {
     value
         .get("introduction")
         .and_then(|item| item.as_array())
@@ -458,7 +480,7 @@ pub(crate) fn first_non_empty_intro_text(value: &Value) -> Option<String> {
         })
 }
 
-pub(crate) fn artist_album_kind(item: &Value) -> AuthorTileKind {
+fn artist_album_kind(item: &Value) -> AuthorTileKind {
     let type_text = item
         .get("type")
         .and_then(|value| value.as_str())
@@ -490,7 +512,7 @@ pub(crate) fn artist_album_kind(item: &Value) -> AuthorTileKind {
 
 impl App {
     /// 搬运作者页的在途拉取（每帧调用，结果就绪才动状态）。
-    pub(crate) fn tick_author_fetch(&mut self) {
+    pub(super) fn tick_author_fetch(&mut self) {
         let Some(result) = peek_shared_future(&self.browse.author_fetch).cloned() else {
             return;
         };
@@ -520,7 +542,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn play_focused_author_tile(&mut self) {
+    pub(super) async fn play_focused_author_tile(&mut self) {
         let Some(item) = self.browse.author.tiles.get(self.browse.author.focused_idx) else {
             return;
         };
@@ -601,7 +623,7 @@ impl App {
         self.page = Page::Playlist;
     }
 
-    pub(crate) async fn handle_author_key(&mut self, key: KeyEvent) {
+    pub(super) async fn handle_author_key(&mut self, key: KeyEvent) {
         // 数据还在路上：占位页上的焦点/条目都没有意义，只留返回键。
         if self.browse.author_fetch.is_some() {
             if key.code == KeyCode::Esc {
@@ -637,14 +659,14 @@ impl App {
     /// 把拉到的作者页数据落到状态上（`tick_author_fetch` 搬运结果时用）。
     ///
     /// 同 `apply_playlist_fetch`：新数据落地即在途拉取作废，免得迟到的旧结果覆盖它。
-    pub(crate) fn apply_author_fetch(&mut self, fetch: AuthorFetch) {
+    fn apply_author_fetch(&mut self, fetch: AuthorFetch) {
         self.browse.apply_author(fetch, &self.api);
     }
 
     /// 解析 `artist/*` 的回包（网络部分见 `fetch_artist_responses`）。
     ///
     /// 不借 `&mut self`：全屏页那条把整段解析连同请求一起丢给 `shot_and_share` 后台跑。
-    pub(crate) fn build_author_page(
+    fn build_author_page(
         api: &ApiState,
         language: Language,
         artist_id: &str,

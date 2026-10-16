@@ -1,32 +1,53 @@
-use super::*;
+use super::App;
+use super::Page;
+use super::author::AuthorFetchTask;
+use super::author::AuthorState;
+use super::author::fetch_author_page;
+use super::download::DownloadState;
+use super::owned_task::spawn_shared;
+use super::playback_controller::PlaybackRepeatMode;
+use super::playback_controller::PlaybackRuntimeState;
+use super::playback_controller::PlaybackTrack;
+use super::playlist::PlaylistFetchSlot;
+use super::playlist::PlaylistFetchTask;
+use super::playlist::PlaylistPageKind;
+use super::playlist::PlaylistState;
+use super::playlist::fetch_album_page_from_song;
+use super::tracks::artist_name_segments;
+use crate::data::config::Config;
+use crate::data::theme_loader::ThemeLoader;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
-pub struct FullscreenPlaybackSnapshot {
-    pub queue: Vec<PlaybackTrack>,
-    pub playlist_cover: Option<Vec<u8>>,
-    pub current_index: Option<usize>,
-    pub now_playing: Option<PlaybackTrack>,
-    pub now_playing_liked: bool,
-    pub state: PlaybackRuntimeState,
-    pub repeat_mode: PlaybackRepeatMode,
-    pub position: Duration,
+pub(crate) struct FullscreenPlaybackSnapshot {
+    pub(crate) queue: Vec<PlaybackTrack>,
+    pub(crate) playlist_cover: Option<Vec<u8>>,
+    pub(crate) current_index: Option<usize>,
+    pub(crate) now_playing: Option<PlaybackTrack>,
+    pub(crate) now_playing_liked: bool,
+    pub(crate) state: PlaybackRuntimeState,
+    pub(crate) repeat_mode: PlaybackRepeatMode,
+    pub(crate) position: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct FullscreenRuntimeSnapshot {
-    pub current_index: Option<usize>,
-    pub now_playing_liked: bool,
-    pub state: PlaybackRuntimeState,
-    pub repeat_mode: PlaybackRepeatMode,
-    pub position: Duration,
-    pub volume: f32,
-    pub seeking: bool,
+pub(crate) struct FullscreenRuntimeSnapshot {
+    pub(crate) current_index: Option<usize>,
+    pub(crate) now_playing_liked: bool,
+    pub(crate) state: PlaybackRuntimeState,
+    pub(crate) repeat_mode: PlaybackRepeatMode,
+    pub(crate) position: Duration,
+    pub(crate) volume: f32,
+    pub(crate) seeking: bool,
     /// 当前播放歌曲的下载图标状态；`None` = 下载不可用或没有播放中的歌曲。
-    pub download: Option<DownloadState>,
+    pub(crate) download: Option<DownloadState>,
 }
 
 impl App {
-    pub async fn fullscreen_tick_playback(&mut self) {
+    pub(crate) async fn fullscreen_tick_playback(&mut self) {
         self.tick_audio().await;
         self.tick_cover_fetch();
         self.tick_lyric_fetch();
@@ -38,7 +59,7 @@ impl App {
         self.tick_download();
     }
 
-    pub fn fullscreen_playback_snapshot(&self) -> FullscreenPlaybackSnapshot {
+    pub(crate) fn fullscreen_playback_snapshot(&self) -> FullscreenPlaybackSnapshot {
         FullscreenPlaybackSnapshot {
             queue: self.playback.playback_queue.clone(),
             current_index: self.playback.playback_index,
@@ -54,7 +75,7 @@ impl App {
         }
     }
 
-    pub fn fullscreen_runtime_snapshot(&self) -> FullscreenRuntimeSnapshot {
+    pub(crate) fn fullscreen_runtime_snapshot(&self) -> FullscreenRuntimeSnapshot {
         FullscreenRuntimeSnapshot {
             current_index: self.playback.playback_index,
             now_playing_liked: self.playback.now_playing_liked,
@@ -67,7 +88,7 @@ impl App {
         }
     }
 
-    pub fn fullscreen_metadata_signature(&self) -> u64 {
+    pub(crate) fn fullscreen_metadata_signature(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.playback.playback_queue.len().hash(&mut hasher);
         self.playback
@@ -108,51 +129,51 @@ impl App {
         hasher.finish()
     }
 
-    pub async fn fullscreen_toggle_play_pause(&mut self) {
+    pub(crate) async fn fullscreen_toggle_play_pause(&mut self) {
         self.toggle_play_pause_hotkey().await;
     }
 
-    pub async fn fullscreen_play_previous(&mut self) {
+    pub(crate) async fn fullscreen_play_previous(&mut self) {
         self.play_previous_hotkey().await;
     }
 
-    pub async fn fullscreen_play_next(&mut self) {
+    pub(crate) async fn fullscreen_play_next(&mut self) {
         self.play_next_hotkey().await;
     }
 
-    pub async fn fullscreen_play_queue_index(&mut self, index: usize) {
+    pub(crate) async fn fullscreen_play_queue_index(&mut self, index: usize) {
         if index < self.playback.playback_queue.len() {
             self.play_queue_index(index, false).await;
         }
     }
 
-    pub fn fullscreen_seek_to_ratio(&mut self, ratio: f32) {
+    pub(crate) fn fullscreen_seek_to_ratio(&mut self, ratio: f32) {
         self.seek_to_ratio(ratio);
     }
 
-    pub fn fullscreen_set_volume(&mut self, volume: f32) {
+    pub(crate) fn fullscreen_set_volume(&mut self, volume: f32) {
         self.playback.audio_player.set_volume(volume);
     }
 
-    pub fn fullscreen_toggle_repeat_mode(&mut self) {
+    pub(crate) fn fullscreen_toggle_repeat_mode(&mut self) {
         self.cycle_repeat_mode_hotkey();
     }
 
-    pub async fn fullscreen_toggle_like(&mut self) {
+    pub(crate) async fn fullscreen_toggle_like(&mut self) {
         self.toggle_like_hotkey();
     }
 
-    pub fn fullscreen_request_queue_page(&self) {
+    pub(crate) fn fullscreen_request_queue_page(&self) {
         if let Some(pagination) = &self.playback.pagination {
             pagination.request(self.api.clone());
         }
     }
 
-    pub fn consume_fullscreen_launch_request(&mut self) -> bool {
+    pub(crate) fn consume_fullscreen_launch_request(&mut self) -> bool {
         std::mem::take(&mut self.launch_fullscreen_requested)
     }
 
-    pub fn open_settings_from_fullscreen(&mut self) {
+    pub(crate) fn open_settings_from_fullscreen(&mut self) {
         if self.page != Page::Login {
             self.open_settings();
         }
@@ -165,7 +186,7 @@ impl App {
     /// 全屏页信息区按字符位置分段命中，点谁的名字就传谁的序号。
     /// 全屏页只有显示名（ID 要靠 `song/detail` 的 `ar` 补），
     /// 本机音频 / 无播放时解析不出来，只在状态行里说明，不换页。
-    pub fn open_author_page_from_fullscreen(&mut self, index: usize) {
+    pub(crate) fn open_author_page_from_fullscreen(&mut self, index: usize) {
         let Some(song_id) = self.current_song_id() else {
             self.set_runtime_status(
                 self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"),
@@ -218,7 +239,7 @@ impl App {
     /// 搬进来（宿主循环在这期间照常重绘、照常响应输入）。
     ///
     /// 与作者页同理：全屏页只有专辑显示名，ID 取 `song/detail` 的 `al.id`。
-    pub fn open_album_page_from_fullscreen(&mut self) {
+    pub(crate) fn open_album_page_from_fullscreen(&mut self) {
         let Some(song_id) = self.current_song_id() else {
             self.set_runtime_status(
                 self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"),
@@ -261,15 +282,15 @@ impl App {
         });
     }
 
-    pub fn fullscreen_config_signature(&self) -> u64 {
+    pub(crate) fn fullscreen_config_signature(&self) -> u64 {
         self.config_revision
     }
 
-    pub fn fullscreen_config_snapshot(&self) -> Config {
+    pub(crate) fn fullscreen_config_snapshot(&self) -> Config {
         self.config.clone()
     }
 
-    pub async fn fullscreen_apply_config_sync(&mut self, mut config: Config) {
+    pub(crate) async fn fullscreen_apply_config_sync(&mut self, mut config: Config) {
         config.audio_quality = config.audio_quality.clamp_for_vip(self.vip_audio_unlocked);
         config.download_audio_quality = config
             .download_audio_quality
@@ -323,7 +344,7 @@ impl App {
         }
     }
 
-    pub fn build_fullscreen_bootstrap(&self) -> crate::tmplayer::FullscreenBootstrap {
+    pub(crate) fn build_fullscreen_bootstrap(&self) -> crate::tmplayer::FullscreenBootstrap {
         let mut bootstrap = crate::tmplayer::FullscreenBootstrap::default();
         let Some(now) = self.playback.now_playing.as_ref() else {
             return bootstrap;

@@ -1,4 +1,18 @@
-use super::*;
+use super::App;
+use super::Overlay;
+use super::Page;
+#[cfg(feature = "easter-egg")]
+use super::about::EasterEggPhase;
+use super::playback_controller::PlaybackRuntimeState;
+use super::search_controller::SEARCH_BOX_ANIM_DURATION;
+use crate::data::config::VisualizeMode;
+use crate::render::motion::Curve;
+use crate::render::motion::Toggle;
+use crate::render::motion::Trail;
+use crate::render::motion::Transition;
+use anyhow::Result;
+use std::time::Duration;
+use std::time::Instant;
 
 /// 主程序内容页小窗口模式的统一触发阈值，与主页既有判定一致。
 pub(crate) const SMALL_WINDOW_MIN_WIDTH: u16 = 32;
@@ -6,32 +20,32 @@ pub(crate) const SMALL_WINDOW_MIN_WIDTH: u16 = 32;
 pub(crate) const SMALL_WINDOW_MIN_HEIGHT: u16 = 12;
 
 /// 扁窗视口高度下限，即折叠播放栏区域高度。
-pub(crate) const FLAT_SMALL_HEIGHT: u16 = 5;
+const FLAT_SMALL_HEIGHT: u16 = 5;
 
 /// 扁窗播放栏/歌词栏切换动画时长。
-pub(crate) const FLAT_SWITCH_ANIM_DURATION: Duration = Duration::from_millis(220);
+const FLAT_SWITCH_ANIM_DURATION: Duration = Duration::from_millis(220);
 
 /// 窄窗 LUFS 表显示范围：-60..0 LUFS。
-pub(crate) const VU_LUFS_FLOOR: f32 = -120.0;
+pub(super) const VU_LUFS_FLOOR: f32 = -120.0;
 
-pub(crate) const VU_LUFS_MIN: f32 = -60.0;
+const VU_LUFS_MIN: f32 = -60.0;
 
-pub(crate) const VU_LUFS_MAX: f32 = 0.0;
+const VU_LUFS_MAX: f32 = 0.0;
 
-pub(crate) const VU_ATTACK_SECS: f32 = 0.08;
+const VU_ATTACK_SECS: f32 = 0.08;
 
-pub(crate) const VU_RELEASE_SECS: f32 = 0.35;
+const VU_RELEASE_SECS: f32 = 0.35;
 
-pub(crate) const VU_SETTLED_EPSILON: f32 = 0.05;
+const VU_SETTLED_EPSILON: f32 = 0.05;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SmallWindowMode {
+pub(crate) enum SmallWindowMode {
     Flat,
     Narrow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlatPanel {
+pub(crate) enum FlatPanel {
     Player,
     Lyrics,
 }
@@ -56,7 +70,7 @@ pub(crate) fn lufs_to_bar_level(lufs: f32) -> f32 {
     ((lufs - VU_LUFS_MIN) / (VU_LUFS_MAX - VU_LUFS_MIN)).clamp(0.0, 1.0)
 }
 
-pub(crate) fn smooth_lufs_level(current: f32, target: f32, dt: f32) -> (f32, bool) {
+fn smooth_lufs_level(current: f32, target: f32, dt: f32) -> (f32, bool) {
     let target = target.max(VU_LUFS_FLOOR);
     let mut current = current.max(VU_LUFS_FLOOR);
     if (current - target).abs() <= VU_SETTLED_EPSILON {
@@ -80,7 +94,7 @@ pub(crate) fn smooth_lufs_level(current: f32, target: f32, dt: f32) -> (f32, boo
     (current, (current - target).abs() > VU_SETTLED_EPSILON)
 }
 
-pub(crate) fn cubic_bezier_y(t: f32, p1y: f32, p2y: f32) -> f32 {
+pub(super) fn cubic_bezier_y(t: f32, p1y: f32, p2y: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     let inv = 1.0 - t;
     let a = 3.0 * inv * inv * t * p1y;
@@ -89,7 +103,7 @@ pub(crate) fn cubic_bezier_y(t: f32, p1y: f32, p2y: f32) -> f32 {
     (a + b + c).clamp(0.0, 1.0)
 }
 
-pub(crate) fn braille_from_two_bars(left: u8, right: u8) -> char {
+fn braille_from_two_bars(left: u8, right: u8) -> char {
     const LEFT_BITS: [u8; 4] = [6, 2, 1, 0];
     const RIGHT_BITS: [u8; 4] = [7, 5, 4, 3];
 
@@ -112,7 +126,7 @@ impl App {
     /// 是否有进行中的动画需要高频重绘（进度条脉冲、搜索框滑出、侧边栏
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
-    pub fn should_continuous_redraw(&self) -> bool {
+    pub(crate) fn should_continuous_redraw(&self) -> bool {
         if self.mini_spectrum_enabled()
             && self.playback.now_playing.is_some()
             && (self.playback.playback_state == PlaybackRuntimeState::Playing
@@ -157,7 +171,7 @@ impl App {
 
     /// 是否处于“小窗口相关”上下文：设置开启、已登录内容页、且终端低于统一阈值。
     /// 该上下文包含扁窗、窄窗，以及两个方向都过小而只显示提示的情况。
-    pub fn is_small_window_context(&self) -> bool {
+    pub(crate) fn is_small_window_context(&self) -> bool {
         if !self.config.small_window_display {
             return false;
         }
@@ -167,7 +181,7 @@ impl App {
         self.term_width < SMALL_WINDOW_MIN_WIDTH || self.term_height < SMALL_WINDOW_MIN_HEIGHT
     }
 
-    pub fn set_terminal_size(&mut self, width: u16, height: u16) {
+    pub(crate) fn set_terminal_size(&mut self, width: u16, height: u16) {
         let was_small_context = self.is_small_window_context();
         self.term_width = width;
         self.term_height = height;
@@ -178,13 +192,13 @@ impl App {
         self.recompute_small_window_mode();
     }
 
-    pub fn sync_terminal_size(&mut self) {
+    pub(super) fn sync_terminal_size(&mut self) {
         if let Ok((width, height)) = crossterm::terminal::size() {
             self.set_terminal_size(width, height);
         }
     }
 
-    pub(crate) fn compute_small_window_mode(&self) -> Option<SmallWindowMode> {
+    fn compute_small_window_mode(&self) -> Option<SmallWindowMode> {
         if !self.is_small_window_context() {
             return None;
         }
@@ -203,7 +217,7 @@ impl App {
         }
     }
 
-    pub(crate) fn recompute_small_window_mode(&mut self) {
+    fn recompute_small_window_mode(&mut self) {
         let mode = self.compute_small_window_mode();
         if mode == self.small_window_mode {
             if mode == Some(SmallWindowMode::Flat) {
@@ -265,7 +279,7 @@ impl App {
     }
 
     /// 进入小窗口时关闭设置/搜索等弹窗与侧边栏，并清理隐藏页面的命中区域。
-    pub(crate) fn close_panels_for_small_window(&mut self) {
+    pub(super) fn close_panels_for_small_window(&mut self) {
         if self.overlay.is_some() {
             self.close_overlay();
         }
@@ -277,7 +291,7 @@ impl App {
     }
 
     /// 扁窗 5 行视口下两个面板的水平偏移（0=播放栏，width=歌词栏）。
-    pub fn flat_switch_offset(&self) -> f32 {
+    pub(crate) fn flat_switch_offset(&self) -> f32 {
         let width = self.term_width.max(1) as f32;
         self.flat_switch_anim
             .as_ref()
@@ -295,13 +309,13 @@ impl App {
             })
     }
 
-    pub fn flat_switch_animating(&self) -> bool {
+    pub(crate) fn flat_switch_animating(&self) -> bool {
         self.flat_switch_anim
             .as_ref()
             .is_some_and(Transition::is_running)
     }
 
-    pub fn toggle_flat_panel(&mut self) {
+    pub(super) fn toggle_flat_panel(&mut self) {
         if self.small_window_mode != Some(SmallWindowMode::Flat)
             || self.term_height != FLAT_SMALL_HEIGHT
         {
@@ -326,7 +340,7 @@ impl App {
         self.flat_switch_anim = Some(anim);
     }
 
-    pub(crate) fn tick_flat_switch(&mut self, now: Instant) {
+    pub(super) fn tick_flat_switch(&mut self, now: Instant) {
         if let Some(anim) = &mut self.flat_switch_anim {
             anim.tick(now);
             if !anim.is_running() {
@@ -335,7 +349,7 @@ impl App {
         }
     }
 
-    pub(crate) fn tick_search_box_animation(&mut self, now: Instant) {
+    pub(super) fn tick_search_box_animation(&mut self, now: Instant) {
         let open = matches!(self.overlay, Some(Overlay::SearchBox));
         self.input
             .search_motion
@@ -343,7 +357,7 @@ impl App {
         self.input.search_motion.tick(now);
     }
 
-    pub(crate) fn tick_vu_meter(&mut self, now: Instant) {
+    pub(super) fn tick_vu_meter(&mut self, now: Instant) {
         if self.small_window_mode != Some(SmallWindowMode::Narrow) {
             self.vu_animating = false;
             self.vu_last_tick_at = None;
@@ -379,7 +393,7 @@ impl App {
         self.vu_animating = left_moving || right_moving;
     }
 
-    pub fn main_spectrum_braille(&self) -> String {
+    pub(crate) fn main_spectrum_braille(&self) -> String {
         let bars = self.mini_spectrum.mini_bars();
         let mut out = String::with_capacity(30);
         for pair in bars.as_chunks::<2>().0 {
@@ -390,11 +404,11 @@ impl App {
         out
     }
 
-    pub fn sync_on_change(&mut self) {
+    pub(crate) fn sync_on_change(&mut self) {
         self.sync_terminal_size();
     }
 
-    pub(crate) fn mini_spectrum_enabled(&self) -> bool {
+    fn mini_spectrum_enabled(&self) -> bool {
         !matches!(
             self.config.visualize,
             VisualizeMode::Lyrics | VisualizeMode::Hidden
@@ -402,7 +416,7 @@ impl App {
     }
 
     /// Called only immediately before a Host frame submission, never during audio callbacks.
-    pub fn update_main_spectrum(&mut self, now: Instant) -> Result<()> {
+    pub(crate) fn update_main_spectrum(&mut self, now: Instant) -> Result<()> {
         if !self.mini_spectrum_enabled() || self.playback.now_playing.is_none() {
             self.mini_spectrum.clear();
             return Ok(());
@@ -416,7 +430,7 @@ impl App {
     }
 
     /// The Host is not rendered while Fullscreen owns the terminal.
-    pub fn reset_main_spectrum(&mut self) {
+    pub(crate) fn reset_main_spectrum(&mut self) {
         self.mini_spectrum.clear();
     }
 }

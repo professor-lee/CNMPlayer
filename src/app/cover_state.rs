@@ -1,21 +1,38 @@
-use super::*;
+use super::api::ApiState;
+use super::cover_presentation::CoverPresentation;
+use super::next_list_generation;
+use super::owned_task::SharedTask;
+use super::owned_task::peek_shared_future;
+use super::owned_task::spawn_shared;
+use crate::render::cover_pipeline::CoverKey;
+use crate::render::cover_renderer::render_cover_ascii;
+use crate::render::wake::WakeSignal;
+use image::DynamicImage;
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::layout::Size;
+use ratatui::style::Style;
+use ratatui::widgets::Block;
+use ratatui::widgets::Paragraph;
+use std::ops::Range;
+use std::sync::Arc;
 
-pub(crate) type CoverFuture = SharedTask<Arc<DynamicImage>>;
+pub(super) type CoverFuture = SharedTask<Arc<DynamicImage>>;
 
 pub(crate) type AsciiFuture = SharedTask<String>;
 
 #[derive(Clone, Default)]
-pub struct CoverFetchState {
-    pub url: Option<String>,
-    pub image: Option<CoverFuture>,
+pub(crate) struct CoverFetchState {
+    pub(super) url: Option<String>,
+    pub(super) image: Option<CoverFuture>,
     pub(crate) ascii: Option<AsciiFuture>,
-    pub(crate) size: Size,
-    pub(crate) identity: u64,
+    pub(super) size: Size,
+    identity: u64,
     pub(crate) wake: WakeSignal,
 }
 
 impl CoverFetchState {
-    pub fn load(&mut self, api: ApiState, url: String) {
+    pub(crate) fn load(&mut self, api: ApiState, url: String) {
         self.wake = api.wake_signal();
         self.identity = next_list_generation();
         let cover_url = url.clone();
@@ -26,7 +43,7 @@ impl CoverFetchState {
         self.ascii = None;
     }
 
-    pub fn render(
+    pub(crate) fn render(
         &mut self,
         frame: &mut Frame,
         covers: &mut CoverPresentation,
@@ -50,7 +67,7 @@ impl CoverFetchState {
     /// Partial views copy rows of the full-size prepared surface. Scrolling does
     /// not create additional image geometry, codecs, or cropped cache entries.
     #[allow(clippy::too_many_arguments)]
-    pub fn render_rows(
+    pub(crate) fn render_rows(
         &mut self,
         frame: &mut Frame,
         covers: &mut CoverPresentation,
@@ -123,7 +140,7 @@ impl CoverFetchState {
     }
 }
 
-pub(crate) fn make_ascii_future(
+fn make_ascii_future(
     image: Arc<DynamicImage>,
     width: u16,
     height: u16,
@@ -138,7 +155,7 @@ pub(crate) fn make_ascii_future(
     spawn_shared(fut, wake)
 }
 
-pub(crate) fn placeholder_cover_ascii(width: u16, height: u16, ch: char) -> String {
+fn placeholder_cover_ascii(width: u16, height: u16, ch: char) -> String {
     if width == 0 || height == 0 {
         return String::new();
     }

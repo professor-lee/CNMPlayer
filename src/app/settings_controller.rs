@@ -1,13 +1,32 @@
-use super::*;
+use super::App;
+use super::Overlay;
+use super::Page;
+use super::input_controller::CONTENT_DOUBLE_CLICK_MS;
+use super::input_controller::HitRect;
+use super::keybinds::RESERVED_RESET_KEYBIND;
+use super::keybinds::is_reserved_reset_combo;
+use super::keybinds::key_event_to_keybind_text;
+use super::text::byte_index_for_char;
+use super::text::char_count;
+use crate::data::config::BarChannels;
+use crate::data::config::BarNumber;
+use crate::data::config::Config;
+use crate::data::config::Language;
+use crate::data::theme_loader::ThemeLoader;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use std::time::Duration;
+use std::time::Instant;
 
 /// 下载路径输入框的长度上限（字符）。
-pub(crate) const DOWNLOAD_PATH_MAX_CHARS: usize = 4096;
+const DOWNLOAD_PATH_MAX_CHARS: usize = 4096;
 
-pub(crate) const SETTINGS_ROOT_ITEMS: usize = 13;
+const SETTINGS_ROOT_ITEMS: usize = 13;
 
-pub(crate) const SETTINGS_PLAYBACK_ITEMS: usize = 7;
+const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 
-pub(crate) const SETTINGS_LYRICS_ITEMS: usize = 3;
+const SETTINGS_LYRICS_ITEMS: usize = 3;
 
 pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 
@@ -15,14 +34,14 @@ pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 22;
 
 /// 下载路径行的行内编辑状态（光标按字符计数，横向窗口按显示列算）。
 #[derive(Debug, Clone, Default)]
-pub struct DownloadPathEdit {
-    pub buffer: String,
-    pub cursor: usize,
+pub(crate) struct DownloadPathEdit {
+    pub(crate) buffer: String,
+    pub(crate) cursor: usize,
     /// 可见窗口左边界所在的显示列：只在光标撞到窗口边界时才挪动。
-    pub window_col: usize,
+    pub(crate) window_col: usize,
 }
 
-pub(crate) fn cycle_bar_number(current: BarNumber, delta: i32) -> BarNumber {
+fn cycle_bar_number(current: BarNumber, delta: i32) -> BarNumber {
     let options = [
         BarNumber::Auto,
         BarNumber::N16,
@@ -41,13 +60,13 @@ pub(crate) fn cycle_bar_number(current: BarNumber, delta: i32) -> BarNumber {
 }
 
 impl App {
-    pub(crate) fn open_settings(&mut self) {
+    pub(super) fn open_settings(&mut self) {
         self.settings.selected = 0;
         self.settings.keybind_rebinding = None;
         self.overlay = Some(Overlay::Settings);
     }
 
-    pub(crate) fn open_keybind_settings(&mut self) {
+    pub(super) fn open_keybind_settings(&mut self) {
         self.settings.keybind_selected = 0;
         self.settings.keybind_rebinding = None;
         self.settings.keybind_scroll = 0;
@@ -57,7 +76,7 @@ impl App {
     /// 设置弹窗内的鼠标点击：单击聚焦该行，400ms 内再点同一行等同 Enter。
     ///
     /// 弹窗盖住整页，未命中行的点击由调用方直接丢弃（不穿透到底层页面）。
-    pub(crate) async fn handle_settings_modal_click(
+    pub(super) async fn handle_settings_modal_click(
         &mut self,
         overlay: Overlay,
         col: u16,
@@ -108,7 +127,7 @@ impl App {
     }
 
     /// 设置弹窗滚轮：上下移动选中行（与 Up/Down 同效）。
-    pub(crate) fn scroll_settings_modal(&mut self, forward: bool) {
+    pub(super) fn scroll_settings_modal(&mut self, forward: bool) {
         let step = |selected: &mut usize, count: usize| {
             if count == 0 {
                 return;
@@ -144,7 +163,7 @@ impl App {
         }
     }
 
-    pub(crate) fn is_double_settings_click(&mut self, overlay: Overlay, index: usize) -> bool {
+    fn is_double_settings_click(&mut self, overlay: Overlay, index: usize) -> bool {
         let now = Instant::now();
         let is_double = self
             .settings
@@ -160,7 +179,7 @@ impl App {
     }
 
     /// 设置根页选中项的执行（键盘 Enter 与双击共用）。
-    pub(crate) async fn activate_settings_root_item(&mut self) {
+    async fn activate_settings_root_item(&mut self) {
         match self.settings.selected {
             0..=3 => self.apply_settings_root_delta(1).await,
             4 => {
@@ -183,7 +202,7 @@ impl App {
     }
 
     /// 开始重绑某条快捷键（键盘 Enter 与双击共用）。
-    pub(crate) fn begin_keybind_rebind(&mut self, index: usize) {
+    fn begin_keybind_rebind(&mut self, index: usize) {
         self.settings.keybind_rebinding = Some(index);
         self.set_runtime_status(format!(
             "{} [{}]，{}",
@@ -197,7 +216,7 @@ impl App {
     }
 
     /// “歌词浮窗”子页：三行开关。吸附行只在拖动开启时可改（关闭时灰置）。
-    pub(crate) fn apply_settings_lyrics_delta(&mut self, delta: i32) {
+    fn apply_settings_lyrics_delta(&mut self, delta: i32) {
         if delta == 0 {
             return;
         }
@@ -223,7 +242,7 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_settings_lyrics_key(&mut self, key: KeyEvent) {
+    pub(super) fn handle_settings_lyrics_key(&mut self, key: KeyEvent) {
         match key.code {
             // 三行都是开关（值行）：与播放设置页同构，Left/Right 都用来改值，
             // 返回上一级只走 Esc。
@@ -251,7 +270,7 @@ impl App {
     }
 
     /// 打开「下载设置」子页：光标落在第一个可选中行（禁用态下就是路径行）。
-    pub(crate) fn open_download_settings(&mut self) {
+    fn open_download_settings(&mut self) {
         self.settings.download_path_edit = None;
         self.settings.download_reset_armed = false;
         self.settings.download_selected = self
@@ -263,23 +282,23 @@ impl App {
     }
 
     /// 下载目录可用（系统里能找到可写位置）。不可用时除路径行外全部灰置。
-    pub fn download_settings_enabled(&self) -> bool {
+    pub(crate) fn download_settings_enabled(&self) -> bool {
         self.downloads.root.is_some()
     }
 
     /// 某一行是否可选中：下载不可用时只有「音质」灰置——路径行是自救入口，
     /// 「恢复默认」是把显式 `Null` / 无家目录状态拉回来的出口，两者都要能选。
-    pub fn download_row_selectable(&self, row: usize) -> bool {
+    fn download_row_selectable(&self, row: usize) -> bool {
         self.download_settings_enabled() || row != 0
     }
 
-    pub(crate) fn download_selectable_rows(&self) -> Vec<usize> {
+    pub(super) fn download_selectable_rows(&self) -> Vec<usize> {
         (0..SETTINGS_DOWNLOAD_ITEMS)
             .filter(|row| self.download_row_selectable(*row))
             .collect()
     }
 
-    pub(crate) fn move_download_selection(&mut self, delta: i32) {
+    pub(super) fn move_download_selection(&mut self, delta: i32) {
         let rows = self.download_selectable_rows();
         if rows.is_empty() || delta == 0 {
             return;
@@ -295,7 +314,7 @@ impl App {
     }
 
     /// 下载设置页的「执行」：Enter、双击与单击共用。
-    pub(crate) fn activate_settings_download_item(&mut self) {
+    fn activate_settings_download_item(&mut self) {
         match self.settings.download_selected {
             0 => self.apply_settings_download_delta(1),
             1 => self.begin_download_path_edit(),
@@ -305,7 +324,7 @@ impl App {
     }
 
     /// 音质行：与播放设置同一套可选值（按会员放开）。
-    pub(crate) fn apply_settings_download_delta(&mut self, delta: i32) {
+    fn apply_settings_download_delta(&mut self, delta: i32) {
         if delta == 0 || self.settings.download_selected != 0 || !self.download_settings_enabled() {
             return;
         }
@@ -322,7 +341,7 @@ impl App {
     /// 「恢复默认」两段式：首次进入待确认态（文字换成警戒色），再选一次才写回默认。
     ///
     /// 下载不可用（显式 `Null` / 系统没有可写位置）时也允许：它就是那个出口。
-    pub(crate) fn activate_download_reset(&mut self) {
+    pub(super) fn activate_download_reset(&mut self) {
         if !self.settings.download_reset_armed {
             self.settings.download_reset_armed = true;
             self.set_runtime_status(self.lang_text(
@@ -347,7 +366,7 @@ impl App {
     /// 进入路径行的行内编辑：以当前生效路径为初值，光标停在末尾。
     ///
     /// 填字面量 `Null` 回车 = 显式禁用下载；填绝对路径恢复。
-    pub(crate) fn begin_download_path_edit(&mut self) {
+    pub(super) fn begin_download_path_edit(&mut self) {
         let current = self
             .downloads
             .root
@@ -357,7 +376,7 @@ impl App {
         self.settings.begin_download_path_edit(current);
     }
 
-    pub(crate) fn download_path_edit_insert(&mut self, ch: char) {
+    pub(super) fn download_path_edit_insert(&mut self, ch: char) {
         let Some(edit) = self.settings.download_path_edit.as_mut() else {
             return;
         };
@@ -369,7 +388,7 @@ impl App {
         edit.cursor += 1;
     }
 
-    pub(crate) fn download_path_edit_backspace(&mut self) {
+    pub(super) fn download_path_edit_backspace(&mut self) {
         let Some(edit) = self.settings.download_path_edit.as_mut() else {
             return;
         };
@@ -381,7 +400,7 @@ impl App {
         edit.cursor -= 1;
     }
 
-    pub(crate) fn download_path_edit_delete(&mut self) {
+    fn download_path_edit_delete(&mut self) {
         let Some(edit) = self.settings.download_path_edit.as_mut() else {
             return;
         };
@@ -392,7 +411,7 @@ impl App {
         edit.buffer.remove(index);
     }
 
-    pub(crate) fn download_path_edit_move(&mut self, delta: i32) {
+    pub(super) fn download_path_edit_move(&mut self, delta: i32) {
         let Some(edit) = self.settings.download_path_edit.as_mut() else {
             return;
         };
@@ -400,20 +419,20 @@ impl App {
         edit.cursor = (edit.cursor as i32 + delta).clamp(0, last) as usize;
     }
 
-    pub(crate) fn download_path_edit_home(&mut self) {
+    fn download_path_edit_home(&mut self) {
         if let Some(edit) = self.settings.download_path_edit.as_mut() {
             edit.cursor = 0;
         }
     }
 
-    pub(crate) fn download_path_edit_end(&mut self) {
+    fn download_path_edit_end(&mut self) {
         if let Some(edit) = self.settings.download_path_edit.as_mut() {
             edit.cursor = char_count(&edit.buffer);
         }
     }
 
     /// 回车确认：`Null` = 显式禁用；非法（空 / 非绝对 / 不可写）保留修改前的值。
-    pub(crate) async fn commit_download_path_edit(&mut self) {
+    pub(super) async fn commit_download_path_edit(&mut self) {
         let Some(edit) = self.settings.download_path_edit.take() else {
             return;
         };
@@ -460,7 +479,7 @@ impl App {
     }
 
     /// 设置弹窗里显示的下载路径（`Null` = 系统里没有可用位置）。
-    pub fn download_display_path(&self) -> String {
+    pub(crate) fn download_display_path(&self) -> String {
         self.downloads
             .root
             .as_ref()
@@ -471,7 +490,7 @@ impl App {
     /// 「下载设置」页：音质 / 路径 / 恢复默认三行。
     ///
     /// 编辑态下所有按键都进输入框（含 `t`）；非编辑态沿用设置弹窗的习惯（Esc 返回、t 关闭）。
-    pub(crate) async fn handle_settings_download_key(&mut self, key: KeyEvent) {
+    pub(super) async fn handle_settings_download_key(&mut self, key: KeyEvent) {
         if self.settings.download_path_edit.is_some() {
             match key.code {
                 KeyCode::Esc => {
@@ -519,7 +538,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn handle_settings_root_key(&mut self, key: KeyEvent) {
+    pub(super) async fn handle_settings_root_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.close_overlay(),
             KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -544,7 +563,7 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_settings_playback_key(&mut self, key: KeyEvent) {
+    pub(super) fn handle_settings_playback_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.overlay = Some(Overlay::Settings),
             KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -573,7 +592,7 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_settings_keybinds_key(&mut self, key: KeyEvent) {
+    pub(super) fn handle_settings_keybinds_key(&mut self, key: KeyEvent) {
         if let Some(index) = self.settings.keybind_rebinding {
             match key.code {
                 KeyCode::Esc => {
@@ -671,7 +690,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn apply_settings_root_delta(&mut self, delta: i32) {
+    async fn apply_settings_root_delta(&mut self, delta: i32) {
         match self.settings.selected {
             0 => {
                 let themes = ThemeLoader::list_themes_async().await;
@@ -751,7 +770,7 @@ impl App {
         }
     }
 
-    pub(crate) fn apply_settings_playback_delta(&mut self, delta: i32) {
+    fn apply_settings_playback_delta(&mut self, delta: i32) {
         if delta == 0 {
             return;
         }
@@ -803,21 +822,21 @@ impl App {
 
 #[derive(Default)]
 pub(crate) struct SettingsController {
-    pub selected: usize,
-    pub playback_selected: usize,
-    pub lyrics_selected: usize,
-    pub keybind_selected: usize,
-    pub keybind_rebinding: Option<usize>,
-    pub keybind_scroll: usize,
-    pub download_selected: usize,
-    pub download_path_edit: Option<DownloadPathEdit>,
-    pub download_reset_armed: bool,
-    pub item_hits: Vec<(HitRect, usize)>,
-    pub last_click: Option<(Instant, Overlay, usize)>,
+    pub(crate) selected: usize,
+    pub(crate) playback_selected: usize,
+    pub(crate) lyrics_selected: usize,
+    pub(crate) keybind_selected: usize,
+    pub(crate) keybind_rebinding: Option<usize>,
+    pub(crate) keybind_scroll: usize,
+    pub(crate) download_selected: usize,
+    pub(crate) download_path_edit: Option<DownloadPathEdit>,
+    pub(crate) download_reset_armed: bool,
+    pub(super) item_hits: Vec<(HitRect, usize)>,
+    pub(super) last_click: Option<(Instant, Overlay, usize)>,
 }
 
 impl SettingsController {
-    pub fn reset_navigation(&mut self) {
+    pub(super) fn reset_navigation(&mut self) {
         self.selected = 0;
         self.playback_selected = 0;
         self.lyrics_selected = 0;
@@ -830,11 +849,11 @@ impl SettingsController {
         self.last_click = None;
     }
 
-    pub fn select(&mut self, index: usize, count: usize) {
+    fn select(&mut self, index: usize, count: usize) {
         self.selected = index.min(count.saturating_sub(1));
     }
 
-    pub fn begin_download_path_edit(&mut self, value: String) {
+    pub(super) fn begin_download_path_edit(&mut self, value: String) {
         let cursor = value.chars().count();
         self.download_path_edit = Some(DownloadPathEdit {
             buffer: value,
@@ -843,7 +862,7 @@ impl SettingsController {
         });
     }
 
-    pub fn cancel_download_path_edit(&mut self) {
+    pub(super) fn cancel_download_path_edit(&mut self) {
         self.download_path_edit = None;
         self.download_reset_armed = false;
     }

@@ -1,42 +1,63 @@
-use super::*;
+use super::App;
+use super::Page;
+use super::api::ApiState;
+use super::auth::extract_current_user_id;
+use super::auth::extract_current_user_name;
+use super::auth::extract_liked_playlist_id;
+use super::input_controller::HitRect;
+use super::owned_task::SharedTask;
+use super::owned_task::peek_shared_future;
+use super::owned_task::spawn_shared;
+use super::response::parse_value_as_string;
+use super::response::response_code;
+use super::response::response_message;
+use super::response::response_page_has_more;
+use crate::data::config::Language;
+use crate::render::motion::Curve;
+use crate::render::motion::Toggle;
+use crate::render::motion::Trail;
+use anyhow::Result;
+use ncm_api::ApiResponse;
+use std::pin::Pin;
+use std::time::Duration;
+use std::time::Instant;
 
 /// 侧边栏滑出动画时长（time-based，与帧率解耦）。主页与全屏播放页共用。
 pub(crate) const SIDEBAR_ANIM_DURATION: Duration = Duration::from_millis(200);
 
-pub(crate) const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
+const HOME_SIDEBAR_PLAYLIST_LIMIT: usize = 100;
 
-pub(crate) type HomeSidebarTask =
-    Pin<Box<dyn Future<Output = Option<Result<HomeSidebarFetch, String>>>>>;
+type HomeSidebarTask = Pin<Box<dyn Future<Output = Option<Result<HomeSidebarFetch, String>>>>>;
 
 /// 侧边栏歌单的一次拉取结果。异步任务不持有 `&mut App`，
 /// 取完由 `tick_home_sidebar_fetch` 搬进状态。
 #[derive(Clone)]
-pub(crate) struct HomeSidebarFetch {
-    pub(crate) user_id: String,
-    pub(crate) liked_playlist_id: Option<String>,
-    pub(crate) user_name: String,
-    pub(crate) created: Vec<HomeSidebarPlaylist>,
-    pub(crate) collected: Vec<HomeSidebarPlaylist>,
-    pub(crate) created_more: bool,
-    pub(crate) collected_more: bool,
+pub(super) struct HomeSidebarFetch {
+    pub(super) user_id: String,
+    pub(super) liked_playlist_id: Option<String>,
+    pub(super) user_name: String,
+    pub(super) created: Vec<HomeSidebarPlaylist>,
+    pub(super) collected: Vec<HomeSidebarPlaylist>,
+    created_more: bool,
+    collected_more: bool,
 }
 
 #[derive(Clone)]
-pub(crate) struct HomeSidebarPageFetch {
-    pub(crate) section: HomeSidebarSection,
-    pub(crate) items: Vec<HomeSidebarPlaylist>,
-    pub(crate) next_offset: usize,
-    pub(crate) has_more: bool,
+pub(super) struct HomeSidebarPageFetch {
+    pub(super) section: HomeSidebarSection,
+    pub(super) items: Vec<HomeSidebarPlaylist>,
+    pub(super) next_offset: usize,
+    pub(super) has_more: bool,
 }
 
-pub(crate) type HomeSidebarPageTask =
+type HomeSidebarPageTask =
     Pin<Box<dyn Future<Output = Option<Result<HomeSidebarPageFetch, String>>>>>;
 
-pub(crate) type HomeSidebarFetchFuture = SharedTask<Result<HomeSidebarFetch, String>>;
+pub(super) type HomeSidebarFetchFuture = SharedTask<Result<HomeSidebarFetch, String>>;
 
-pub(crate) type HomeSidebarPageFetchFuture = SharedTask<Result<HomeSidebarPageFetch, String>>;
+pub(super) type HomeSidebarPageFetchFuture = SharedTask<Result<HomeSidebarPageFetch, String>>;
 
-pub(crate) async fn fetch_home_sidebar_playlists(
+async fn fetch_home_sidebar_playlists(
     mut api: ApiState,
     language: Language,
 ) -> Result<HomeSidebarFetch, String> {
@@ -128,7 +149,7 @@ pub(crate) async fn fetch_home_sidebar_playlists(
     })
 }
 
-pub(crate) async fn fetch_home_sidebar_page(
+async fn fetch_home_sidebar_page(
     mut api: ApiState,
     user_id: String,
     section: HomeSidebarSection,
@@ -174,28 +195,28 @@ pub(crate) async fn fetch_home_sidebar_page(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HomeSidebarSection {
+pub(crate) enum HomeSidebarSection {
     Created,
     Collected,
 }
 
 #[derive(Debug, Clone)]
-pub struct HomeSidebarPlaylist {
-    pub id: Option<String>,
-    pub title: String,
-    pub creator: String,
-    pub track_count: usize,
+pub(crate) struct HomeSidebarPlaylist {
+    pub(crate) id: Option<String>,
+    pub(crate) title: String,
+    pub(crate) creator: String,
+    pub(crate) track_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HomeSidebarHit {
-    pub section: HomeSidebarSection,
-    pub index: usize,
+pub(crate) struct HomeSidebarHit {
+    pub(crate) section: HomeSidebarSection,
+    pub(crate) index: usize,
 }
 
 /// 滚轮落在侧边栏时该滚哪个分区：光标所在分区优先（分区按整块算，列表短时
 /// 下方的空白也命中），否则用当前聚焦分区；光标不在侧边栏面板内返回 `None`。
-pub(crate) fn home_sidebar_wheel_target(
+pub(super) fn home_sidebar_wheel_target(
     panel: Option<HitRect>,
     sections: &[(HitRect, HomeSidebarSection)],
     focused: HomeSidebarSection,
@@ -216,28 +237,28 @@ pub(crate) fn home_sidebar_wheel_target(
     )
 }
 
-pub struct HomeSidebarState {
-    pub expanded: bool,
-    pub loading: bool,
-    pub loading_more: bool,
-    pub user_id: Option<String>,
-    pub liked_playlist_id: Option<String>,
-    pub user_name: String,
-    pub created_playlists: Vec<HomeSidebarPlaylist>,
-    pub collected_playlists: Vec<HomeSidebarPlaylist>,
-    pub created_has_more: bool,
-    pub collected_has_more: bool,
-    pub created_next_offset: usize,
-    pub collected_next_offset: usize,
-    pub focused_section: HomeSidebarSection,
-    pub focused_index: usize,
-    pub created_focused_index: usize,
-    pub collected_focused_index: usize,
-    pub created_scroll_offset: usize,
-    pub collected_scroll_offset: usize,
+pub(crate) struct HomeSidebarState {
+    pub(crate) expanded: bool,
+    pub(crate) loading: bool,
+    pub(crate) loading_more: bool,
+    pub(super) user_id: Option<String>,
+    pub(super) liked_playlist_id: Option<String>,
+    pub(crate) user_name: String,
+    pub(crate) created_playlists: Vec<HomeSidebarPlaylist>,
+    pub(crate) collected_playlists: Vec<HomeSidebarPlaylist>,
+    pub(super) created_has_more: bool,
+    pub(super) collected_has_more: bool,
+    pub(super) created_next_offset: usize,
+    pub(super) collected_next_offset: usize,
+    pub(crate) focused_section: HomeSidebarSection,
+    pub(crate) focused_index: usize,
+    pub(super) created_focused_index: usize,
+    pub(super) collected_focused_index: usize,
+    pub(super) created_scroll_offset: usize,
+    pub(super) collected_scroll_offset: usize,
     pub(crate) motion: Toggle,
     pub(crate) trail: Trail,
-    pub status_line: String,
+    pub(crate) status_line: String,
 }
 
 impl Default for HomeSidebarState {
@@ -269,14 +290,14 @@ impl Default for HomeSidebarState {
 }
 
 impl HomeSidebarState {
-    pub(crate) fn section_memory(&self, section: HomeSidebarSection) -> usize {
+    fn section_memory(&self, section: HomeSidebarSection) -> usize {
         match section {
             HomeSidebarSection::Created => self.created_focused_index,
             HomeSidebarSection::Collected => self.collected_focused_index,
         }
     }
 
-    pub(crate) fn set_section_memory(&mut self, section: HomeSidebarSection, index: usize) {
+    fn set_section_memory(&mut self, section: HomeSidebarSection, index: usize) {
         match section {
             HomeSidebarSection::Created => {
                 self.created_focused_index = index;
@@ -287,14 +308,14 @@ impl HomeSidebarState {
         }
     }
 
-    pub fn section_scroll_offset(&self, section: HomeSidebarSection) -> usize {
+    pub(crate) fn section_scroll_offset(&self, section: HomeSidebarSection) -> usize {
         match section {
             HomeSidebarSection::Created => self.created_scroll_offset,
             HomeSidebarSection::Collected => self.collected_scroll_offset,
         }
     }
 
-    pub fn set_section_scroll_offset(&mut self, section: HomeSidebarSection, offset: usize) {
+    pub(crate) fn set_section_scroll_offset(&mut self, section: HomeSidebarSection, offset: usize) {
         match section {
             HomeSidebarSection::Created => {
                 self.created_scroll_offset = offset;
@@ -305,31 +326,31 @@ impl HomeSidebarState {
         }
     }
 
-    pub(crate) fn sync_memory_from_current(&mut self) {
+    fn sync_memory_from_current(&mut self) {
         self.set_section_memory(self.focused_section, self.focused_index);
     }
 
-    pub(crate) fn section_len(&self, section: HomeSidebarSection) -> usize {
+    pub(super) fn section_len(&self, section: HomeSidebarSection) -> usize {
         match section {
             HomeSidebarSection::Created => self.created_playlists.len(),
             HomeSidebarSection::Collected => self.collected_playlists.len(),
         }
     }
-    pub(crate) fn section_has_more(&self, section: HomeSidebarSection) -> bool {
+    pub(super) fn section_has_more(&self, section: HomeSidebarSection) -> bool {
         match section {
             HomeSidebarSection::Created => self.created_has_more,
             HomeSidebarSection::Collected => self.collected_has_more,
         }
     }
 
-    pub(crate) fn section_next_offset(&self, section: HomeSidebarSection) -> usize {
+    fn section_next_offset(&self, section: HomeSidebarSection) -> usize {
         match section {
             HomeSidebarSection::Created => self.created_next_offset,
             HomeSidebarSection::Collected => self.collected_next_offset,
         }
     }
 
-    pub(crate) fn append_section_page(&mut self, page: HomeSidebarPageFetch) {
+    pub(super) fn append_section_page(&mut self, page: HomeSidebarPageFetch) {
         match page.section {
             HomeSidebarSection::Created => {
                 self.created_playlists.extend(page.items);
@@ -345,7 +366,7 @@ impl HomeSidebarState {
         self.clamp_focus();
     }
 
-    pub fn clamp_focus(&mut self) {
+    pub(super) fn clamp_focus(&mut self) {
         let created_len = self.created_playlists.len();
         let collected_len = self.collected_playlists.len();
 
@@ -386,7 +407,7 @@ impl HomeSidebarState {
         self.collected_scroll_offset = self.collected_scroll_offset.min(collected_max_start);
     }
 
-    pub fn reset_focus(&mut self) {
+    fn reset_focus(&mut self) {
         self.created_focused_index = 0;
         self.collected_focused_index = 0;
         self.created_scroll_offset = 0;
@@ -402,7 +423,7 @@ impl HomeSidebarState {
         self.clamp_focus();
     }
 
-    pub fn focus_next(&mut self) {
+    pub(super) fn focus_next(&mut self) {
         let len = self.section_len(self.focused_section);
         if len == 0 {
             return;
@@ -411,7 +432,7 @@ impl HomeSidebarState {
         self.sync_memory_from_current();
     }
 
-    pub fn focus_prev(&mut self) {
+    pub(super) fn focus_prev(&mut self) {
         let len = self.section_len(self.focused_section);
         if len == 0 {
             return;
@@ -427,7 +448,7 @@ impl HomeSidebarState {
     /// 滚轮滚动一格：在当前分区内移动焦点（到顶/到底即停，不回卷——键盘的
     /// `focus_next/prev` 会绕回，滚轮从列表末尾跳回开头会很突兀）。
     /// 侧边栏的视图跟随焦点，所以这就是它唯一的滚动方式。
-    pub fn scroll_by(&mut self, forward: bool) {
+    pub(super) fn scroll_by(&mut self, forward: bool) {
         let len = self.section_len(self.focused_section);
         if len == 0 {
             return;
@@ -444,7 +465,7 @@ impl HomeSidebarState {
 
     /// 滚轮落到某个分区：先切到该分区（沿用它的位置记忆），再走一格，
     /// 这样"指着收藏区滚滚轮"不会把创建区的焦点带走。
-    pub fn scroll_section_by(&mut self, section: HomeSidebarSection, forward: bool) {
+    pub(super) fn scroll_section_by(&mut self, section: HomeSidebarSection, forward: bool) {
         if section != self.focused_section {
             let index = self.section_memory(section);
             self.set_focus(section, index);
@@ -452,7 +473,7 @@ impl HomeSidebarState {
         self.scroll_by(forward);
     }
 
-    pub fn switch_section_prev(&mut self) {
+    pub(super) fn switch_section_prev(&mut self) {
         self.sync_memory_from_current();
         self.focused_section = match self.focused_section {
             HomeSidebarSection::Created => HomeSidebarSection::Collected,
@@ -461,7 +482,7 @@ impl HomeSidebarState {
         self.clamp_focus();
     }
 
-    pub fn switch_section_next(&mut self) {
+    pub(super) fn switch_section_next(&mut self) {
         self.sync_memory_from_current();
         self.focused_section = match self.focused_section {
             HomeSidebarSection::Created => HomeSidebarSection::Collected,
@@ -470,7 +491,7 @@ impl HomeSidebarState {
         self.clamp_focus();
     }
 
-    pub fn set_focus(&mut self, section: HomeSidebarSection, index: usize) {
+    pub(super) fn set_focus(&mut self, section: HomeSidebarSection, index: usize) {
         self.sync_memory_from_current();
         self.focused_section = section;
         self.focused_index = index;
@@ -478,19 +499,19 @@ impl HomeSidebarState {
         self.clamp_focus();
     }
 
-    pub fn focused_playlist(&self) -> Option<&HomeSidebarPlaylist> {
+    fn focused_playlist(&self) -> Option<&HomeSidebarPlaylist> {
         match self.focused_section {
             HomeSidebarSection::Created => self.created_playlists.get(self.focused_index),
             HomeSidebarSection::Collected => self.collected_playlists.get(self.focused_index),
         }
     }
 
-    pub fn is_visible(&self) -> bool {
+    pub(crate) fn is_visible(&self) -> bool {
         self.expanded || self.motion.on() || self.trail.value() > 0.0
     }
 }
 
-pub(crate) fn parse_home_sidebar_playlists(response: &ApiResponse) -> Vec<HomeSidebarPlaylist> {
+fn parse_home_sidebar_playlists(response: &ApiResponse) -> Vec<HomeSidebarPlaylist> {
     let Some(items) = response
         .body
         .get("playlist")
@@ -546,7 +567,7 @@ pub(crate) fn parse_home_sidebar_playlists(response: &ApiResponse) -> Vec<HomeSi
 impl App {
     /// 主页侧边栏的滚轮滚动：光标指到哪个分区就滚哪个（没有则滚当前聚焦分区），
     /// 一格一步、到端点即停。侧边栏收起或光标在面板外时不动。
-    pub(crate) fn scroll_home_sidebar(&mut self, col: u16, row: u16, forward: bool) {
+    pub(super) fn scroll_home_sidebar(&mut self, col: u16, row: u16, forward: bool) {
         if !self.browse.home_sidebar.expanded {
             return;
         }
@@ -567,12 +588,12 @@ impl App {
         }
     }
 
-    pub(crate) fn tick_home_sidebar_animation(&mut self, now: Instant) {
+    pub(super) fn tick_home_sidebar_animation(&mut self, now: Instant) {
         self.browse.home_sidebar.motion.tick(now);
         self.browse.home_sidebar.trail.tick(now);
     }
 
-    pub(crate) fn animate_home_sidebar(&mut self) {
+    pub(super) fn animate_home_sidebar(&mut self) {
         let now = Instant::now();
         let target = if self.browse.home_sidebar.expanded {
             1.0
@@ -594,7 +615,7 @@ impl App {
         );
     }
 
-    pub(crate) async fn toggle_home_sidebar(&mut self) {
+    pub(super) async fn toggle_home_sidebar(&mut self) {
         if self.page != Page::Home || self.overlay.is_some() {
             return;
         }
@@ -621,7 +642,7 @@ impl App {
     }
 
     /// 搬运侧边栏歌单的异步结果（每帧调用，结果就绪才动状态）。
-    pub(crate) fn tick_home_sidebar_fetch(&mut self) {
+    pub(super) fn tick_home_sidebar_fetch(&mut self) {
         let Some(result) = peek_shared_future(&self.browse.home_sidebar_fetch).cloned() else {
             return;
         };
@@ -669,7 +690,7 @@ impl App {
         }
     }
 
-    pub(crate) fn tick_home_sidebar_page_fetch(&mut self) {
+    pub(super) fn tick_home_sidebar_page_fetch(&mut self) {
         let Some(result) = peek_shared_future(&self.browse.home_sidebar_page_fetch).cloned() else {
             return;
         };
@@ -701,7 +722,7 @@ impl App {
         }
     }
 
-    pub(crate) fn maybe_fetch_home_sidebar_page(&mut self) {
+    pub(super) fn maybe_fetch_home_sidebar_page(&mut self) {
         if !self.browse.home_sidebar.expanded
             || self.browse.home_sidebar.loading
             || self.browse.home_sidebar.loading_more
@@ -734,7 +755,7 @@ impl App {
         self.browse.home_sidebar_page_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
-    pub(crate) async fn open_focused_home_sidebar_playlist(&mut self) {
+    pub(super) async fn open_focused_home_sidebar_playlist(&mut self) {
         let (playlist_id, title) = {
             let Some(item) = self.browse.home_sidebar.focused_playlist() else {
                 self.browse.home.status_line = self

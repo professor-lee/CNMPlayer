@@ -1,7 +1,26 @@
-use super::*;
+use super::App;
+use super::home::HOME_PRIVATE_ROAM_TILE_ID;
+use super::likes::LikeMachine;
+use super::player::AudioPlayer;
+use super::player::AudioPlayerState;
+use super::player::is_nonempty_file;
+use super::playlist_pagination::PlaylistPagination;
+use super::search_controller::SearchItem;
+use super::streaming::StreamingReader;
+use super::tracks::PlaylistTrack;
+use super::tracks::PlaylistTrackKind;
+use super::tracks::format_duration;
+use crate::data::persistence::PersistenceKey;
+use crate::data::playback_session;
+use crate::tmplayer::app::state::LyricLine;
+use crate::tmplayer::audio::pcm_tap::PcmRing;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackRepeatMode {
+pub(crate) enum PlaybackRepeatMode {
     Sequence,
     Shuffle,
     LoopAll,
@@ -9,7 +28,7 @@ pub enum PlaybackRepeatMode {
 }
 
 impl PlaybackRepeatMode {
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::Sequence => Self::Shuffle,
             Self::Shuffle => Self::LoopAll,
@@ -20,26 +39,26 @@ impl PlaybackRepeatMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackRuntimeState {
+pub(crate) enum PlaybackRuntimeState {
     Playing,
     Paused,
     Stopped,
 }
 
 #[derive(Debug, Clone)]
-pub struct PlaybackTrack {
-    pub song_id: String,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub duration_ms: i64,
-    pub cover_url: Option<String>,
-    pub cover: Option<Vec<u8>>,
-    pub lyrics: Option<Vec<LyricLine>>,
+pub(crate) struct PlaybackTrack {
+    pub(crate) song_id: String,
+    pub(crate) title: String,
+    pub(crate) artist: String,
+    pub(crate) album: String,
+    pub(crate) duration_ms: i64,
+    pub(crate) cover_url: Option<String>,
+    pub(crate) cover: Option<Vec<u8>>,
+    pub(crate) lyrics: Option<Vec<LyricLine>>,
 }
 
 impl PlaybackTrack {
-    pub(crate) fn as_playlist_track(&self) -> PlaylistTrack {
+    pub(super) fn as_playlist_track(&self) -> PlaylistTrack {
         PlaylistTrack {
             kind: PlaylistTrackKind::Song,
             id: Some(self.song_id.clone()),
@@ -52,7 +71,7 @@ impl PlaybackTrack {
         }
     }
 
-    pub(crate) fn from_playlist_track(track: &PlaylistTrack) -> Option<Self> {
+    pub(super) fn from_playlist_track(track: &PlaylistTrack) -> Option<Self> {
         if track.kind != PlaylistTrackKind::Song {
             return None;
         }
@@ -74,7 +93,7 @@ impl PlaybackTrack {
         })
     }
 
-    pub(crate) fn from_search_item(item: &SearchItem) -> Option<Self> {
+    fn from_search_item(item: &SearchItem) -> Option<Self> {
         let song_id = item.song_id.as_ref()?.trim().to_string();
         if song_id.is_empty() {
             return None;
@@ -102,7 +121,7 @@ impl PlaybackTrack {
     }
 }
 
-pub(crate) fn playback_repeat_mode_key(mode: PlaybackRepeatMode) -> &'static str {
+fn playback_repeat_mode_key(mode: PlaybackRepeatMode) -> &'static str {
     match mode {
         PlaybackRepeatMode::Sequence => "sequence",
         PlaybackRepeatMode::Shuffle => "shuffle",
@@ -111,7 +130,7 @@ pub(crate) fn playback_repeat_mode_key(mode: PlaybackRepeatMode) -> &'static str
     }
 }
 
-pub(crate) fn playback_repeat_mode_from_key(value: &str) -> Option<PlaybackRepeatMode> {
+fn playback_repeat_mode_from_key(value: &str) -> Option<PlaybackRepeatMode> {
     match value {
         "sequence" => Some(PlaybackRepeatMode::Sequence),
         "shuffle" => Some(PlaybackRepeatMode::Shuffle),
@@ -121,7 +140,7 @@ pub(crate) fn playback_repeat_mode_from_key(value: &str) -> Option<PlaybackRepea
     }
 }
 
-pub(crate) fn map_audio_state(state: AudioPlayerState) -> PlaybackRuntimeState {
+pub(super) fn map_audio_state(state: AudioPlayerState) -> PlaybackRuntimeState {
     match state {
         AudioPlayerState::Playing => PlaybackRuntimeState::Playing,
         AudioPlayerState::Paused => PlaybackRuntimeState::Paused,
@@ -129,7 +148,7 @@ pub(crate) fn map_audio_state(state: AudioPlayerState) -> PlaybackRuntimeState {
     }
 }
 
-pub(crate) fn pick_shuffle_index(len: usize, current: usize) -> usize {
+fn pick_shuffle_index(len: usize, current: usize) -> usize {
     if len <= 1 {
         return 0;
     }
@@ -146,16 +165,16 @@ pub(crate) fn pick_shuffle_index(len: usize, current: usize) -> usize {
 }
 
 impl App {
-    pub fn playback_position(&self) -> Duration {
+    pub(crate) fn playback_position(&self) -> Duration {
         self.playback.audio_player.display_position()
     }
 
     /// 是否正在后台加载跳转目标（进度条据此显示脉冲加载动画）。
-    pub fn is_seeking(&self) -> bool {
+    pub(crate) fn is_seeking(&self) -> bool {
         self.playback.audio_player.is_seeking()
     }
 
-    pub fn playback_duration(&self) -> Duration {
+    pub(crate) fn playback_duration(&self) -> Duration {
         if let Some(duration) = self.playback.audio_player.duration() {
             return duration;
         }
@@ -169,11 +188,11 @@ impl App {
 
     /// Returns (downloaded_bytes, total_bytes) for streaming buffer progress.
     /// Returns None if not streaming or if total is unknown.
-    pub fn buffer_progress(&mut self) -> Option<(u64, u64)> {
+    pub(crate) fn buffer_progress(&mut self) -> Option<(u64, u64)> {
         self.playback.audio_player.recv_progress()
     }
 
-    pub fn now_playing_artist_text(&self) -> String {
+    pub(crate) fn now_playing_artist_text(&self) -> String {
         self.playback
             .now_playing
             .as_ref()
@@ -182,7 +201,7 @@ impl App {
     }
 
     /// 播放链路上的 PCM 抽头环句柄，经 `HostPlaybackBridge` 交给全屏页示波器。
-    pub fn pcm_ring(&self) -> Arc<PcmRing> {
+    pub(crate) fn pcm_ring(&self) -> Arc<PcmRing> {
         self.playback.audio_player.pcm_ring()
     }
 
@@ -203,7 +222,7 @@ impl App {
         self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
     }
 
-    pub(crate) async fn toggle_play_pause_hotkey(&mut self) {
+    pub(super) async fn toggle_play_pause_hotkey(&mut self) {
         self.playback.page_advance = None;
         if self.playback.now_playing.is_none() {
             self.set_runtime_status(
@@ -223,7 +242,7 @@ impl App {
         self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
     }
 
-    pub(crate) async fn play_previous_hotkey(&mut self) {
+    pub(super) async fn play_previous_hotkey(&mut self) {
         if self.playback.playback_queue.is_empty() {
             self.set_runtime_status(self.lang_text("当前播放队列为空", "Playback queue is empty"));
             return;
@@ -252,7 +271,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn play_next_hotkey(&mut self) {
+    pub(super) async fn play_next_hotkey(&mut self) {
         if self.playback.playback_queue.is_empty() {
             self.set_runtime_status(self.lang_text("当前播放队列为空", "Playback queue is empty"));
             return;
@@ -287,7 +306,7 @@ impl App {
         }
     }
 
-    pub(crate) fn cycle_repeat_mode_hotkey(&mut self) {
+    pub(super) fn cycle_repeat_mode_hotkey(&mut self) {
         self.playback.cycle_repeat_mode();
         self.set_runtime_status(format!(
             "{}: {}",
@@ -303,14 +322,14 @@ impl App {
     }
 
     /// 当前曲目 id。
-    pub(crate) fn current_song_id(&self) -> Option<String> {
+    pub(super) fn current_song_id(&self) -> Option<String> {
         self.playback
             .now_playing
             .as_ref()
             .map(|track| track.song_id.clone())
     }
 
-    pub(crate) async fn tick_audio(&mut self) {
+    pub(super) async fn tick_audio(&mut self) {
         self.tick_playlist_page_fetch();
         self.maybe_prefetch_playback_page();
         if let Some(announce) = self.playback.page_advance {
@@ -341,7 +360,7 @@ impl App {
         self.playback.playback_state = runtime;
     }
 
-    pub(crate) async fn play_next_after_finish(&mut self) {
+    async fn play_next_after_finish(&mut self) {
         if self.playback.playback_queue.is_empty() {
             self.playback.playback_state = PlaybackRuntimeState::Stopped;
             return;
@@ -406,7 +425,7 @@ impl App {
         }
     }
 
-    pub(crate) fn defer_playlist_advance(&mut self, current: usize, announce: bool) -> bool {
+    fn defer_playlist_advance(&mut self, current: usize, announce: bool) -> bool {
         if matches!(
             self.playback.playback_repeat_mode,
             PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll
@@ -519,7 +538,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn replace_queue_and_play(
+    async fn replace_queue_and_play(
         &mut self,
         queue: Vec<PlaybackTrack>,
         index: usize,
@@ -540,7 +559,7 @@ impl App {
         self.play_queue_index(target, true).await;
     }
 
-    pub(crate) fn build_queue_from_playlist(&self) -> (Vec<PlaybackTrack>, usize) {
+    fn build_queue_from_playlist(&self) -> (Vec<PlaybackTrack>, usize) {
         let focused = self.browse.playlist.focused_idx;
         let mut queue = Vec::new();
         let mut mapped_focus = None;
@@ -558,7 +577,7 @@ impl App {
         (queue, target)
     }
 
-    pub(crate) fn build_queue_from_search(&self) -> (Vec<PlaybackTrack>, usize) {
+    fn build_queue_from_search(&self) -> (Vec<PlaybackTrack>, usize) {
         let focused = self.search.focused_idx;
         let mut queue = Vec::new();
         let mut mapped_focus = None;
@@ -576,7 +595,7 @@ impl App {
         (queue, target)
     }
 
-    pub(crate) async fn play_focused_playlist_track(&mut self) {
+    pub(super) async fn play_focused_playlist_track(&mut self) {
         let Some(track) = self
             .browse
             .playlist
@@ -605,31 +624,31 @@ impl App {
         }
     }
 
-    pub(crate) async fn play_focused_search_track(&mut self) {
+    pub(super) async fn play_focused_search_track(&mut self) {
         let (queue, target) = self.build_queue_from_search();
         // 搜索结果没有"所属列表"，交给首歌封面兜底。
         self.replace_queue_and_play(queue, target, None, None, None)
             .await;
     }
 
-    pub fn is_now_playing_song(&self, song_id: Option<&str>) -> bool {
+    pub(crate) fn is_now_playing_song(&self, song_id: Option<&str>) -> bool {
         match (self.playback.now_playing.as_ref(), song_id) {
             (Some(now), Some(song_id)) => now.song_id == song_id,
             _ => false,
         }
     }
 
-    pub fn persist_playback_memory_on_exit(&self) {
+    pub(crate) fn persist_playback_memory_on_exit(&self) {
         self.persist_playback_memory();
     }
 
-    pub(crate) fn clear_playback_memory(&self) {
+    pub(super) fn clear_playback_memory(&self) {
         let _ = self
             .persistence
             .enqueue_latest(PersistenceKey::Playback, playback_session::clear);
     }
 
-    pub(crate) fn persist_playback_memory(&self) {
+    pub(super) fn persist_playback_memory(&self) {
         if self.playback.restoring_memory
             || !self.config.playback_memory
             || self.playback.playback_queue.is_empty()
@@ -674,7 +693,7 @@ impl App {
             });
     }
 
-    pub(crate) async fn try_restore_playback_memory(&mut self) {
+    pub(super) async fn try_restore_playback_memory(&mut self) {
         if !self.config.playback_memory {
             return;
         }
@@ -751,25 +770,25 @@ impl App {
 }
 
 pub(crate) struct PlaybackController {
-    pub audio_player: AudioPlayer,
-    pub now_playing: Option<PlaybackTrack>,
-    pub now_playing_liked: bool,
-    pub(crate) like_machine: LikeMachine,
-    pub playback_queue: Vec<PlaybackTrack>,
-    pub playback_queue_cover_url: Option<String>,
-    pub playback_queue_cover: Option<Vec<u8>>,
-    pub playback_queue_source_id: Option<String>,
-    pub playback_index: Option<usize>,
-    pub playback_repeat_mode: PlaybackRepeatMode,
-    pub playback_state: PlaybackRuntimeState,
-    pub restoring_memory: bool,
-    pub(crate) pagination: Option<PlaylistPagination>,
+    pub(super) audio_player: AudioPlayer,
+    pub(crate) now_playing: Option<PlaybackTrack>,
+    pub(crate) now_playing_liked: bool,
+    pub(super) like_machine: LikeMachine,
+    pub(super) playback_queue: Vec<PlaybackTrack>,
+    pub(super) playback_queue_cover_url: Option<String>,
+    pub(super) playback_queue_cover: Option<Vec<u8>>,
+    pub(super) playback_queue_source_id: Option<String>,
+    pub(super) playback_index: Option<usize>,
+    pub(crate) playback_repeat_mode: PlaybackRepeatMode,
+    pub(crate) playback_state: PlaybackRuntimeState,
+    restoring_memory: bool,
+    pub(super) pagination: Option<PlaylistPagination>,
     /// End-of-page advance waits for the shared page instead of stopping or wrapping early.
-    pub page_advance: Option<bool>,
+    pub(super) page_advance: Option<bool>,
 }
 
 impl PlaybackController {
-    pub fn new(audio_player: AudioPlayer) -> Self {
+    pub(super) fn new(audio_player: AudioPlayer) -> Self {
         Self {
             audio_player,
             now_playing: None,
@@ -789,7 +808,7 @@ impl PlaybackController {
     }
 
     /// 全屏入口与后续快照共用：来源封面未就绪时使用歌曲封面，不保留旧队列的图。
-    pub fn fullscreen_playlist_cover(&self) -> Option<&[u8]> {
+    pub(super) fn fullscreen_playlist_cover(&self) -> Option<&[u8]> {
         self.playback_queue_cover
             .as_deref()
             .or_else(|| {
@@ -804,16 +823,16 @@ impl PlaybackController {
             })
     }
 
-    pub fn cycle_repeat_mode(&mut self) {
+    fn cycle_repeat_mode(&mut self) {
         self.playback_repeat_mode = self.playback_repeat_mode.next();
     }
 
-    pub fn clear_like_state(&mut self) {
+    pub(super) fn clear_like_state(&mut self) {
         self.now_playing_liked = false;
         self.like_machine.clear();
     }
 
-    pub fn clear_queue(&mut self) {
+    pub(super) fn clear_queue(&mut self) {
         self.playback_queue.clear();
         self.playback_index = None;
         self.playback_state = PlaybackRuntimeState::Stopped;
@@ -826,7 +845,7 @@ impl PlaybackController {
         self.page_advance = None;
     }
 
-    pub(crate) fn replace_queue(
+    fn replace_queue(
         &mut self,
         queue: Vec<PlaybackTrack>,
         index: Option<usize>,

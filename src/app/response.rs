@@ -1,6 +1,7 @@
-use super::*;
+use ncm_api::ApiResponse;
+use serde_json::Value;
 
-pub(crate) fn response_page_has_more(
+pub(super) fn response_page_has_more(
     response: &ApiResponse,
     offset: usize,
     fetched: usize,
@@ -22,7 +23,7 @@ pub(crate) fn response_page_has_more(
         .unwrap_or(fetched >= limit)
 }
 
-pub(crate) fn response_code(response: &ApiResponse) -> i64 {
+pub(super) fn response_code(response: &ApiResponse) -> i64 {
     response
         .body
         .get("code")
@@ -30,7 +31,7 @@ pub(crate) fn response_code(response: &ApiResponse) -> i64 {
         .unwrap_or(response.status)
 }
 
-pub(crate) fn response_message(response: &ApiResponse) -> String {
+pub(super) fn response_message(response: &ApiResponse) -> String {
     if let Some(message) = response.body.get("msg").and_then(|value| value.as_str()) {
         return message.to_string();
     }
@@ -44,7 +45,7 @@ pub(crate) fn response_message(response: &ApiResponse) -> String {
     "未知错误".to_string()
 }
 
-pub(crate) fn parse_usize_value(value: Option<&Value>) -> Option<usize> {
+pub(super) fn parse_usize_value(value: Option<&Value>) -> Option<usize> {
     let value = value?;
     if let Some(number) = value.as_u64() {
         return Some(number as usize);
@@ -60,7 +61,7 @@ pub(crate) fn parse_usize_value(value: Option<&Value>) -> Option<usize> {
     None
 }
 
-pub(crate) fn parse_value_as_string(value: Option<&Value>) -> Option<String> {
+pub(super) fn parse_value_as_string(value: Option<&Value>) -> Option<String> {
     let value = value?;
     if let Some(text) = value.as_str()
         && !text.trim().is_empty()
@@ -73,7 +74,7 @@ pub(crate) fn parse_value_as_string(value: Option<&Value>) -> Option<String> {
     None
 }
 
-pub(crate) fn first_non_empty(value: &Value, pointers: &[&str]) -> Option<String> {
+pub(super) fn first_non_empty(value: &Value, pointers: &[&str]) -> Option<String> {
     for pointer in pointers {
         if let Some(text) = value.pointer(pointer).and_then(|item| item.as_str()) {
             let text = text.trim();

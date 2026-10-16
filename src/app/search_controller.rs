@@ -1,16 +1,51 @@
-use super::*;
+use super::App;
+use super::Overlay;
+use super::Page;
+use super::author::AuthorFetchTask;
+use super::author::AuthorState;
+use super::author::fetch_author_page_by_id;
+use super::cover_state::CoverFetchState;
+use super::input_controller::HitRect;
+use super::next_list_generation;
+use super::owned_task::spawn_shared;
+use super::playlist::PlaylistFetchSlot;
+use super::playlist::PlaylistFetchTask;
+use super::playlist::PlaylistPageKind;
+use super::playlist::PlaylistState;
+use super::playlist::fetch_album_page;
+use super::playlist::fetch_playlist_page;
+use super::response::first_non_empty;
+use super::response::parse_usize_value;
+use super::response::parse_value_as_string;
+use super::response::response_code;
+use super::response::response_message;
+use super::text::char_count;
+use super::text::char_index_for_display_column;
+use super::tracks::format_duration;
+use super::tracks::parse_artists;
+use crate::render::motion::Curve;
+use anyhow::Result;
+use anyhow::anyhow;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use ncm_api::ApiResponse;
+use serde_json::Value;
+use std::ops::Range;
+use std::time::Duration;
+use std::time::Instant;
 
-pub(crate) const SEARCH_RESULT_PAGE_SIZE: usize = 100;
+const SEARCH_RESULT_PAGE_SIZE: usize = 100;
 
 /// 无后缀（混合）搜索里作者 / 歌单分区只取最相关的少量条目，不参与分页。
-pub(crate) const MIXED_AUX_RESULT_LIMIT: usize = 5;
+const MIXED_AUX_RESULT_LIMIT: usize = 5;
 
 /// 搜索框滑出动画时长（time-based，与帧率解耦）
-pub(crate) const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
+pub(super) const SEARCH_BOX_ANIM_DURATION: Duration = Duration::from_millis(180);
 
 /// 搜索结果条目的种类。带后缀的搜索只产出单一种类；无后缀搜索混合作者 / 歌单 / 单曲。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchItemKind {
+pub(crate) enum SearchItemKind {
     Song,
     Album,
     Artist,
@@ -18,18 +53,18 @@ pub enum SearchItemKind {
 }
 
 /// 作者卡片的行数：上边框 + 头像两行 + 下边框。
-pub const ARTIST_CARD_ROWS: usize = 4;
+pub(crate) const ARTIST_CARD_ROWS: usize = 4;
 
 impl SearchItemKind {
     /// 行右侧的类型标签（与 `SearchScope` 的后缀同源，避免两处字面量）。
     /// 单曲行的右侧位让给时长，故为 None。
-    pub fn tag(self) -> Option<&'static str> {
+    pub(crate) fn tag(self) -> Option<&'static str> {
         let scope = self.scope();
         (scope != SearchScope::Single).then(|| scope.suffix())
     }
 
     /// 条目占用的行数：作者卡片 4 行，其余 1 行。
-    pub fn rows(self, card: bool) -> usize {
+    pub(super) fn rows(self, card: bool) -> usize {
         if card && self == Self::Artist {
             ARTIST_CARD_ROWS
         } else {
@@ -37,7 +72,7 @@ impl SearchItemKind {
         }
     }
 
-    pub(crate) fn scope(self) -> SearchScope {
+    pub(super) fn scope(self) -> SearchScope {
         match self {
             Self::Song => SearchScope::Single,
             Self::Album => SearchScope::Album,
@@ -47,26 +82,26 @@ impl SearchItemKind {
     }
 }
 
-pub struct SearchItem {
-    pub kind: SearchItemKind,
-    pub left_label: String,
-    pub right_label: String,
-    pub song_id: Option<String>,
-    pub album_id: Option<String>,
-    pub playlist_id: Option<String>,
-    pub artist_id: Option<String>,
-    pub title: Option<String>,
-    pub artist: Option<String>,
-    pub album: Option<String>,
-    pub cover_url: Option<String>,
-    pub duration_ms: Option<i64>,
+pub(crate) struct SearchItem {
+    pub(crate) kind: SearchItemKind,
+    pub(crate) left_label: String,
+    pub(crate) right_label: String,
+    pub(crate) song_id: Option<String>,
+    pub(crate) album_id: Option<String>,
+    pub(crate) playlist_id: Option<String>,
+    pub(crate) artist_id: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) artist: Option<String>,
+    pub(crate) album: Option<String>,
+    pub(crate) cover_url: Option<String>,
+    pub(crate) duration_ms: Option<i64>,
     /// 作者条目的头像，复用封面管线。
-    pub cover: CoverFetchState,
+    pub(crate) cover: CoverFetchState,
 }
 
 /// 搜索请求的作用域。`Mixed` 对应无后缀搜索（作者 + 歌单 + 单曲并发拉取后合并）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchScope {
+pub(crate) enum SearchScope {
     Mixed,
     Single,
     Album,
@@ -76,10 +111,9 @@ pub enum SearchScope {
 
 impl SearchScope {
     /// 带后缀的类型；`Mixed` 无后缀，不在此表。
-    pub(crate) const SUFFIXED: [SearchScope; 4] =
-        [Self::Single, Self::Album, Self::Author, Self::Playlist];
+    const SUFFIXED: [SearchScope; 4] = [Self::Single, Self::Album, Self::Author, Self::Playlist];
 
-    pub(crate) fn suffix(self) -> &'static str {
+    pub(super) fn suffix(self) -> &'static str {
         match self {
             Self::Mixed => "",
             Self::Single => "@single",
@@ -90,7 +124,7 @@ impl SearchScope {
     }
 
     /// NCM cloudsearch 的 `type`；`Mixed` 由 `execute_search` 拆成多请求，没有单一 id。
-    pub(crate) fn search_type(self) -> Option<i32> {
+    pub(super) fn search_type(self) -> Option<i32> {
         match self {
             Self::Mixed => None,
             Self::Single => Some(1),
@@ -100,7 +134,7 @@ impl SearchScope {
         }
     }
 
-    pub(crate) fn display_name(self) -> &'static str {
+    pub(super) fn display_name(self) -> &'static str {
         match self {
             Self::Mixed => "综合",
             Self::Single => "单曲",
@@ -111,7 +145,7 @@ impl SearchScope {
     }
 }
 
-pub(crate) fn parse_search_input(raw: &str) -> (String, SearchScope) {
+pub(super) fn parse_search_input(raw: &str) -> (String, SearchScope) {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return (String::new(), SearchScope::Mixed);
@@ -135,18 +169,18 @@ pub(crate) fn parse_search_input(raw: &str) -> (String, SearchScope) {
     (trimmed.to_string(), SearchScope::Mixed)
 }
 
-pub(crate) fn is_followed_author_query(keywords: &str, scope: SearchScope) -> bool {
+fn is_followed_author_query(keywords: &str, scope: SearchScope) -> bool {
     scope == SearchScope::Author && keywords.trim().is_empty()
 }
 
-pub(crate) struct FollowedAuthorPage {
-    pub(crate) items: Vec<SearchItem>,
-    pub(crate) fetched_count: usize,
-    pub(crate) has_more: Option<bool>,
-    pub(crate) total_count: Option<usize>,
+struct FollowedAuthorPage {
+    pub(super) items: Vec<SearchItem>,
+    fetched_count: usize,
+    pub(super) has_more: Option<bool>,
+    total_count: Option<usize>,
 }
 
-pub(crate) fn parse_followed_author_page(response: &ApiResponse) -> FollowedAuthorPage {
+fn parse_followed_author_page(response: &ApiResponse) -> FollowedAuthorPage {
     let items = response
         .body
         .get("data")
@@ -189,7 +223,7 @@ pub(crate) fn parse_followed_author_page(response: &ApiResponse) -> FollowedAuth
     }
 }
 
-pub(crate) fn followed_author_has_more(page: &FollowedAuthorPage, next_offset: usize) -> bool {
+fn followed_author_has_more(page: &FollowedAuthorPage, next_offset: usize) -> bool {
     if page.fetched_count == 0 {
         return false;
     }
@@ -207,7 +241,7 @@ pub(crate) fn followed_author_has_more(page: &FollowedAuthorPage, next_offset: u
 
 /// 混合搜索的辅助分区：请求失败或非 200 时退化为空分区（该分区不显示），
 /// 不影响单曲分区，也不把整次搜索判为失败。
-pub(crate) fn parse_optional_search_section(
+fn parse_optional_search_section(
     response: Result<ApiResponse>,
     scope: SearchScope,
 ) -> Vec<SearchItem> {
@@ -230,10 +264,10 @@ pub(crate) fn parse_optional_search_section(
 }
 
 /// 分区解析器：把 `result.<key>` 的数组转成条目。
-pub(crate) type SearchSectionParser = fn(&[Value]) -> Vec<SearchItem>;
+type SearchSectionParser = fn(&[Value]) -> Vec<SearchItem>;
 
 /// 按 scope 取对应分区并解析。`Mixed` 没有单一条目种类（由 `execute_mixed_search` 合并三段）。
-pub(crate) fn parse_search_items(response: &ApiResponse, scope: SearchScope) -> Vec<SearchItem> {
+fn parse_search_items(response: &ApiResponse, scope: SearchScope) -> Vec<SearchItem> {
     let Some(result) = response.body.get("result") else {
         return Vec::new();
     };
@@ -253,7 +287,7 @@ pub(crate) fn parse_search_items(response: &ApiResponse, scope: SearchScope) -> 
         .unwrap_or_default()
 }
 
-pub(crate) fn parse_song_items(items: &[Value]) -> Vec<SearchItem> {
+fn parse_song_items(items: &[Value]) -> Vec<SearchItem> {
     let mut out = Vec::new();
 
     for item in items {
@@ -290,7 +324,7 @@ pub(crate) fn parse_song_items(items: &[Value]) -> Vec<SearchItem> {
     out
 }
 
-pub(crate) fn parse_album_items(items: &[Value]) -> Vec<SearchItem> {
+fn parse_album_items(items: &[Value]) -> Vec<SearchItem> {
     let mut out = Vec::new();
 
     for item in items {
@@ -327,7 +361,7 @@ pub(crate) fn parse_album_items(items: &[Value]) -> Vec<SearchItem> {
     out
 }
 
-pub(crate) fn parse_author_items(items: &[Value]) -> Vec<SearchItem> {
+fn parse_author_items(items: &[Value]) -> Vec<SearchItem> {
     let mut out = Vec::new();
 
     for item in items {
@@ -360,7 +394,7 @@ pub(crate) fn parse_author_items(items: &[Value]) -> Vec<SearchItem> {
     out
 }
 
-pub(crate) fn parse_playlist_items(items: &[Value]) -> Vec<SearchItem> {
+fn parse_playlist_items(items: &[Value]) -> Vec<SearchItem> {
     let mut out = Vec::new();
 
     for item in items {
@@ -398,7 +432,7 @@ pub(crate) fn parse_playlist_items(items: &[Value]) -> Vec<SearchItem> {
 }
 
 impl App {
-    pub(crate) async fn advance_search_focus(&mut self) {
+    pub(super) async fn advance_search_focus(&mut self) {
         if self.search.is_empty() {
             return;
         }
@@ -428,7 +462,7 @@ impl App {
     }
 
     /// 搜索页打开作者：立即落占位作者页 + 派发后台拉取（结果由 `tick_author_fetch` 搬进来）。
-    pub(crate) fn open_focused_search_author(&mut self) {
+    fn open_focused_search_author(&mut self) {
         let (artist_id, title, fallback_cover_url) = {
             let Some(item) = self.search.results().get(self.search.focused_idx) else {
                 return;
@@ -467,7 +501,7 @@ impl App {
     }
 
     /// 搜索页打开专辑：立即落占位歌单页 + 派发后台拉取（结果由 `tick_playlist_fetch` 搬进来）。
-    pub(crate) fn open_focused_search_album(&mut self) {
+    fn open_focused_search_album(&mut self) {
         let (album_id, title, fallback_cover_url) = {
             let Some(item) = self.search.results().get(self.search.focused_idx) else {
                 return;
@@ -517,7 +551,7 @@ impl App {
     }
 
     /// 搜索页打开歌单：立即落占位歌单页 + 派发后台拉取（结果由 `tick_playlist_fetch` 搬进来）。
-    pub(crate) fn open_focused_search_playlist(&mut self) {
+    fn open_focused_search_playlist(&mut self) {
         let (playlist_id, title, fallback_cover_url) = {
             let Some(item) = self.search.results().get(self.search.focused_idx) else {
                 return;
@@ -562,7 +596,7 @@ impl App {
         });
     }
 
-    pub(crate) async fn activate_focused_search_result(&mut self) {
+    pub(super) async fn activate_focused_search_result(&mut self) {
         let Some(kind) = self
             .search
             .results()
@@ -580,7 +614,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn handle_search_box_key(&mut self, key: KeyEvent) {
+    pub(super) async fn handle_search_box_key(&mut self, key: KeyEvent) {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
         {
@@ -615,7 +649,7 @@ impl App {
             .min(char_count(&self.input.search_box_input));
     }
 
-    pub(crate) fn handle_search_box_click(&mut self, col: u16, row: u16) {
+    pub(super) fn handle_search_box_click(&mut self, col: u16, row: u16) {
         let Ok((term_w, term_h)) = crossterm::terminal::size() else {
             return;
         };
@@ -668,7 +702,7 @@ impl App {
             char_index_for_display_column(&self.input.search_box_input, rel);
     }
 
-    pub(crate) async fn handle_search_key(&mut self, key: KeyEvent) {
+    pub(super) async fn handle_search_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Left => {
                 self.page = self.search_return_page;
@@ -684,7 +718,7 @@ impl App {
         }
     }
 
-    pub(crate) fn open_search_box(&mut self) {
+    pub(super) fn open_search_box(&mut self) {
         if self.page != Page::Search {
             self.search_return_page = Page::Home;
         }
@@ -698,7 +732,7 @@ impl App {
         self.overlay = Some(Overlay::SearchBox);
     }
 
-    pub(crate) async fn execute_search_from_box(&mut self) {
+    async fn execute_search_from_box(&mut self) {
         let raw_query = self.input.search_box_input.trim().to_string();
         let (keywords, filter) = parse_search_input(&raw_query);
         if keywords.is_empty() && !is_followed_author_query(&keywords, filter) {
@@ -718,7 +752,7 @@ impl App {
         self.close_overlay();
     }
 
-    pub(crate) async fn execute_search(&mut self) -> Result<()> {
+    async fn execute_search(&mut self) -> Result<()> {
         let (keywords, scope) = parse_search_input(&self.search.query);
         let followed_author_query = is_followed_author_query(&keywords, scope);
         if keywords.is_empty() && !followed_author_query {
@@ -775,7 +809,7 @@ impl App {
 
     /// 无后缀搜索：并发拉取作者 / 歌单 / 单曲，按 作者 → 歌单 → 单曲 拼接。
     /// 辅助分区（作者 / 歌单）失败只让该分区为空，不影响单曲结果；只有分页游标跟着单曲走。
-    pub(crate) async fn execute_mixed_search(&mut self, keywords: &str) -> Result<()> {
+    async fn execute_mixed_search(&mut self, keywords: &str) -> Result<()> {
         let mut artists_api = self.api.clone();
         let mut playlists_api = self.api.clone();
         let (songs, artists, playlists) = futures::join!(
@@ -809,7 +843,7 @@ impl App {
     }
 
     /// 作者条目要渲染头像：结果落定时一次性发起封面请求（复用封面管线）。
-    pub(crate) fn load_search_item_covers(&self, items: &mut [SearchItem]) {
+    fn load_search_item_covers(&self, items: &mut [SearchItem]) {
         for item in items.iter_mut() {
             if item.kind != SearchItemKind::Artist || item.cover.url.is_some() {
                 continue;
@@ -820,7 +854,7 @@ impl App {
         }
     }
 
-    pub(crate) async fn load_more_search_results(&mut self) -> Result<usize> {
+    async fn load_more_search_results(&mut self) -> Result<usize> {
         if !self.search.has_more {
             return Ok(0);
         }
@@ -920,14 +954,14 @@ impl App {
 
 /// 搜索页控制器：持有结果、焦点、分页游标和渲染布局索引。
 pub(crate) struct SearchController {
-    pub query: String,
-    pub focused_idx: usize,
+    pub(super) query: String,
+    pub(crate) focused_idx: usize,
     results: Vec<SearchItem>,
-    pub status_line: String,
-    pub scope: SearchScope,
-    pub next_offset: usize,
-    pub has_more: bool,
-    pub scroll_rows: usize,
+    pub(crate) status_line: String,
+    pub(crate) scope: SearchScope,
+    pub(super) next_offset: usize,
+    pub(super) has_more: bool,
+    scroll_rows: usize,
     view_rows: usize,
     card_mode: bool,
     compact_layout_index: Vec<usize>,
@@ -1007,22 +1041,22 @@ impl SearchController {
         divider + kind.rows(self.card_mode)
     }
 
-    pub fn item_start_row(&self, index: usize) -> usize {
+    pub(crate) fn item_start_row(&self, index: usize) -> usize {
         self.layout_index()
             .get(index)
             .copied()
             .unwrap_or(self.total_rows())
     }
 
-    pub fn item_end_row(&self, index: usize) -> usize {
+    pub(crate) fn item_end_row(&self, index: usize) -> usize {
         self.item_start_row(index) + self.row_span(index)
     }
 
-    pub fn item_ordinal(&self, index: usize) -> usize {
+    pub(crate) fn item_ordinal(&self, index: usize) -> usize {
         self.item_ordinals.get(index).copied().unwrap_or(1)
     }
 
-    pub fn divider_rows(&self, index: usize) -> usize {
+    pub(crate) fn divider_rows(&self, index: usize) -> usize {
         usize::from(index > 0 && self.results[index - 1].kind != self.results[index].kind)
     }
 
@@ -1061,7 +1095,7 @@ impl SearchController {
         self.clamp_scroll();
     }
 
-    pub fn set_viewport(&mut self, view_rows: usize, card_mode: bool) {
+    pub(crate) fn set_viewport(&mut self, view_rows: usize, card_mode: bool) {
         self.view_rows = view_rows.max(1);
         self.card_mode = card_mode;
         if self.compact_layout_index.len() != self.results.len()
@@ -1072,12 +1106,12 @@ impl SearchController {
         self.ensure_focus_visible();
     }
 
-    pub fn effective_scroll_rows(&self) -> usize {
+    pub(crate) fn effective_scroll_rows(&self) -> usize {
         self.scroll_rows.min(self.max_scroll_rows())
     }
 
     /// Returns only entries intersecting the row viewport, using cached starts.
-    pub fn visible_range(&self, top: usize, bottom: usize) -> Range<usize> {
+    pub(crate) fn visible_range(&self, top: usize, bottom: usize) -> Range<usize> {
         let starts = self.layout_index();
         let mut first = 0usize;
         let mut high = starts.len();
@@ -1102,13 +1136,13 @@ impl SearchController {
         first..last
     }
 
-    pub fn page_items(&self) -> usize {
+    pub(super) fn page_items(&self) -> usize {
         let top = self.effective_scroll_rows();
         let bottom = top.saturating_add(self.view_rows.max(1));
         self.visible_range(top, bottom).len().max(1)
     }
 
-    pub fn set_focus(&mut self, index: usize) {
+    pub(super) fn set_focus(&mut self, index: usize) {
         if self.results.is_empty() {
             self.focused_idx = 0;
             self.scroll_rows = 0;
@@ -1118,7 +1152,7 @@ impl SearchController {
         self.ensure_focus_visible();
     }
 
-    pub fn focus_next(&mut self) -> bool {
+    pub(super) fn focus_next(&mut self) -> bool {
         if self.results.is_empty() || self.focused_idx + 1 >= self.results.len() {
             return false;
         }
@@ -1127,7 +1161,7 @@ impl SearchController {
         true
     }
 
-    pub fn focus_prev(&mut self) -> bool {
+    pub(super) fn focus_prev(&mut self) -> bool {
         if self.results.is_empty() || self.focused_idx == 0 {
             return false;
         }
@@ -1136,7 +1170,12 @@ impl SearchController {
         true
     }
 
-    pub fn set_results(&mut self, results: Vec<SearchItem>, next_offset: usize, has_more: bool) {
+    pub(crate) fn set_results(
+        &mut self,
+        results: Vec<SearchItem>,
+        next_offset: usize,
+        has_more: bool,
+    ) {
         self.results = results;
         self.focused_idx = 0;
         self.next_offset = next_offset;
@@ -1147,11 +1186,11 @@ impl SearchController {
         self.ensure_focus_visible();
     }
 
-    pub fn generation(&self) -> u64 {
+    pub(super) fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub fn append_results(&mut self, mut results: Vec<SearchItem>) -> usize {
+    fn append_results(&mut self, mut results: Vec<SearchItem>) -> usize {
         let added = results.len();
         self.results.append(&mut results);
         self.rebuild_layout_index();
@@ -1159,27 +1198,29 @@ impl SearchController {
         self.clamp_scroll();
         added
     }
-    pub fn results(&self) -> &[SearchItem] {
+    pub(crate) fn results(&self) -> &[SearchItem] {
         &self.results
     }
 
-    pub fn cover_mut(&mut self, index: usize) -> &mut super::CoverFetchState {
+    pub(crate) fn cover_mut(&mut self, index: usize) -> &mut super::cover_state::CoverFetchState {
         &mut self.results[index].cover
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.results.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.results.is_empty()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::app::{CoverFetchState, SearchItem};
+    use super::super::cover_state::CoverFetchState;
+    use super::super::search_controller::SearchController;
+    use super::super::search_controller::SearchItem;
+    use super::super::search_controller::SearchItemKind;
 
     fn item(kind: SearchItemKind, label: &str) -> SearchItem {
         SearchItem {

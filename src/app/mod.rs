@@ -1,14 +1,14 @@
 pub(crate) mod about;
 mod api;
 pub(crate) mod auth;
-pub(crate) mod author;
-pub(crate) mod browse_controller;
+mod author;
+mod browse_controller;
 mod cover_presentation;
 pub(crate) mod cover_state;
 pub(crate) mod download;
-pub(crate) mod download_controller;
-pub(crate) mod fullscreen;
-pub(crate) mod home;
+mod download_controller;
+mod fullscreen;
+mod home;
 pub(crate) mod input_controller;
 mod keybinds;
 mod latest_fetch;
@@ -16,110 +16,88 @@ mod likes;
 mod metadata;
 mod mpris;
 mod mpris_bridge;
-pub(crate) mod owned_task;
+mod owned_task;
 pub(crate) mod playback_controller;
-pub(crate) mod player;
-pub(crate) mod playlist;
-pub(crate) mod playlist_pagination;
+mod player;
+mod playlist;
+mod playlist_pagination;
 pub(crate) mod presentation;
 mod response;
-pub(crate) mod roam;
+mod roam;
 pub(crate) mod search_controller;
 pub(crate) mod settings_controller;
 pub(crate) mod sidebar;
 mod startup;
-pub(crate) mod startup_controller;
-pub(crate) mod streaming;
+mod startup_controller;
+mod streaming;
 mod text;
 pub(crate) mod tracks;
 
-use crate::app::player::{
-    AudioPlayer, AudioPlayerState, cleanup_cache_dir, is_nonempty_file, resolve_cache_root,
-};
-use crate::data::atomic_file::write_atomic;
-use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
-use crate::data::config::{Config, GraphicsProtocol};
-use crate::data::persistence::{PersistenceHandle, PersistenceKey, PersistenceWorker};
-use crate::data::playback_session;
-use crate::data::private_roam;
+#[cfg(feature = "easter-egg")]
+use self::about::AboutEasterEgg;
+use self::api::ApiState;
+use self::auth::LoginMethod;
+use self::auth::LoginState;
+use self::browse_controller::BrowseController;
+use self::cover_presentation::CoverPresentation;
+use self::download::DownloadManager;
+use self::download::DownloadRowCache;
+use self::download::DownloadState;
+use self::download_controller::DownloadController;
+use self::input_controller::HitRect;
+use self::input_controller::InputController;
+use self::input_controller::PageLyricsLayout;
+use self::input_controller::PlayerBarHitTargets;
+use self::metadata::COVER_CACHE_SUBDIR;
+use self::metadata::CoverFetchRequest;
+use self::metadata::CoverFetchResult;
+use self::metadata::LyricFetchRequest;
+use self::metadata::LyricFetchResult;
+use self::metadata::loop_cover_fetch;
+use self::metadata::loop_lyric_fetch;
+use self::mpris_bridge::MprisBridge;
+use self::playback_controller::PlaybackController;
+use self::playback_controller::PlaybackRuntimeState;
+use self::player::AudioPlayer;
+use self::player::cleanup_cache_dir;
+use self::player::resolve_cache_root;
+use self::playlist::PlaylistPageKind;
+use self::playlist::PlaylistState;
+use self::presentation::FlatPanel;
+use self::presentation::SmallWindowMode;
+use self::presentation::VU_LUFS_FLOOR;
+use self::search_controller::SearchController;
+use self::settings_controller::SettingsController;
+use self::sidebar::HomeSidebarHit;
+use self::sidebar::HomeSidebarSection;
+use self::startup::StartupInit;
+use self::startup_controller::StartupController;
+use self::text::lang_text;
+use crate::data::config::Config;
+use crate::data::config::GraphicsProtocol;
+use crate::data::persistence::PersistenceKey;
+use crate::data::persistence::PersistenceWorker;
 use crate::data::session;
-use crate::data::theme_loader::ThemeLoader;
 use crate::launch;
-use crate::render::cover_pipeline::CoverKey;
-use crate::render::cover_renderer::render_cover_ascii;
-use crate::render::motion::{Curve, Toggle, Trail, Transition};
+use crate::render::motion::Transition;
 use crate::render::wake::WakeSignal;
-use crate::tmplayer::app::state::LyricLine;
-use crate::tmplayer::audio::pcm_tap::PcmRing;
-use crate::tmplayer::audio::spectrum::{MINI_BARS, Spectrum};
-use crate::tmplayer::playback::metadata::{parse_lrc, parse_plain_lyrics};
-use crate::ui::page_lyrics;
+use crate::tmplayer::audio::spectrum::MINI_BARS;
+use crate::tmplayer::audio::spectrum::Spectrum;
 use crate::ui::theme::Theme;
-use anyhow::{Context, Result, anyhow, bail};
-use api::ApiState;
-use browse_controller::BrowseController;
-use cover_presentation::CoverPresentation;
-use crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use anyhow::Result;
+use anyhow::anyhow;
 use cyper::Client;
-use download::{DownloadManager, DownloadRow, DownloadRowCache, DownloadState, DownloadTarget};
-use download_controller::DownloadController;
 use futures::channel::mpsc as async_mpsc;
 use http::header;
-use image::DynamicImage;
-use input_controller::InputController;
-use mpris_bridge::{MprisBridge, MprisControlEvent, MprisSyncPayload};
-use ncm_api::ApiResponse;
-use owned_task::{SharedTask, spawn_shared};
-use playback_controller::PlaybackController;
-use playlist_pagination::PlaylistPagination;
-use ratatui::Frame;
-use ratatui::layout::{Rect, Size};
-use ratatui::style::Style;
-use ratatui::widgets::{Block, Paragraph};
-use search_controller::SearchController;
 use see::unsync as watch;
-use serde_json::Value;
-use settings_controller::SettingsController;
-use startup::StartupInit;
-use startup_controller::StartupController;
-use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::ops::Range;
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use streaming::StreamingReader;
-use unicode_width::UnicodeWidthChar;
-
-#[cfg(feature = "easter-egg")]
-pub(crate) use about::*;
-pub(crate) use auth::*;
-pub(crate) use author::*;
-pub(crate) use cover_state::*;
-pub(crate) use download_controller::*;
-pub(crate) use home::*;
-pub(crate) use input_controller::*;
-pub(crate) use keybinds::*;
-pub(crate) use likes::*;
-pub(crate) use metadata::*;
-pub(crate) use owned_task::*;
-pub(crate) use playback_controller::*;
-pub(crate) use playlist::*;
-pub(crate) use presentation::*;
-pub(crate) use response::*;
-pub(crate) use roam::*;
-pub(crate) use search_controller::*;
-pub(crate) use settings_controller::*;
-pub(crate) use sidebar::*;
-pub(crate) use startup_controller::*;
-pub(crate) use text::*;
-pub(crate) use tracks::*;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::TryRecvError;
+use std::time::Duration;
+use std::time::Instant;
 
 /// 列表代的全局计数器：任何一次列表内容替换都换一个新号（不复用），
 /// 行内图标的行数据缓存据此失效——比逐帧比对内容便宜且不会漏。
@@ -130,7 +108,7 @@ fn next_list_generation() -> u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Page {
+pub(crate) enum Page {
     Login,
     Loading,
     Home,
@@ -140,7 +118,7 @@ pub enum Page {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overlay {
+pub(crate) enum Overlay {
     Settings,
     SettingsPlayback,
     SettingsKeybinds,
@@ -150,64 +128,64 @@ pub enum Overlay {
     SearchBox,
 }
 
-pub struct App {
+pub(crate) struct App {
     pub(crate) wake: WakeSignal,
-    pub config: Config,
-    pub theme: Theme,
-    pub page: Page,
-    pub overlay: Option<Overlay>,
-    pub login: LoginState,
-    pub browse: BrowseController,
+    pub(crate) config: Config,
+    pub(crate) theme: Theme,
+    pub(crate) page: Page,
+    pub(crate) overlay: Option<Overlay>,
+    pub(crate) login: LoginState,
+    pub(crate) browse: BrowseController,
     /// 上次检查 stderr 日志体积的时刻。
     stderr_trim_checked_at: Option<Instant>,
     stderr_trim_inflight: Option<Receiver<()>>,
     home_sidebar_anim_span_cells: u16,
-    pub search: SearchController,
-    pub playback: PlaybackController,
-    pub startup: StartupController,
-    pub player_bar_hits: PlayerBarHitTargets,
+    pub(crate) search: SearchController,
+    pub(crate) playback: PlaybackController,
+    startup: StartupController,
+    player_bar_hits: PlayerBarHitTargets,
     /// 最近一次同步到的终端尺寸（单元格）。
-    pub term_width: u16,
-    pub term_height: u16,
+    term_width: u16,
+    term_height: u16,
     /// 当前生效的小窗口模式；None 表示普通内容页或未启用小窗口显示。
-    pub small_window_mode: Option<SmallWindowMode>,
+    pub(crate) small_window_mode: Option<SmallWindowMode>,
     /// 扁窗高度恰为播放栏高度时，Alt+X 切换的当前目标面板。
-    pub flat_panel: FlatPanel,
+    pub(crate) flat_panel: FlatPanel,
     /// Visual transition, separate from the logical target in `flat_panel`.
-    pub(crate) flat_switch_anim: Option<Transition>,
+    flat_switch_anim: Option<Transition>,
     /// 上一帧是否处于“扁窗高度恰为播放栏高度”的子状态。
     flat_exact_height: bool,
     /// 窄窗音量条的显示端平滑值（LUFS）。以 VU_FLOOR 表示静音。
-    pub vu_left_lufs: f32,
-    pub vu_right_lufs: f32,
-    pub vu_animating: bool,
+    pub(crate) vu_left_lufs: f32,
+    pub(crate) vu_right_lufs: f32,
+    vu_animating: bool,
     vu_last_tick_at: Option<Instant>,
     vu_last_meter_generation: u64,
-    pub home_sidebar_panel_hit: Option<HitRect>,
+    home_sidebar_panel_hit: Option<HitRect>,
     /// 上一帧歌词浮窗的几何（拖拽 / 点击拦截共用）。
     page_lyrics_layout: Option<PageLyricsLayout>,
     /// 正在拖动歌词浮窗时，光标相对浮窗左上角的偏移。
     page_lyrics_grab: Option<(u16, u16)>,
-    pub home_sidebar_playlist_hits: Vec<(HitRect, HomeSidebarHit)>,
+    home_sidebar_playlist_hits: Vec<(HitRect, HomeSidebarHit)>,
     /// 侧边栏两个分区的矩形（滚轮据此判断光标落在哪个分区）。
-    pub home_sidebar_section_hits: Vec<(HitRect, HomeSidebarSection)>,
-    pub home_tile_hits: Vec<(HitRect, usize)>,
-    pub playlist_track_hits: Vec<(HitRect, usize)>,
+    home_sidebar_section_hits: Vec<(HitRect, HomeSidebarSection)>,
+    home_tile_hits: Vec<(HitRect, usize)>,
+    playlist_track_hits: Vec<(HitRect, usize)>,
     /// 歌单页 / 专辑页行内下载图标的命中区（先于整行命中判定）。
-    pub playlist_track_download_hits: Vec<(HitRect, usize)>,
-    pub author_tile_hits: Vec<(HitRect, usize)>,
-    pub search_item_hits: Vec<(HitRect, usize)>,
+    playlist_track_download_hits: Vec<(HitRect, usize)>,
+    author_tile_hits: Vec<(HitRect, usize)>,
+    search_item_hits: Vec<(HitRect, usize)>,
     /// 搜索页单曲行内下载图标的命中区。
-    pub search_item_download_hits: Vec<(HitRect, usize)>,
-    pub input: InputController,
-    pub settings: SettingsController,
+    search_item_download_hits: Vec<(HitRect, usize)>,
+    pub(crate) input: InputController,
+    pub(crate) settings: SettingsController,
     /// about 弹窗里的形象彩蛋状态。
     #[cfg(feature = "easter-egg")]
-    pub about_egg: AboutEasterEgg,
-    pub session_cookie: Option<String>,
-    pub should_quit: bool,
-    pub launch_fullscreen_requested: bool,
-    pub vip_audio_unlocked: bool,
+    pub(crate) about_egg: AboutEasterEgg,
+    session_cookie: Option<String>,
+    pub(crate) should_quit: bool,
+    launch_fullscreen_requested: bool,
+    pub(crate) vip_audio_unlocked: bool,
     config_revision: u64,
     search_return_page: Page,
     playlist_return_page: Page,
@@ -236,18 +214,18 @@ pub struct App {
     api: ApiState,
     persistence: PersistenceWorker,
     /// 下载任务表（异步后台任务；状态行与图标都从这里读）。
-    pub downloads: DownloadController,
+    downloads: DownloadController,
     pub(crate) covers: CoverPresentation,
 }
 
 impl App {
-    pub fn draw_ascii(&self) -> bool {
+    pub(crate) fn draw_ascii(&self) -> bool {
         self.config.graphics_protocol == GraphicsProtocol::Off
     }
 
     /// 构造 App 并启动后台初始化：本地设置同步完成，网络初始化交给
     /// [`StartupInit`]，加载页随即可以显示真实进度。
-    pub async fn new(config: Config, theme: Theme) -> Result<Self> {
+    pub(crate) async fn new(config: Config, theme: Theme) -> Result<Self> {
         let audio_player = AudioPlayer::new(&config)?;
         let persistence = PersistenceWorker::spawn("cnmplayer-persistence")?;
         let saved_cookie = compio::runtime::spawn_blocking(session::load_cookie)
@@ -413,11 +391,11 @@ impl App {
             .enqueue_latest(PersistenceKey::Config, move || snapshot.save());
     }
 
-    pub fn flush_persistence(&self) -> Result<()> {
+    pub(crate) fn flush_persistence(&self) -> Result<()> {
         self.persistence.flush().map_err(anyhow::Error::msg)
     }
 
-    pub async fn tick(&mut self) {
+    pub(crate) async fn tick(&mut self) {
         if let Some(error) = self.persistence.pending_error() {
             self.set_runtime_status(format!(
                 "{}: {error}",
@@ -489,7 +467,7 @@ impl App {
         .detach();
     }
 
-    pub fn set_runtime_status(&mut self, text: impl Into<String>) {
+    pub(crate) fn set_runtime_status(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.browse.home.status_line = text.clone();
         self.search.status_line = text;
@@ -502,7 +480,48 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::api::ApiState;
+    use super::author::merge_artist_album_pages;
+    use super::cover_presentation::CoverPresentation;
+    use super::cover_state::CoverFetchState;
+    use super::input_controller::HitRect;
+    use super::likes::LikeMachine;
+    use super::likes::LikeToggleFuture;
+    use super::likes::LikeToggleTask;
+    use super::likes::LikeVerifyFuture;
+    use super::likes::LikeVerifyTask;
+    use super::likes::ToggleOutcome;
+    use super::metadata::validate_cached_cover;
+    use super::owned_task::SharedTask;
+    use super::owned_task::peek_shared_future;
+    use super::playlist::PlaylistState;
+    use super::presentation::VU_LUFS_FLOOR;
+    use super::presentation::lufs_to_bar_level;
+    use super::presentation::lufs_to_mean_square;
+    use super::presentation::mean_square_to_lufs;
+    use super::roam::merge_private_roam_refresh;
+    use super::roam::normalize_fm_song_items;
+    use super::search_controller::SearchController;
+    use super::search_controller::SearchItem;
+    use super::search_controller::SearchItemKind;
+    use super::search_controller::SearchScope;
+    use super::search_controller::parse_search_input;
+    use super::sidebar::HomeSidebarPageFetch;
+    use super::sidebar::HomeSidebarPlaylist;
+    use super::sidebar::HomeSidebarSection;
+    use super::sidebar::HomeSidebarState;
+    use super::sidebar::home_sidebar_wheel_target;
+    use super::startup_controller::startup_loading_progress;
+    use super::tracks::PlaylistTrack;
+    use super::tracks::PlaylistTrackKind;
+    use super::tracks::artist_name_segments;
+    use super::tracks::pick_artist_id;
+    use cyper::Client;
+    use ncm_api::ApiResponse;
+    use ratatui::style::Style;
+    use serde_json::Value;
+    use std::time::Duration;
+    use std::time::Instant;
 
     #[compio::test]
     async fn home_cover_loads_and_paints_when_multiple_tiles_complete_together() {

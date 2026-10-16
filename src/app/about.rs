@@ -1,9 +1,17 @@
-use super::*;
+use super::App;
+use super::Overlay;
+#[cfg(feature = "easter-egg")]
+use super::input_controller::HitRect;
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+#[cfg(feature = "easter-egg")]
+use std::time::Instant;
 
 /// about 彩蛋的推进阶段。
 #[cfg(feature = "easter-egg")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum EasterEggPhase {
+pub(crate) enum EasterEggPhase {
     /// 未触发：about 弹窗是平常的样子。
     #[default]
     Idle,
@@ -21,23 +29,23 @@ pub enum EasterEggPhase {
 /// 退出 about 时整体 `Default::default()` 复位。
 #[cfg(feature = "easter-egg")]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct AboutEasterEgg {
+pub(crate) struct AboutEasterEgg {
     /// 版本行已被点击的次数，累计到 `TRIGGER_CLICKS` 触发。
-    pub version_clicks: u8,
-    pub phase: EasterEggPhase,
+    version_clicks: u8,
+    pub(crate) phase: EasterEggPhase,
     /// 当前阶段的起始时刻（蓄力、迸发各自计时）。
-    pub phase_started_at: Option<Instant>,
+    pub(crate) phase_started_at: Option<Instant>,
     /// 进入激活态的时刻，用于驱动边框噪点的环形流动。
-    pub mascot_activated_at: Option<Instant>,
+    pub(crate) mascot_activated_at: Option<Instant>,
     /// 最近一次点击形象的时刻；`None` 表示形象静止。
-    pub jelly_started_at: Option<Instant>,
+    pub(crate) jelly_started_at: Option<Instant>,
     /// 版本行与形象的命中区域，绘制时写回、鼠标事件时查询。
-    pub version_hit: Option<HitRect>,
-    pub mascot_hit: Option<HitRect>,
+    pub(crate) version_hit: Option<HitRect>,
+    pub(crate) mascot_hit: Option<HitRect>,
 }
 
 impl App {
-    pub(crate) fn handle_settings_about_key(&mut self, key: KeyEvent) {
+    pub(super) fn handle_settings_about_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Left | KeyCode::Enter => {
                 // 彩蛋状态随 about 一起复位：下次进来需重新点满触发次数。
@@ -65,7 +73,7 @@ impl App {
 
     /// about 弹窗里的点击：累计版本行点击触发彩蛋，或让形象再弹一次。
     #[cfg(feature = "easter-egg")]
-    pub(crate) fn handle_settings_about_click(&mut self, col: u16, row: u16) {
+    pub(super) fn handle_settings_about_click(&mut self, col: u16, row: u16) {
         use crate::render::mascot;
 
         if self.about_egg.phase == EasterEggPhase::Active {
@@ -98,7 +106,7 @@ impl App {
 
     /// 推进 about 彩蛋的蓄力/迸发阶段（time-based，与帧率解耦）。
     #[cfg(feature = "easter-egg")]
-    pub(crate) fn tick_about_easter_egg(&mut self) {
+    pub(super) fn tick_about_easter_egg(&mut self) {
         use crate::render::mascot;
 
         // 离开 about 后不该留下动画状态。
