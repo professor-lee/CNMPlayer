@@ -62,18 +62,17 @@ Playback belongs to the host: streaming with a local cache, queue memory, privat
 ### Account
 
 - QR code (`F1`), username / email + password (`F2`) and phone + SMS code (`F3`) login
-- Empty login fields have no ellipsis placeholder and keep the focus cursor; sending an SMS code uses a Nerd Font paper-plane icon, and the footer only shows controls
 - The session is persisted to `auth/session.toml` and validated on the next start
 - Logout from the settings modal (clears the login cookie, playback memory and private-roam data)
 
 ### Browsing
 
 - Home: a recommendation tile grid whose first three slots are always `每日推荐` (Daily Recommendations), `私人雷达` (Private Radar) and `私人漫游` (Private Roam); `home_more_recommend` expands the remaining recommendations
-- Home sidebar (toggle keybind, default `P`): your created and collected playlists, 100 per fetch and appended when scrolling to the end; `Ctrl+Up/Down` switches section, Enter opens, returning preserves the section, focus and scroll position, Esc collapses
+- Home sidebar (toggle keybind, default `P`): your created and collected playlists, 100 per fetch and appended when scrolling to the end; `Ctrl+Up/Down` switches section, Enter opens, Esc collapses
 - Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list, 100 tracks per fetch. Browsing and playback share one source-bound cursor, so a page fetched by either is appended to both
 - Artist page: avatar, name, hot-song / album / EP / single counts and a tile grid per section
 - Search page: a keyword searches artists, playlists and songs at once, with a trailing suffix to narrow the type (see [Search syntax](#search-syntax))
-- Private roam: keeps the last played track at the head; reaching the end of the list fetches more (three API calls merged and de-duplicated); the tile prefers the last played roam song's cover, or the current list's first song cover when there is no valid playback record
+- Private roam: keeps the last played track at the head; reaching the end of the list fetches more (three API calls merged and de-duplicated); the tile cover follows the currently playing roam song
 - Navigation: Enter opens or plays, Esc / Left goes back, Tab / Down and Shift+Tab / Up move, PageUp / PageDown jump one page
 - Mouse: the wheel scrolls, a single click focuses, a double click activates; the collapsed player bar's previous / play-pause / next, like and repeat-mode buttons and its progress bar are clickable
 
