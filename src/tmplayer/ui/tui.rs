@@ -1,4 +1,5 @@
 use crate::render::cover_pipeline::{CoverKey, CoverPipeline, ImagePhase};
+use crate::render::drawer::{self, translated_clip};
 use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::{AppState, Overlay};
 use crate::tmplayer::ui::components::control_buttons;
@@ -360,7 +361,7 @@ fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
 
         if app.overlay == Overlay::Playlist || app.playlist_slide_x != app.playlist_slide_target_x {
             let dx = app.playlist_slide_x.clamp(-(left.width as i16), 0);
-            let visible = translated_clip(left, dx, left);
+            let visible = translated_clip(left, i32::from(dx), left);
             layout_out.playlist_rect = visible;
             if !visible.is_empty() {
                 sidebar.buffer.resize(left);
@@ -378,9 +379,10 @@ fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
                         cover_key(pl_layout.cover_rect, hash),
                     );
                 }
-                paint_drawer(f.buffer_mut(), &sidebar.buffer, dx, visible);
-                layout_out.playlist_inner = translated_clip(pl_layout.inner, dx, visible);
-                layout_out.playlist_list_inner = translated_clip(pl_layout.list_inner, dx, visible);
+                drawer::paint(f.buffer_mut(), &sidebar.buffer, i32::from(dx), visible);
+                layout_out.playlist_inner = translated_clip(pl_layout.inner, i32::from(dx), visible);
+                layout_out.playlist_list_inner =
+                    translated_clip(pl_layout.list_inner, i32::from(dx), visible);
             }
         }
 
@@ -459,39 +461,6 @@ fn slide_page_from_bottom(buffer: &mut Buffer, progress: f32, host_snapshot: Opt
     }
 }
 
-fn translated_clip(area: Rect, dx: i16, clip: Rect) -> Rect {
-    let x = i32::from(area.x) + i32::from(dx);
-    let start = x.max(i32::from(clip.left()));
-    let end = (x + i32::from(area.width)).min(i32::from(clip.right()));
-    let top = area.top().max(clip.top());
-    let bottom = area.bottom().min(clip.bottom());
-    if start >= end || top >= bottom {
-        return Rect::default();
-    }
-    Rect::new(start as u16, top, (end - start) as u16, bottom - top)
-}
-
-fn paint_drawer(target: &mut Buffer, source: &Buffer, dx: i16, clip: Rect) {
-    use unicode_width::UnicodeWidthStr;
-
-    let clip = translated_clip(source.area, dx, clip.intersection(target.area));
-    for y in clip.top()..clip.bottom() {
-        for x in clip.left()..clip.right() {
-            let source_x = (i32::from(x) - i32::from(dx)) as u16;
-            let cell = &source[(source_x, y)];
-            let dest = &mut target[(x, y)];
-            dest.clone_from(cell);
-            // Never expose half a wide title character at either clipping boundary.
-            let cut_left = x == clip.left()
-                && source_x > source.area.left()
-                && source[(source_x - 1, y)].symbol().width() > 1;
-            if cut_left || usize::from(x) + cell.symbol().width() > usize::from(clip.right()) {
-                dest.set_char(' ');
-            }
-        }
-    }
-}
-
 fn paint_halfblock_cover(
     target: &mut ratatui::buffer::Buffer,
     covers: &CoverPipeline,
@@ -511,7 +480,7 @@ fn paint_halfblock_cover(
             return;
         }
         let border = crate::tmplayer::ui::borders::SOLID_BORDER;
-        let clip = translated_clip(cover, dx, cover.intersection(target.area));
+        let clip = translated_clip(cover, i32::from(dx), cover.intersection(target.area));
         for y in clip.top()..clip.bottom() {
             for x in clip.left()..clip.right() {
                 let sx = (i32::from(x) - i32::from(dx)) as u16;
@@ -2758,22 +2727,6 @@ mod tests {
     }
 
     #[test]
-    fn drawer_clipping_does_not_expose_half_a_wide_character() {
-        let mut source = Buffer::empty(rect(0, 0, 6, 1));
-        source.set_string(0, 0, "中AB文", Style::default());
-        let mut target = Buffer::empty(rect(0, 0, 6, 1));
-        target.set_string(0, 0, "......", Style::default());
-        paint_drawer(&mut target, &source, -1, rect(0, 0, 3, 1));
-        assert_eq!(line_text(&target, 0), " AB...");
-        paint_drawer(&mut target, &source, 0, rect(0, 0, 1, 1));
-        assert_eq!(
-            target[(0, 0)].symbol(),
-            " ",
-            "right-edge half glyph stays blank"
-        );
-    }
-
-    #[test]
     fn drawer_failed_cover_is_blank_without_ascii_or_retry_loop() {
         use crate::data::config::GraphicsProtocol;
         use crate::render::cover_pipeline::CoverStatus;
@@ -2796,7 +2749,7 @@ mod tests {
         for dx in [0, -8, -17] {
             app.playlist_slide_x = dx;
             let frame = draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
-            let exposed = translated_clip(cover, dx, frame.playlist_rect);
+            let exposed = translated_clip(cover, i32::from(dx), frame.playlist_rect);
             for y in exposed.top()..exposed.bottom() {
                 for x in exposed.left()..exposed.right() {
                     assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), " ");
