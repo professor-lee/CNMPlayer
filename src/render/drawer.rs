@@ -48,7 +48,12 @@ pub(crate) fn reveal_from_right(target: &mut Buffer, background: &Buffer, offset
     let start_row = usize::from(clip.top().saturating_sub(area.top()));
     let left = usize::from(clip.left().saturating_sub(area.left()));
     let right = usize::from(clip.right().saturating_sub(area.left()));
-    for row in target.content.chunks_exact_mut(width).skip(start_row).take(usize::from(clip.height)) {
+    for row in target
+        .content
+        .chunks_exact_mut(width)
+        .skip(start_row)
+        .take(usize::from(clip.height))
+    {
         // Descending destinations keep every source cell intact until it is copied.
         for destination in (shift.max(left)..right).rev() {
             let (source, destination_cells) = row.split_at_mut(destination);

@@ -192,7 +192,11 @@ impl App {
         }
     }
 
-    pub(crate) fn render_page_transition(&mut self, frame: &mut Frame, content: ratatui::layout::Rect) {
+    pub(crate) fn render_page_transition(
+        &mut self,
+        frame: &mut Frame,
+        content: ratatui::layout::Rect,
+    ) {
         let Some(drawer) = self.page_transition.drawer.as_ref() else {
             return;
         };
@@ -206,7 +210,12 @@ impl App {
                 drawer::reveal_from_right(frame.buffer_mut(), &drawer.source, offset, content);
             }
             Direction::Close => {
-                drawer::paint(frame.buffer_mut(), &drawer.source, i32::from(offset), content);
+                drawer::paint(
+                    frame.buffer_mut(),
+                    &drawer.source,
+                    i32::from(offset),
+                    content,
+                );
             }
         }
     }

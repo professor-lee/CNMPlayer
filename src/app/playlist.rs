@@ -239,10 +239,7 @@ pub(super) async fn fetch_daily_recommend_page(
     mut api: ApiState,
     language: Language,
 ) -> Result<PlaylistFetch, String> {
-    let response = api
-        .recommend_songs()
-        .await
-        .map_err(|err| err.to_string())?;
+    let response = api.recommend_songs().await.map_err(|err| err.to_string())?;
     let code = response_code(&response);
     if code != 200 {
         return Err(format!(
@@ -253,7 +250,12 @@ pub(super) async fn fetch_daily_recommend_page(
     }
 
     let songs = home_daily_song_items(&response.body).ok_or_else(|| {
-        lang_text(language, "每日推荐数据缺失", "Daily recommendations are missing").to_string()
+        lang_text(
+            language,
+            "每日推荐数据缺失",
+            "Daily recommendations are missing",
+        )
+        .to_string()
     })?;
     let tracks = parse_tracks(songs);
     if tracks.is_empty() {
