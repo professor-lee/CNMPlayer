@@ -171,8 +171,16 @@ impl App {
     }
 
     pub(super) fn page_transition_can_go_back(&self) -> bool {
-        self.page_transition.pending.as_ref().map(|request| request.direction)
-            .or_else(|| self.page_transition.drawer.as_ref().map(|drawer| drawer.direction))
+        self.page_transition
+            .pending
+            .as_ref()
+            .map(|request| request.direction)
+            .or_else(|| {
+                self.page_transition
+                    .drawer
+                    .as_ref()
+                    .map(|drawer| drawer.direction)
+            })
             == Some(Direction::Open)
     }
 
@@ -209,8 +217,14 @@ impl App {
             return;
         };
         if !drawer.started {
-            let target = if drawer.direction == Direction::Open { 0.0 } else { 1.0 };
-            drawer.offset.retarget(target, now, PAGE_SLIDE_DURATION, Curve::EaseOut);
+            let target = if drawer.direction == Direction::Open {
+                0.0
+            } else {
+                1.0
+            };
+            drawer
+                .offset
+                .retarget(target, now, PAGE_SLIDE_DURATION, Curve::EaseOut);
             drawer.started = true;
         } else if !drawer.offset.is_running() {
             self.page_transition.drawer = None;

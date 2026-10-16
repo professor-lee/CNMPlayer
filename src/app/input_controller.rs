@@ -117,7 +117,10 @@ impl App {
 
         if self.page_transition_active()
             && !(key.code == KeyCode::Esc && self.page_transition_can_go_back())
-            && !matches!(self.keybind_action_from_event(key), Some(KeybindAction::Quit))
+            && !matches!(
+                self.keybind_action_from_event(key),
+                Some(KeybindAction::Quit)
+            )
         {
             return;
         }
@@ -466,7 +469,7 @@ impl App {
     }
 
     /// 松开：按配置吸附到最近的角，并把位置写回配置。
-    fn page_lyrics_release(&mut self) {
+    pub(super) fn page_lyrics_release(&mut self) {
         if self.page_lyrics_grab.take().is_none() {
             return;
         }
