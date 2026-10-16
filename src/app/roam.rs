@@ -2,15 +2,16 @@ use super::App;
 use super::api::ApiState;
 use super::home::HOME_PRIVATE_ROAM_TILE_ID;
 use super::playback_controller::PlaybackTrack;
+use super::playlist::PlaylistFetch;
 use super::response::response_code;
+use super::text::lang_text;
 use super::tracks::PlaylistTrack;
 use super::tracks::PlaylistTrackKind;
 use super::tracks::format_duration;
 use super::tracks::parse_tracks;
+use crate::data::config::Language;
 use crate::data::persistence::PersistenceKey;
 use crate::data::private_roam;
-use anyhow::Result;
-use anyhow::anyhow;
 use serde_json::Value;
 
 /// 私人漫游状态：歌曲列表、最后播放位置与展示封面
@@ -75,6 +76,44 @@ pub(super) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<Playlist
     tracks
 }
 
+fn private_roam_playlist_fetch(
+    language: Language,
+    tracks: Vec<PlaylistTrack>,
+    cover_url: Option<String>,
+) -> PlaylistFetch {
+    let total = tracks.len();
+    PlaylistFetch {
+        id: HOME_PRIVATE_ROAM_TILE_ID.to_string(),
+        title: lang_text(language, "私人漫游", "Private Roam").to_string(),
+        artist: lang_text(language, "网易云音乐", "Netease Cloud Music").to_string(),
+        description: lang_text(
+            language,
+            "来自网易云私人漫游，按 Enter 播放",
+            "Private roam songs from Netease. Press Enter to play",
+        )
+        .to_string(),
+        cover_url,
+        tracks,
+        total_tracks: Some(total),
+        next_offset: total,
+        has_more: false,
+        paginated: false,
+        liked: None,
+    }
+}
+
+pub(super) async fn fetch_private_roam_page(
+    mut api: ApiState,
+    language: Language,
+) -> Result<PlaylistFetch, String> {
+    let tracks = fetch_private_roam_songs(&mut api).await;
+    if tracks.is_empty() {
+        return Err(lang_text(language, "私人漫游为空", "Private roam is empty").to_string());
+    }
+    let cover_url = tracks.first().and_then(|track| track.cover_url.clone());
+    Ok(private_roam_playlist_fetch(language, tracks, cover_url))
+}
+
 /// 当前 UTC 日期对应的天数（每日刷新标记用）
 fn today_day_number() -> i64 {
     std::time::SystemTime::now()
@@ -130,50 +169,42 @@ pub(super) fn normalize_fm_song_items(items: &[Value]) -> Vec<Value> {
 }
 
 impl App {
-    pub(super) async fn load_private_roam_playlist(&mut self) -> Result<()> {
-        // 兜底：内存列表为空（首次使用且启动刷新失败过）时现场拉取
+    pub(super) fn load_cached_private_roam_playlist(&mut self) -> bool {
         if self.browse.private_roam.tracks.is_empty() {
-            let fetched = fetch_private_roam_songs(&mut self.api).await;
-            if fetched.is_empty() {
-                return Err(anyhow!(
-                    self.lang_text("私人漫游为空", "Private roam is empty")
-                ));
-            }
-            self.browse.private_roam.tracks = fetched;
-            self.browse.private_roam.refresh_cover();
-            self.sync_home_roam_tile_cover();
-            self.persist_private_roam();
+            return false;
         }
 
-        let tracks = self.browse.private_roam.tracks.clone();
-        let cover_url = self.browse.private_roam.cover_url.clone();
+        let fetch = private_roam_playlist_fetch(
+            self.config.language,
+            self.browse.private_roam.tracks.clone(),
+            self.browse.private_roam.cover_url.clone(),
+        );
         let focus_index = self.browse.private_roam.last_played_index;
-
-        // 这一页换成私人漫游：在途的占位拉取作废（同 `apply_playlist_fetch`）。
-        self.browse.playlist_fetch = None;
-        self.browse.playlist.id = Some(HOME_PRIVATE_ROAM_TILE_ID.to_string());
-        self.browse.playlist.title = self.lang_text("私人漫游", "Private Roam").to_string();
-        self.browse.playlist.artist = self
-            .lang_text("网易云音乐", "Netease Cloud Music")
-            .to_string();
-        self.browse.playlist.description = self
-            .lang_text(
-                "来自网易云私人漫游，按 Enter 播放",
-                "Private roam songs from Netease. Press Enter to play",
-            )
-            .to_string();
-        self.browse.playlist.set_tracks(tracks);
-        // 进入漫游后默认聚焦到最后播放的歌曲
+        if fetch.cover_url.is_none() {
+            self.browse.playlist.cover = Default::default();
+        }
+        // 统一替换列表代、分页与在途 slot，迟到的旧结果不得覆盖缓存页。
+        self.apply_playlist_fetch(fetch);
+        // 进入漫游后默认聚焦到最后播放的歌曲。
         if let Some(index) = focus_index
             && index < self.browse.playlist.tracks.len()
         {
             self.browse.playlist.focused_idx = index;
             self.browse.playlist.scroll_offset = index;
         }
-        if let Some(x) = cover_url {
-            self.browse.playlist.cover.load(self.api.clone(), x)
+        true
+    }
+
+    /// 仅由当前占位页的成功回包更新权威副本；取消的任务不会进入此处。
+    pub(super) fn sync_private_roam_fetch(&mut self, fetch: &PlaylistFetch) {
+        if fetch.id != HOME_PRIVATE_ROAM_TILE_ID || fetch.tracks.is_empty() {
+            return;
         }
-        Ok(())
+
+        self.browse.private_roam.tracks = fetch.tracks.clone();
+        self.browse.private_roam.refresh_cover();
+        self.sync_home_roam_tile_cover();
+        self.persist_private_roam();
     }
 
     /// 今天是否已刷新过私人漫游（刷新判据只有这一处）。

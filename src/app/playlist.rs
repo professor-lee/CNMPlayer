@@ -24,7 +24,6 @@ use super::tracks::fetch_song_page_refs;
 use super::tracks::parse_tracks;
 use crate::data::config::Language;
 use anyhow::Result;
-use anyhow::anyhow;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use serde_json::Value;
@@ -232,6 +231,55 @@ pub(super) async fn fetch_playlist_page(
         has_more: first_page.has_more,
         paginated: true,
         liked,
+    })
+}
+
+/// 拉取每日推荐歌曲，与普通歌单共用占位页和结果搬运。
+pub(super) async fn fetch_daily_recommend_page(
+    mut api: ApiState,
+    language: Language,
+) -> Result<PlaylistFetch, String> {
+    let response = api
+        .recommend_songs()
+        .await
+        .map_err(|err| err.to_string())?;
+    let code = response_code(&response);
+    if code != 200 {
+        return Err(format!(
+            "请求失败({}): {}",
+            code,
+            response_message(&response)
+        ));
+    }
+
+    let songs = home_daily_song_items(&response.body).ok_or_else(|| {
+        lang_text(language, "每日推荐数据缺失", "Daily recommendations are missing").to_string()
+    })?;
+    let tracks = parse_tracks(songs);
+    if tracks.is_empty() {
+        return Err(
+            lang_text(language, "每日推荐为空", "Daily recommendations are empty").to_string(),
+        );
+    }
+    let cover_url = tracks.iter().find_map(|track| track.cover_url.clone());
+
+    Ok(PlaylistFetch {
+        id: HOME_DAILY_RECOMMEND_TILE_ID.to_string(),
+        title: lang_text(language, "每日推荐", "Daily Recommendations").to_string(),
+        artist: lang_text(language, "网易云音乐", "Netease Cloud Music").to_string(),
+        description: lang_text(
+            language,
+            "来自网易云每日推荐歌曲，按 Enter 播放",
+            "Daily songs from Netease. Press Enter to play",
+        )
+        .to_string(),
+        cover_url,
+        tracks,
+        total_tracks: None,
+        next_offset: 0,
+        has_more: false,
+        paginated: false,
+        liked: None,
     })
 }
 
@@ -514,6 +562,7 @@ impl App {
         match result {
             Ok(fetch) => {
                 let title = fetch.title.clone();
+                self.sync_private_roam_fetch(&fetch);
                 self.apply_playlist_fetch(fetch);
                 self.set_runtime_status(format!("{} {}", kind.opened(self.config.language), title));
             }
@@ -688,21 +737,6 @@ impl App {
         }
     }
 
-    pub(super) async fn load_playlist_detail(&mut self, playlist_id: &str) -> Result<()> {
-        let fetch = fetch_playlist_page(
-            self.api.clone(),
-            self.config.language,
-            playlist_id.to_string(),
-            None,
-            self.browse.home_sidebar.liked_playlist_id.clone(),
-            self.browse.home_sidebar.user_id.clone(),
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-        self.apply_playlist_fetch(fetch);
-        Ok(())
-    }
-
     /// 把拉到的歌单/专辑数据落到状态上（阻塞版与 `tick_playlist_fetch` 共用）。
     ///
     /// 落状态即宣告"这一页换成了新来源"：在途的那次拉取随之作废，否则它迟到时
@@ -744,52 +778,6 @@ impl App {
             }
             self.apply_liked_song_ids(liked.ids);
         }
-    }
-
-    pub(super) async fn load_daily_recommend_playlist(&mut self) -> Result<()> {
-        let response = self.api.recommend_songs().await?;
-        let code = response_code(&response);
-        if code != 200 {
-            return Err(anyhow!(
-                "请求失败({}): {}",
-                code,
-                response_message(&response)
-            ));
-        }
-
-        let songs = home_daily_song_items(&response.body).ok_or_else(|| {
-            anyhow!(self.lang_text("每日推荐数据缺失", "Daily recommendations are missing"))
-        })?;
-
-        let tracks = parse_tracks(songs);
-        if tracks.is_empty() {
-            return Err(anyhow!(
-                self.lang_text("每日推荐为空", "Daily recommendations are empty")
-            ));
-        }
-
-        let cover_url = tracks.iter().find_map(|track| track.cover_url.clone());
-
-        // 这一页换成每日推荐：在途的占位拉取作废（同 `apply_playlist_fetch`）。
-        self.browse.playlist_fetch = None;
-        self.browse.playlist.id = Some(HOME_DAILY_RECOMMEND_TILE_ID.to_string());
-        self.browse.playlist.title = self
-            .lang_text("每日推荐", "Daily Recommendations")
-            .to_string();
-        self.browse.playlist.artist = self
-            .lang_text("网易云音乐", "Netease Cloud Music")
-            .to_string();
-        self.browse.playlist.description = self
-            .lang_text(
-                "来自网易云每日推荐歌曲，按 Enter 播放",
-                "Daily songs from Netease. Press Enter to play",
-            )
-            .to_string();
-        self.browse.playlist.set_tracks(tracks);
-        if let Some(x) = cover_url {
-            self.browse.playlist.cover.load(self.api.clone(), x)
-        }
-        Ok(())
     }
 
     async fn load_album_detail(&mut self, album_id: &str) -> Result<()> {

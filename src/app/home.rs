@@ -2,9 +2,17 @@ use super::App;
 use super::Page;
 use super::api::ApiState;
 use super::cover_state::CoverFetchState;
+use super::owned_task::spawn_shared;
+use super::playlist::PlaylistFetchSlot;
+use super::playlist::PlaylistFetchTask;
+use super::playlist::PlaylistPageKind;
+use super::playlist::PlaylistState;
+use super::playlist::fetch_daily_recommend_page;
+use super::playlist::fetch_playlist_page;
 use super::response::first_non_empty;
 use super::response::parse_value_as_string;
 use super::response::response_code;
+use super::roam::fetch_private_roam_page;
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -516,7 +524,7 @@ impl App {
                         self.maybe_fetch_home_sidebar_page();
                     }
                 }
-                KeyCode::Enter => self.open_focused_home_sidebar_playlist().await,
+                KeyCode::Enter => self.open_focused_home_sidebar_playlist(),
                 _ => {}
             }
             return;
@@ -529,12 +537,12 @@ impl App {
             KeyCode::Right => self.browse.home.focus_right(),
             KeyCode::Up => self.browse.home.focus_up(),
             KeyCode::Down => self.browse.home.focus_down(),
-            KeyCode::Enter => self.enter_home_tile().await,
+            KeyCode::Enter => self.enter_home_tile(),
             _ => {}
         }
     }
 
-    pub(super) async fn enter_home_tile(&mut self) {
+    pub(super) fn enter_home_tile(&mut self) {
         if self.browse.home.tiles.is_empty() {
             return;
         }
@@ -544,32 +552,67 @@ impl App {
             .home
             .focused_idx
             .min(self.browse.home.tiles.len() - 1);
-        let title = self.browse.home.tiles[focused].title.clone();
-        let Some(playlist_id) = self.browse.home.tiles[focused].id.clone() else {
+        let tile = &self.browse.home.tiles[focused];
+        let title = tile.title.clone();
+        let fallback_cover_url = tile.cover.url.clone();
+        let Some(playlist_id) = tile.id.clone() else {
             self.browse.home.status_line = "当前块暂无可用歌单".to_string();
             return;
         };
 
-        self.browse.home.status_line = format!("正在加载 {}", title);
-        let result = if playlist_id == HOME_DAILY_RECOMMEND_TILE_ID {
-            self.load_daily_recommend_playlist().await
-        } else if playlist_id == HOME_PRIVATE_ROAM_TILE_ID {
-            self.load_private_roam_playlist().await
-        } else {
-            self.load_playlist_detail(&playlist_id).await
-        };
-
-        match result {
-            Ok(()) => {
-                self.playlist_return_page = Page::Home;
-                self.playlist_section_return_snapshot = None;
-                self.browse.home.status_line = format!("已打开 {}", title);
-                self.open_browse_page(Page::Playlist);
-            }
-            Err(err) => {
-                self.browse.home.status_line = format!("打开歌单失败: {}", err);
-            }
+        if playlist_id == HOME_PRIVATE_ROAM_TILE_ID && self.load_cached_private_roam_playlist() {
+            self.playlist_return_page = Page::Home;
+            self.playlist_section_return_snapshot = None;
+            self.browse.home.status_line =
+                format!("{} {}", self.lang_text("已打开", "Opened"), title);
+            self.open_browse_page(Page::Playlist);
+            return;
         }
+
+        let api = self.api.clone();
+        let language = self.config.language;
+        let task: PlaylistFetchTask = if playlist_id == HOME_DAILY_RECOMMEND_TILE_ID {
+            Box::pin(async move { Some(fetch_daily_recommend_page(api, language).await) })
+        } else if playlist_id == HOME_PRIVATE_ROAM_TILE_ID {
+            Box::pin(async move { Some(fetch_private_roam_page(api, language).await) })
+        } else {
+            let liked_playlist_id = self.browse.home_sidebar.liked_playlist_id.clone();
+            let user_id = self.browse.home_sidebar.user_id.clone();
+            Box::pin(async move {
+                Some(
+                    fetch_playlist_page(
+                        api,
+                        language,
+                        playlist_id,
+                        fallback_cover_url,
+                        liked_playlist_id,
+                        user_id,
+                    )
+                    .await,
+                )
+            })
+        };
+        self.dispatch_home_playlist_fetch(title, task);
+    }
+
+    /// 首页磁贴和侧栏共用入口：先切占位页，网络结果统一由 tick 搬运。
+    pub(super) fn dispatch_home_playlist_fetch(&mut self, title: String, task: PlaylistFetchTask) {
+        self.browse.home.status_line =
+            format!("{} {}", self.lang_text("正在加载", "Loading"), title);
+        self.browse.playlist.cancel_pagination();
+        self.browse.playlist = PlaylistState::placeholder(
+            title,
+            self.lang_text("正在加载歌单…", "Loading playlist…")
+                .to_string(),
+        );
+        self.playlist_return_page = Page::Home;
+        self.playlist_section_return_snapshot = None;
+        self.downloads.page_kind = PlaylistPageKind::Playlist;
+        self.browse.playlist_fetch = Some(PlaylistFetchSlot {
+            kind: PlaylistPageKind::Playlist,
+            future: spawn_shared(task, self.wake.clone()),
+        });
+        self.open_browse_page(Page::Playlist);
     }
 
     pub(super) async fn load_home_recommendations(&mut self) -> Result<()> {

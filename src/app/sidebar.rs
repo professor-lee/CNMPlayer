@@ -8,6 +8,8 @@ use super::input_controller::HitRect;
 use super::owned_task::SharedTask;
 use super::owned_task::peek_shared_future;
 use super::owned_task::spawn_shared;
+use super::playlist::PlaylistFetchTask;
+use super::playlist::fetch_playlist_page;
 use super::response::parse_value_as_string;
 use super::response::response_code;
 use super::response::response_message;
@@ -755,7 +757,7 @@ impl App {
         self.browse.home_sidebar_page_fetch = Some(spawn_shared(fut, self.wake.clone()));
     }
 
-    pub(super) async fn open_focused_home_sidebar_playlist(&mut self) {
+    pub(super) fn open_focused_home_sidebar_playlist(&mut self) {
         let (playlist_id, title) = {
             let Some(item) = self.browse.home_sidebar.focused_playlist() else {
                 self.browse.home.status_line = self
@@ -777,30 +779,16 @@ impl App {
             (playlist_id, item.title.clone())
         };
 
-        if self.is_liked_playlist(&playlist_id, Some(&title)) {
-            let _ = self.refresh_liked_song_cache().await;
-            self.refresh_now_playing_like_state();
-        }
-
-        self.browse.home.status_line =
-            format!("{} {}", self.lang_text("正在加载", "Loading"), title);
-
-        match self.load_playlist_detail(&playlist_id).await {
-            Ok(()) => {
-                self.playlist_return_page = Page::Home;
-                self.playlist_section_return_snapshot = None;
-                // 侧边栏只在主页绘制；保留展开与焦点，返回时继续操作原歌单。
-                self.browse.home.status_line =
-                    format!("{} {}", self.lang_text("已打开", "Opened"), title);
-                self.open_browse_page(Page::Playlist);
-            }
-            Err(err) => {
-                self.browse.home.status_line = format!(
-                    "{}: {}",
-                    self.lang_text("打开歌单失败", "Failed to open playlist"),
-                    err
-                );
-            }
-        }
+        let future = fetch_playlist_page(
+            self.api.clone(),
+            self.config.language,
+            playlist_id,
+            None,
+            self.browse.home_sidebar.liked_playlist_id.clone(),
+            self.browse.home_sidebar.user_id.clone(),
+        );
+        let task: PlaylistFetchTask = Box::pin(async move { Some(future.await) });
+        // 只在主页绘制侧栏；保留展开与焦点，返回时继续操作原歌单。
+        self.dispatch_home_playlist_fetch(title, task);
     }
 }

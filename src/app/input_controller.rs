@@ -720,7 +720,7 @@ impl App {
                                     Page::Home,
                                     Self::home_sidebar_double_click_index(hit),
                                 ) {
-                                    self.open_focused_home_sidebar_playlist().await;
+                                    self.open_focused_home_sidebar_playlist();
                                 }
                             }
                             return true;
@@ -745,7 +745,7 @@ impl App {
                 {
                     self.browse.home.focused_idx = idx;
                     if self.is_double_content_click(Page::Home, idx) {
-                        self.enter_home_tile().await;
+                        self.enter_home_tile();
                     }
                     return true;
                 }

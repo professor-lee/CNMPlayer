@@ -5,7 +5,6 @@ use super::auth::fetch_account_profile;
 use super::owned_task::SharedTask;
 use super::owned_task::peek_shared;
 use super::owned_task::spawn_shared;
-use super::playlist::is_liked_playlist;
 use super::response::response_code;
 use super::response::response_message;
 use super::text::lang_text;
@@ -516,13 +515,5 @@ impl App {
     pub(super) fn apply_liked_song_ids(&mut self, ids: HashSet<String>) {
         self.playback.like_machine.replace_confirmed(ids);
         self.refresh_now_playing_like_state();
-    }
-
-    pub(super) fn is_liked_playlist(&self, playlist_id: &str, title: Option<&str>) -> bool {
-        is_liked_playlist(
-            self.browse.home_sidebar.liked_playlist_id.as_deref(),
-            playlist_id,
-            title,
-        )
     }
 }
