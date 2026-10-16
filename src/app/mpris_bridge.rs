@@ -1,18 +1,16 @@
-use super::{PlaybackRuntimeState, PlaybackTrack};
-use crate::data::config::CacheConfig;
-use crate::render::wake::WakeSignal;
-use std::path::Path;
+use super::playback_controller::PlaybackRuntimeState;
+use super::playback_controller::PlaybackTrack;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
-pub struct MprisSyncPayload {
-    pub playback: PlaybackRuntimeState,
-    pub position: Duration,
-    pub track: Option<PlaybackTrack>,
+pub(super) struct MprisSyncPayload {
+    pub(super) playback: PlaybackRuntimeState,
+    pub(super) position: Duration,
+    pub(super) track: Option<PlaybackTrack>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum MprisControlEvent {
+pub(super) enum MprisControlEvent {
     Play,
     Pause,
     PlayPause,
@@ -25,17 +23,28 @@ pub enum MprisControlEvent {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use super::WakeSignal;
-    use super::{CacheConfig, MprisControlEvent, MprisSyncPayload, Path};
-    use crate::app::player::cleanup_cache_dir;
+    use super::super::player::cleanup_cache_dir;
+    use super::MprisControlEvent;
+    use super::MprisSyncPayload;
+    use crate::data::config::CacheConfig;
     use crate::launch;
-    use mpris_server::{Metadata, PlaybackStatus, Player, Time, zbus};
+    use crate::render::wake::WakeSignal;
+    use mpris_server::Metadata;
+    use mpris_server::PlaybackStatus;
+    use mpris_server::Player;
+    use mpris_server::Time;
+    use mpris_server::zbus;
     use parking_lot::Mutex;
     use std::collections::hash_map::DefaultHasher;
     use std::fs;
-    use std::hash::{Hash, Hasher};
-    use std::sync::mpsc::{self as std_mpsc, Receiver, Sender};
-    use std::time::{Duration, Instant};
+    use std::hash::Hash;
+    use std::hash::Hasher;
+    use std::path::Path;
+    use std::sync::mpsc as std_mpsc;
+    use std::sync::mpsc::Receiver;
+    use std::sync::mpsc::Sender;
+    use std::time::Duration;
+    use std::time::Instant;
 
     pub struct MprisBridge {
         tx: see::unsync::Sender<Option<MprisSyncPayload>>,
@@ -337,8 +346,11 @@ mod imp {
 
 #[cfg(not(target_os = "linux"))]
 mod imp {
-    use super::WakeSignal;
-    use super::{CacheConfig, MprisControlEvent, MprisSyncPayload, Path};
+    use super::MprisControlEvent;
+    use super::MprisSyncPayload;
+    use crate::data::config::CacheConfig;
+    use crate::render::wake::WakeSignal;
+    use std::path::Path;
 
     pub struct MprisBridge;
 
@@ -355,4 +367,4 @@ mod imp {
     }
 }
 
-pub use imp::MprisBridge;
+pub(super) use imp::MprisBridge;

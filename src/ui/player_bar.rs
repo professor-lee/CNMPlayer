@@ -1,4 +1,7 @@
-use crate::app::{App, HitRect, PlaybackRuntimeState, PlayerBarHitTargets};
+use crate::app::App;
+use crate::app::input_controller::HitRect;
+use crate::app::input_controller::PlayerBarHitTargets;
+use crate::app::playback_controller::PlaybackRuntimeState;
 use crate::data::icons::UiIcons;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
@@ -151,10 +154,10 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let play_label = icons.play_pause(app.playback.playback_state == PlaybackRuntimeState::Playing);
     let next_label = icons.next();
     let mode_symbol = match app.playback.playback_repeat_mode {
-        crate::app::PlaybackRepeatMode::Sequence => icons.sequence(),
-        crate::app::PlaybackRepeatMode::Shuffle => icons.shuffle(),
-        crate::app::PlaybackRepeatMode::LoopAll => icons.loop_all(),
-        crate::app::PlaybackRepeatMode::LoopOne => icons.loop_one(),
+        crate::app::playback_controller::PlaybackRepeatMode::Sequence => icons.sequence(),
+        crate::app::playback_controller::PlaybackRepeatMode::Shuffle => icons.shuffle(),
+        crate::app::playback_controller::PlaybackRepeatMode::LoopAll => icons.loop_all(),
+        crate::app::playback_controller::PlaybackRepeatMode::LoopOne => icons.loop_one(),
     };
     let controls = format!("{prev_label} {play_label} {next_label} {mode_symbol}");
 

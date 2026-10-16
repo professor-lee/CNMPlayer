@@ -1,4 +1,5 @@
-use crate::app::{App, LoginMethod};
+use crate::app::App;
+use crate::app::auth::LoginMethod;
 use crate::data::config::Language;
 use qrcode::QrCode;
 use qrcode::render::unicode;

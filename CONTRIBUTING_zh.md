@@ -59,7 +59,7 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 | 路径 | 内容 |
 | --- | --- |
 | `src/main.rs` | 入口：终端初始化、资产根目录，以及交给应用程序。 |
-| `src/app/` | 应用核心：`mod.rs` 的共享状态、API/流式播放/播放器/下载服务、MPRIS 桥接、`controllers.rs` 中的 `SearchController`，以及专门的 browse/download/input/playback/settings/startup 控制器。 |
+| `src/app/` | 应用核心。`mod.rs` 是装配点与顶层协调者：`App` 结构体（共享状态、各子控制器、命中区），以及驱动它们的事件处理。领域类型、请求与行为各自归对应职责模块 —— `ApiState` 与封面抓取在 `api.rs`，响应结构辅助函数在 `response.rs`，搜索在 `search_controller.rs`，browse/download/input/playback/settings/startup 各有对应的 `*_controller.rs`，另有 player、streaming、download 与 MPRIS 模块。 |
 | `src/ui/` | 主程序 UI 面板：登录、首页、歌单、作者、搜索、设置、播放栏、歌词、加载、小窗口与主题模块。 |
 | `src/data/` | 共享 `Config`，以及资产、原子持久化、会话、播放/私人漫游状态与主题加载。 |
 | `src/render/` | 封面与图形渲染，以及彩蛋形象的帧数据。 |
@@ -72,6 +72,15 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 | `.github/` | `workflows/ci.yml`、`workflows/release.yml` 与 `scripts/aur_sync.sh`。 |
 | 根目录文档 | `README.md` / `README_zh.md`（中英两份并行维护）、`DISCLAIMER.md` / `DISCLAIMER_zh.md`、`CITATION.cff`、`THIRD_PARTY_NOTICES.md`、`LICENSE`（AGPL-3.0-only）。 |
 
+## 模块维护规则
+
+`src/app/` 按职责拆分，`mod.rs` 只负责装配与顶层协调，不承载领域实现。新增代码请沿用同一形状：
+
+- **显式导入。** 用到什么就导入什么；不要加 glob 导入，也不要为了省事经由上级模块转发条目 —— 调用方直接导入定义该条目的模块。
+- **直接引用所属模块。** 写 `crate::app::search_controller::SearchController`，而不是 `crate::app::SearchController`：`mod.rs` 不是门面。领域类型、请求与行为归对应职责模块，所以就写在那里，而不是写进 `mod.rs`。
+- **可见性取最小。** 只有确实被其他顶层模块（`src/ui/`、`src/render/`、`src/data/`、`src/tmplayer/`、`src/main.rs`）共用的接口才用 `pub(crate)`；`src/app/` 内部兄弟模块之间共用的用 `pub(super)`；其余保持模块私有，通过所属类型的方法访问。
+- **搬动代码时不留兼容层。** 在同一次改动里更新所有调用方并删掉旧路径；靠 re-export 让旧路径继续编译的写法不予接受。
+
 ## 格式与 CI
 
 格式化工具是 rustfmt，仓库自带配置：
@@ -79,18 +88,36 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 - 根目录 `.rustfmt.toml`：`max_width = 100`、`edition = "2024"`；
 - `ncm-api-rs/rustfmt.toml`：`edition = "2021"`、`max_width = 100`、`use_field_init_shorthand = true` —— 动过 vendored crate 时一并执行 `cargo fmt --manifest-path ncm-api-rs/Cargo.toml`。
 
-Clippy：`cargo clippy --all-targets`；`ncm-api-rs/clippy.toml` 把 `too-many-arguments-threshold` 放宽到 8、`type-complexity-threshold` 放宽到 300。
+Clippy：`cargo clippy --all-targets` 只是本地快速检查，下面的门禁会带上 `-D warnings`；`ncm-api-rs/clippy.toml` 把 `too-many-arguments-threshold` 放宽到 8、`type-complexity-threshold` 放宽到 300。
 
-CI（`.github/workflows/ci.yml`）在面向 `main` / `develop` 的 PR 以及推送到 `develop` 时触发：在 `ubuntu-24.04` 上安装上面列出的系统依赖，在 Rust 1.95 与 stable 上分别检查默认特性和 `--no-default-features`，并对根 crate 与 vendored crate 执行 fmt/clippy 门禁。
+CI（`.github/workflows/ci.yml`）在面向 `main` / `develop` 的 PR 以及推送到 `develop` 时触发。所有 job 都跑在 `ubuntu-24.04` 上；`build-and-test` 与 `quality` 安装上面列出的系统依赖：
 
-本地等价命令：
+- `build-and-test`：以四组矩阵运行 `cargo check` 与 `cargo test`（`--workspace --locked --all-targets`）—— Rust 1.95.0 与 stable，各自再分默认特性与 `--no-default-features`。
+- `quality`：在 stable 上并装好 `rustfmt`、`clippy` 组件后运行 `cargo fmt --all -- --check` 与 `cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check`，随后是三次带 `-D warnings` 的 clippy —— 根 crate 的 `--all-features`、根 crate 的 `--no-default-features`，以及经 manifest 指向 vendored crate。
+- `vendored-tests`：`cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets`。
+
+对应的本地命令（按 job 分组）：
 
 ```bash
+# build-and-test：默认特性与 --no-default-features，每种工具链各跑一遍。
+# 直接 `cargo` 已按 pin 选中 1.95.0；stable 那一半用 `cargo +stable`。
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked --all-targets
-cargo fmt --all -- --check
-cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+cargo check --workspace --locked --all-targets --no-default-features
+cargo test --workspace --locked --all-targets --no-default-features
+
+# quality（仅 stable）
+cargo +stable fmt --all -- --check
+cargo +stable fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
+cargo +stable clippy --locked --all-targets --all-features -- -D warnings
+cargo +stable clippy --locked --all-targets --no-default-features -- -D warnings
+cargo +stable clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
+
+# vendored-tests
+cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 ```
+
+随手一条 `cargo clippy` 不等同于门禁：`quality` 额外要求 `-D warnings`、覆盖两种特性组合，并单独对 vendored crate 执行 clippy，因此本地单独跑通并不代表该 job 会通过。
 
 版本号与打包不属于普通 PR 的范围：发布由 `v*` tag 触发，tag 必须与 `Cargo.toml` 里的版本号一致；`release.yml` 会在发布前测试 workspace 两个 crate，再发布 amd64/aarch64 压缩包、`SHA256SUMS` 与 AUR 包。
 

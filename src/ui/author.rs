@@ -261,7 +261,7 @@ fn draw_author_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         app.push_author_tile_hit(
-            crate::app::HitRect {
+            crate::app::input_controller::HitRect {
                 x: rect.x,
                 y: rect.y,
                 width: rect.width,

@@ -7,17 +7,29 @@
 //! 后台任务与主循环之间只传数据（`StartupEvent`），所有状态改写都在主循环
 //! 的 `apply_startup_event` 里发生——与封面/歌词 worker 同一套模式。
 
-use std::collections::HashSet;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::time::{Duration, Instant};
-
-use super::{
-    AccountProfile, ApiState, App, HomeTile, Page, PlaylistTrack, QrLoginCode,
-    fetch_account_profile, fetch_home_tiles, fetch_liked_song_ids, fetch_private_roam_songs,
-    fetch_qr_login_code, fetch_vip_unlocked, session,
-};
+use super::App;
+use super::Page;
+use super::api::ApiState;
+use super::auth::AccountProfile;
+use super::auth::QrLoginCode;
+use super::auth::fetch_account_profile;
+use super::auth::fetch_qr_login_code;
+use super::auth::fetch_vip_unlocked;
+use super::home::HomeTile;
+use super::home::fetch_home_tiles;
+use super::likes::fetch_liked_song_ids;
+use super::roam::fetch_private_roam_songs;
+use super::tracks::PlaylistTrack;
 use crate::data::config::Config;
+use crate::data::session;
 use crate::launch;
+use std::collections::HashSet;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::TryRecvError;
+use std::time::Duration;
+use std::time::Instant;
 
 /// 启动初始化的总预算：超出后放弃剩余步骤，用已到手的数据进主界面。
 ///
@@ -54,7 +66,7 @@ enum StartupEvent {
 }
 
 /// 启动初始化任务与加载页进度。
-pub struct StartupInit {
+pub(super) struct StartupInit {
     rx: Option<Receiver<StartupEvent>>,
     step_done: usize,
     step_total: usize,
@@ -64,7 +76,7 @@ pub struct StartupInit {
 
 impl StartupInit {
     /// 没有后台任务时的占位状态（登录后刷新、进度只跟时间走）。
-    pub fn detached() -> Self {
+    pub(super) fn detached() -> Self {
         Self {
             rx: None,
             step_done: 0,
@@ -75,7 +87,7 @@ impl StartupInit {
     }
 
     /// 启动后台初始化任务；`steps` 是计划步数，决定进度条分母。
-    pub fn spawn(
+    pub(super) fn spawn(
         config: Config,
         api: ApiState,
         cookie: Option<String>,
@@ -95,19 +107,19 @@ impl StartupInit {
     }
 
     /// 重设计划：脱离真实步数，进度只由时间缓动推进。
-    pub fn reset_steps(&mut self, done: usize, total: usize) {
+    pub(super) fn reset_steps(&mut self, done: usize, total: usize) {
         self.step_done = done;
         self.step_total = total.max(1);
         self.step_started_at = Instant::now();
     }
 
     /// 计划塌缩到当前进度（登录态不可用时只剩「准备扫码」一步）。
-    pub fn collapse_to_done(&mut self) {
+    fn collapse_to_done(&mut self) {
         self.reset_steps(self.step_done, self.step_done.max(1));
     }
 
     /// 推进到 `done` 步（只前进，不回退）。
-    pub fn mark_done(&mut self, done: usize) {
+    fn mark_done(&mut self, done: usize) {
         if done <= self.step_done {
             return;
         }
@@ -116,25 +128,25 @@ impl StartupInit {
     }
 
     /// 主循环自己完成的一步（播放记忆恢复由主循环执行）。
-    pub fn complete_step(&mut self) {
+    fn complete_step(&mut self) {
         self.mark_done(self.step_done.saturating_add(1));
     }
 
-    pub fn step_done(&self) -> usize {
+    pub(super) fn step_done(&self) -> usize {
         self.step_done
     }
 
-    pub fn step_total(&self) -> usize {
+    pub(super) fn step_total(&self) -> usize {
         self.step_total
     }
 
     /// 当前步已进行的时长，用于单步内的进度缓动。
-    pub fn step_elapsed(&self) -> f32 {
+    pub(super) fn step_elapsed(&self) -> f32 {
         self.step_started_at.elapsed().as_secs_f32()
     }
 
     /// 后台任务是否已经结束（没有任务时视为已结束）。
-    pub fn finished(&self) -> bool {
+    pub(super) fn finished(&self) -> bool {
         self.finished
     }
 
@@ -371,10 +383,11 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::step;
+    use super::super::startup::step;
     use std::cell::Cell;
     use std::rc::Rc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use std::time::Instant;
 
     #[compio::test]
     async fn exhausted_startup_budget_does_not_start_restore() {

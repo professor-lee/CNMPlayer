@@ -1,22 +1,33 @@
 //! Streaming audio reader: async writes on the reactor, blocking reads/seeks only
 //! on decoder/audio workers. Published bytes are fully written before readers see them.
 
-use crate::app::api::error_for_status;
-use anyhow::{Context, Result, bail};
-use compio::io::{AsyncWrite, AsyncWriteExt};
+use super::api::error_for_status;
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::bail;
+use compio::io::AsyncWrite;
+use compio::io::AsyncWriteExt;
 use cyper::Response;
 use futures::StreamExt;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Condvar;
+use parking_lot::Mutex;
 use see::sync::Sender;
 use std::fs::File;
-use std::io::{Cursor, Error, ErrorKind, Read, Seek, SeekFrom};
+use std::io::Cursor;
+use std::io::Error;
+use std::io::ErrorKind;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// Its synchronous Read/Seek implementation must only run on blocking workers.
-pub struct StreamingReader {
+pub(super) struct StreamingReader {
     state: Arc<StreamingState>,
     file: File,
 }
@@ -53,12 +64,12 @@ impl StreamingState {
 }
 
 #[derive(Clone)]
-pub struct StreamingReaderHandle {
+pub(super) struct StreamingReaderHandle {
     state: Arc<StreamingState>,
 }
 
 impl StreamingReaderHandle {
-    pub fn cancel(&self) {
+    pub(super) fn cancel(&self) {
         self.state.cancel();
     }
 }
@@ -80,7 +91,7 @@ impl Drop for StreamingReader {
 }
 
 impl StreamingReader {
-    pub async fn new(
+    pub(super) async fn new(
         http: &cyper::Client,
         url: &str,
         cache_path: PathBuf,
@@ -172,7 +183,7 @@ impl StreamingReader {
         }
     }
 
-    pub fn total(&self) -> u64 {
+    pub(super) fn total(&self) -> u64 {
         self.state.total.load(Ordering::SeqCst)
     }
 }
@@ -280,7 +291,14 @@ async fn download_streaming(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::streaming::StreamingReader;
+    use super::super::streaming::StreamingState;
+    use super::super::streaming::checked_seek;
+    use std::fs::File;
+    use std::io::ErrorKind;
+    use std::io::Read;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     #[compio::test]
     async fn complete_stream_is_published_but_truncated_stream_is_not() {

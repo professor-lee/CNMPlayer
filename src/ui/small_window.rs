@@ -1,4 +1,5 @@
-use crate::app::{App, FlatPanel};
+use crate::app::App;
+use crate::app::presentation::FlatPanel;
 use crate::data::config::BarChannels;
 use crate::data::config::Language;
 use crate::tmplayer::render::spectrum_renderer::{compute_bar_layout, smooth_char};
@@ -79,14 +80,14 @@ pub fn draw_narrow(frame: &mut Frame, app: &mut App) {
 
     let (left_level, right_level) = if draw_total >= 2 {
         (
-            crate::app::lufs_to_bar_level(app.vu_left_lufs),
-            crate::app::lufs_to_bar_level(app.vu_right_lufs),
+            crate::app::presentation::lufs_to_bar_level(app.vu_left_lufs),
+            crate::app::presentation::lufs_to_bar_level(app.vu_right_lufs),
         )
     } else {
-        let left_ms = crate::app::lufs_to_mean_square(app.vu_left_lufs);
-        let right_ms = crate::app::lufs_to_mean_square(app.vu_right_lufs);
-        let mono = crate::app::mean_square_to_lufs((left_ms + right_ms) * 0.5);
-        let level = crate::app::lufs_to_bar_level(mono);
+        let left_ms = crate::app::presentation::lufs_to_mean_square(app.vu_left_lufs);
+        let right_ms = crate::app::presentation::lufs_to_mean_square(app.vu_right_lufs);
+        let mono = crate::app::presentation::mean_square_to_lufs((left_ms + right_ms) * 0.5);
+        let level = crate::app::presentation::lufs_to_bar_level(mono);
         (level, level)
     };
 

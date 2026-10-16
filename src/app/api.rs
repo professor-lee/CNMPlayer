@@ -1,9 +1,16 @@
-use anyhow::{Context, Result, anyhow, bail};
-use cyper::{Client, Response};
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::anyhow;
+use anyhow::bail;
+use cyper::Client;
+use cyper::Response;
 use futures::StreamExt;
 use image::load_from_memory;
-use ncm_api::{ApiClient, ApiResponse, Query};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use ncm_api::ApiClient;
+use ncm_api::ApiResponse;
+use ncm_api::Query;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const MAX_COVER_IMAGE_BYTES: usize = 5 * 1024 * 1024;
@@ -69,7 +76,7 @@ impl Drop for CoverValidationPermit<'_> {
 }
 
 #[derive(Clone)]
-pub struct ApiState {
+pub(crate) struct ApiState {
     client: ApiClient,
     cookie: Option<String>,
     http: Client,
@@ -77,7 +84,7 @@ pub struct ApiState {
 }
 
 impl ApiState {
-    pub fn new(cookie: Option<String>, http: Client) -> Result<Self> {
+    pub(super) fn new(cookie: Option<String>, http: Client) -> Result<Self> {
         let client = ApiClient::new(cookie.clone(), http.clone());
 
         Ok(Self {
@@ -92,26 +99,26 @@ impl ApiState {
         self.wake.clone()
     }
 
-    pub fn session_cookie(&self) -> Option<&str> {
+    pub(super) fn session_cookie(&self) -> Option<&str> {
         self.cookie.as_deref()
     }
 
     /// Get the HTTP client for streaming playback.
-    pub fn http_client(&self) -> &Client {
+    pub(super) fn http_client(&self) -> &Client {
         &self.http
     }
 
-    pub fn set_cookie(&mut self, cookie: String) {
+    pub(super) fn set_cookie(&mut self, cookie: String) {
         self.cookie = Some(cookie.clone());
         self.client.set_cookie(cookie);
     }
 
-    pub fn clear_cookie(&mut self) {
+    pub(super) fn clear_cookie(&mut self) {
         self.cookie = None;
         self.client.set_cookie(String::new());
     }
 
-    pub async fn validate_cookie(&mut self, cookie: &str) -> Result<bool> {
+    pub(super) async fn validate_cookie(&mut self, cookie: &str) -> Result<bool> {
         let query = Query::new().cookie(cookie);
         let response = self.client.login_status(&query).await?;
         let code = response
@@ -129,21 +136,21 @@ impl ApiState {
         Ok(false)
     }
 
-    pub async fn login_status(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn login_status(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.login_status(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn user_account(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn user_account(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.user_account(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn user_playlist_create(
+    pub(super) async fn user_playlist_create(
         &mut self,
         uid: &str,
         limit: usize,
@@ -158,7 +165,7 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn user_playlist_collect(
+    pub(super) async fn user_playlist_collect(
         &mut self,
         uid: &str,
         limit: usize,
@@ -173,7 +180,7 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn login_email(&mut self, email: &str, password: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_email(&mut self, email: &str, password: &str) -> Result<ApiResponse> {
         let query = Query::new()
             .param("email", email)
             .param("password", password);
@@ -182,51 +189,55 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn captcha_sent(&mut self, phone: &str) -> Result<ApiResponse> {
+    pub(super) async fn captcha_sent(&mut self, phone: &str) -> Result<ApiResponse> {
         let query = Query::new().param("phone", phone);
         let response = self.client.captcha_sent(&query).await?;
         Ok(response)
     }
 
-    pub async fn login_phone_captcha(&mut self, phone: &str, captcha: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_phone_captcha(
+        &mut self,
+        phone: &str,
+        captcha: &str,
+    ) -> Result<ApiResponse> {
         let query = Query::new().param("phone", phone).param("captcha", captcha);
         let response = self.client.login_cellphone(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn login_qr_key(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn login_qr_key(&mut self) -> Result<ApiResponse> {
         let query = Query::new();
         let response = self.client.login_qr_key(&query).await?;
         Ok(response)
     }
 
-    pub async fn login_qr_create(&mut self, key: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_qr_create(&mut self, key: &str) -> Result<ApiResponse> {
         let query = Query::new().param("key", key);
         let response = self.client.login_qr_create(&query).await?;
         Ok(response)
     }
 
-    pub async fn login_qr_check(&mut self, key: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_qr_check(&mut self, key: &str) -> Result<ApiResponse> {
         let query = Query::new().param("key", key);
         let response = self.client.login_qr_check(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn recommend_resource(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn recommend_resource(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.recommend_resource(&query).await?;
         Ok(response)
     }
 
-    pub async fn recommend_songs(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn recommend_songs(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.recommend_songs(&query).await?;
         Ok(response)
     }
 
-    pub async fn personalized(&mut self, limit: usize) -> Result<ApiResponse> {
+    pub(super) async fn personalized(&mut self, limit: usize) -> Result<ApiResponse> {
         let limit = limit.max(1).to_string();
         let query = self.query_with_cookie().param("limit", &limit);
         let response = self.client.personalized(&query).await?;
@@ -234,7 +245,11 @@ impl ApiState {
     }
 
     /// 私人漫游（私人 FM 模式选择）
-    pub async fn personal_fm_mode(&mut self, mode: &str, limit: usize) -> Result<ApiResponse> {
+    pub(super) async fn personal_fm_mode(
+        &mut self,
+        mode: &str,
+        limit: usize,
+    ) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("mode", mode)
@@ -243,12 +258,12 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn playlist_detail(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn playlist_detail(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.playlist_detail(&query).await?;
         Ok(response)
     }
-    pub async fn playlist_track_all(
+    pub(super) async fn playlist_track_all(
         &mut self,
         id: &str,
         limit: usize,
@@ -263,31 +278,31 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn album(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn album(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.album(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_detail(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn artist_detail(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_detail(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_desc(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn artist_desc(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_desc(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_top_song(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn artist_top_song(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_top_song(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_album(
+    pub(super) async fn artist_album(
         &mut self,
         id: &str,
         limit: usize,
@@ -302,7 +317,11 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn artist_sublist(&mut self, limit: usize, offset: usize) -> Result<ApiResponse> {
+    pub(super) async fn artist_sublist(
+        &mut self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("limit", &limit.max(1).to_string())
@@ -311,19 +330,19 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn song_detail(&mut self, song_id: &str) -> Result<ApiResponse> {
+    pub(super) async fn song_detail(&mut self, song_id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("ids", song_id);
         let response = self.client.song_detail(&query).await?;
         Ok(response)
     }
 
-    pub async fn lyric(&mut self, song_id: &str) -> Result<ApiResponse> {
+    pub(super) async fn lyric(&mut self, song_id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", song_id);
         let response = self.client.lyric(&query).await?;
         Ok(response)
     }
 
-    pub async fn like_song(&mut self, song_id: &str, like: bool) -> Result<ApiResponse> {
+    pub(super) async fn like_song(&mut self, song_id: &str, like: bool) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -332,19 +351,19 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
+    pub(super) async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("uid", uid);
         let response = self.client.likelist(&query).await?;
         Ok(response)
     }
 
-    pub async fn song_like_check(&mut self, ids_json: &str) -> Result<ApiResponse> {
+    pub(super) async fn song_like_check(&mut self, ids_json: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("ids", ids_json);
         let response = self.client.song_like_check(&query).await?;
         Ok(response)
     }
 
-    pub async fn song_url(&mut self, song_id: &str) -> Result<ApiResponse> {
+    async fn song_url(&mut self, song_id: &str) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -353,7 +372,7 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn song_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
+    async fn song_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -363,11 +382,7 @@ impl ApiState {
     }
 
     /// 客户端下载链接（新版）：登录后可用，对免费歌曲能拿到比播放更高的档位。
-    pub async fn song_download_url_v1(
-        &mut self,
-        song_id: &str,
-        level: &str,
-    ) -> Result<ApiResponse> {
+    async fn song_download_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -378,7 +393,7 @@ impl ApiState {
 
     /// 下载取链：`download/url/v1` 优先（未登录/无版权时回包里的 url 为空），
     /// 退回 `player/url/v1`，再退回旧 `/song/url`。
-    pub async fn audio_download_url(
+    pub(super) async fn audio_download_url(
         &mut self,
         song_id: &str,
         level: &str,
@@ -404,7 +419,7 @@ impl ApiState {
         })
     }
 
-    pub async fn song_stream_url_with_quality(
+    pub(super) async fn song_stream_url_with_quality(
         &mut self,
         song_id: &str,
         level: &str,
@@ -439,19 +454,19 @@ impl ApiState {
         ))
     }
 
-    pub async fn vip_info(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn vip_info(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.vip_info(&query).await?;
         Ok(response)
     }
 
-    pub async fn vip_info_v2(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn vip_info_v2(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.vip_info_v2(&query).await?;
         Ok(response)
     }
 
-    pub async fn search(
+    pub(super) async fn search(
         &mut self,
         keywords: &str,
         search_type: i32,
@@ -469,13 +484,13 @@ impl ApiState {
     }
 
     /// Fetch a complete cover within one 30s network budget, then await bounded validation.
-    pub async fn fetch_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
+    pub(super) async fn fetch_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
         self.fetch_cover_bytes_with_timeout(url, COVER_NETWORK_TIMEOUT)
             .await
     }
 
     /// UI consumers keep the one validated decode, reduced off the reactor.
-    pub async fn fetch_cover_image(
+    pub(super) async fn fetch_cover_image(
         &self,
         url: &str,
     ) -> Result<std::sync::Arc<image::DynamicImage>> {
@@ -598,10 +613,10 @@ impl ApiState {
 
 /// 下载取链的结果：直链、载荷类型（mp3/flac）与实际档位（可能被账号权限降级）。
 #[derive(Debug, Clone)]
-pub struct AudioDownloadSource {
-    pub url: String,
-    pub file_type: String,
-    pub level: String,
+pub(super) struct AudioDownloadSource {
+    pub(super) url: String,
+    pub(super) file_type: String,
+    pub(super) level: String,
 }
 
 /// 从 `…/url` 系列回包里取第一条 `data[0]`：空 url 视为不可用。
@@ -634,7 +649,7 @@ fn parse_audio_source(
     })
 }
 
-pub fn error_for_status(resp: Response) -> Result<Response> {
+pub(super) fn error_for_status(resp: Response) -> Result<Response> {
     let status = resp.status();
     let url = resp.url();
     let reason = status.canonical_reason().unwrap_or_default();
@@ -647,8 +662,9 @@ pub fn error_for_status(resp: Response) -> Result<Response> {
 
 #[cfg(test)]
 mod tests {
-    use super::ApiState;
-    use std::io::{Read, Write};
+    use super::super::api::ApiState;
+    use std::io::Read;
+    use std::io::Write;
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::time::Duration;

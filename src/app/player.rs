@@ -1,26 +1,39 @@
+use super::streaming::StreamingReader;
+use super::streaming::StreamingReaderHandle;
 use crate::STORAGE;
-use crate::app::streaming::{StreamingReader, StreamingReaderHandle};
-use crate::data::config::{CacheCleanStrategy, Config};
-use crate::tmplayer::app::state::{EQ_BANDS, EQ_FREQS_HZ, EqSettings};
+use crate::data::config::CacheCleanStrategy;
+use crate::data::config::Config;
+use crate::tmplayer::app::state::EQ_BANDS;
+use crate::tmplayer::app::state::EQ_FREQS_HZ;
+use crate::tmplayer::app::state::EqSettings;
 use crate::tmplayer::audio::lufs_meter::LufsMeter;
-use crate::tmplayer::audio::pcm_tap::{PcmRing, PcmTap};
-use anyhow::{Context, Result};
-use parking_lot::{Condvar, Mutex};
+use crate::tmplayer::audio::pcm_tap::PcmRing;
+use crate::tmplayer::audio::pcm_tap::PcmTap;
+use anyhow::Context;
+use anyhow::Result;
+use parking_lot::Condvar;
+use parking_lot::Mutex;
+use rodio::DeviceSinkBuilder;
+use rodio::MixerDeviceSink;
+use rodio::Player;
+use rodio::Source;
 use rodio::cpal::Error;
 use rodio::decoder::DecoderBuilder;
 use rodio::source::SeekError;
-use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use see::sync::Receiver;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::num::NonZero;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime};
-pub struct AudioPlayer {
+use std::time::Duration;
+use std::time::SystemTime;
+pub(super) struct AudioPlayer {
     _device_sink: MixerDeviceSink,
     player: Arc<Player>,
     error: MaybeError,
@@ -156,7 +169,7 @@ impl SeekWorker {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioPlayerState {
+pub(super) enum AudioPlayerState {
     Playing,
     Paused,
     Stopped,
@@ -221,7 +234,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub fn new(config: &Config) -> Result<Self> {
+    pub(super) fn new(config: &Config) -> Result<Self> {
         let error = Arc::new(Mutex::new(None));
         let (player, sink) = build_player(error.clone())?;
         let cache_root = resolve_cache_root(config);
@@ -261,22 +274,22 @@ impl AudioPlayer {
         Ok(player)
     }
 
-    pub fn cached_song_path(&self, song_id: &str, quality_level: &str) -> PathBuf {
+    pub(super) fn cached_song_path(&self, song_id: &str, quality_level: &str) -> PathBuf {
         let quality = sanitize_cache_key(quality_level);
         let name = format!("{song_id}__{quality}.audio");
         self.cache_dir.join(name)
     }
 
     /// 共享 PCM 抽头环的句柄，供全屏页示波器读取真实波形。
-    pub fn pcm_ring(&self) -> Arc<PcmRing> {
+    pub(super) fn pcm_ring(&self) -> Arc<PcmRing> {
         self.pcm_ring.clone()
     }
 
-    pub fn lufs_meter(&self) -> Arc<LufsMeter> {
+    pub(super) fn lufs_meter(&self) -> Arc<LufsMeter> {
         self.lufs_meter.clone()
     }
 
-    pub async fn play_from_file(&mut self, file_path: &Path) -> Result<()> {
+    pub(super) async fn play_from_file(&mut self, file_path: &Path) -> Result<()> {
         let file_path = file_path.to_path_buf();
         let decoder = compio::runtime::spawn_blocking(move || -> Result<_> {
             let file = File::open(file_path)?;
@@ -299,7 +312,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub async fn play_streaming(
+    pub(super) async fn play_streaming(
         &mut self,
         reader: StreamingReader,
         progress_rx: Receiver<(u64, u64)>,
@@ -333,12 +346,12 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub fn set_eq(&mut self, eq: EqSettings) -> Result<()> {
+    pub(super) fn set_eq(&mut self, eq: EqSettings) -> Result<()> {
         self.eq_params.set_from(eq.clamp());
         Ok(())
     }
 
-    pub fn toggle_play_pause(&mut self) {
+    pub(super) fn toggle_play_pause(&mut self) {
         if self.player.empty() {
             return;
         }
@@ -350,7 +363,7 @@ impl AudioPlayer {
         }
     }
 
-    pub fn state(&self) -> AudioPlayerState {
+    pub(super) fn state(&self) -> AudioPlayerState {
         if self.player.empty() {
             return AudioPlayerState::Stopped;
         }
@@ -362,7 +375,7 @@ impl AudioPlayer {
         }
     }
 
-    pub fn stop(&mut self) {
+    pub(super) fn stop(&mut self) {
         if let Some(handle) = self.stream_handle.take() {
             handle.cancel();
         }
@@ -376,26 +389,30 @@ impl AudioPlayer {
         self.total_duration = None;
     }
 
-    pub fn set_volume(&mut self, volume: f32) {
+    pub(super) fn set_volume(&mut self, volume: f32) {
         let volume = volume.clamp(0.0, 1.0);
         self.player.set_volume(volume);
     }
 
-    pub fn volume(&self) -> f32 {
+    pub(super) fn volume(&self) -> f32 {
         self.player.volume()
     }
 
-    pub fn duration(&self) -> Option<Duration> {
+    pub(super) fn duration(&self) -> Option<Duration> {
         self.total_duration
     }
 
     /// Returns the latest buffered progress (downloaded, total).
     /// Uses watch channel which caches the latest value.
-    pub fn recv_progress(&mut self) -> Option<(u64, u64)> {
+    pub(super) fn recv_progress(&mut self) -> Option<(u64, u64)> {
         self.progress_rx.as_mut().map(|rx| *rx.borrow())
     }
 
-    pub fn seek_to_ratio(&mut self, ratio: f32, fallback_total: Option<Duration>) -> Result<()> {
+    pub(super) fn seek_to_ratio(
+        &mut self,
+        ratio: f32,
+        fallback_total: Option<Duration>,
+    ) -> Result<()> {
         let Some(total) = self.total_duration.or(fallback_total) else {
             return Ok(());
         };
@@ -408,14 +425,14 @@ impl AudioPlayer {
     }
 
     /// 是否正在后台加载跳转目标（UI 据此显示加载动画）。
-    pub fn is_seeking(&self) -> bool {
+    pub(super) fn is_seeking(&self) -> bool {
         // An invalidated old request may remain blocked until stream cancellation
         // wakes it; it must not keep the new track's UI in a loading state.
         self.seek_worker.state.lock().pending_target.is_some()
     }
 
     /// 用于界面显示的播放位置：后台加载期间直接显示跳转目标。
-    pub fn display_position(&self) -> Duration {
+    pub(super) fn display_position(&self) -> Duration {
         self.seek_worker
             .state
             .lock()
@@ -423,7 +440,7 @@ impl AudioPlayer {
             .unwrap_or_else(|| self.player.get_pos())
     }
 
-    pub fn position(&self) -> Duration {
+    pub(super) fn position(&self) -> Duration {
         self.player.get_pos()
     }
 }
@@ -639,7 +656,7 @@ where
     }
 }
 
-pub async fn is_nonempty_file(path: &Path) -> bool {
+pub(super) async fn is_nonempty_file(path: &Path) -> bool {
     compio::fs::metadata(path)
         .await
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
@@ -661,7 +678,7 @@ fn sanitize_cache_key(raw: &str) -> String {
     }
 }
 
-pub(crate) fn resolve_cache_root(config: &Config) -> PathBuf {
+pub(super) fn resolve_cache_root(config: &Config) -> PathBuf {
     if let Some(custom) = config
         .cache
         .path
@@ -682,7 +699,7 @@ struct CacheEntry {
     modified: SystemTime,
 }
 
-pub(crate) fn cleanup_cache_dir(
+pub(super) fn cleanup_cache_dir(
     cache_dir: &Path,
     policy: &crate::data::config::CacheConfig,
 ) -> Result<()> {
@@ -769,9 +786,22 @@ fn list_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry>> {
 
 #[cfg(test)]
 mod seek_worker_tests {
-    use super::*;
+    use super::super::player::SeekState;
+    use super::super::player::SeekWorker;
+    use parking_lot::Condvar;
+    use parking_lot::Mutex;
+    use rodio::Player;
+    use rodio::Source;
+    use rodio::source::SeekError;
+    use std::num::NonZero;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    use std::sync::mpsc::{self, Receiver as TestReceiver, Sender};
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::sync::mpsc::Receiver as TestReceiver;
+    use std::sync::mpsc::Sender;
+    use std::thread::JoinHandle;
+    use std::time::Duration;
 
     #[derive(Default)]
     struct Gate {

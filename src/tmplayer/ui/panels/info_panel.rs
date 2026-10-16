@@ -108,11 +108,11 @@ pub fn artist_row_hits(meta: Rect, artist: &str) -> Vec<(usize, Rect)> {
     }
 
     let budget = meta.width as usize;
-    let separator_w = crate::app::ARTIST_SEPARATOR.width();
+    let separator_w = crate::app::tracks::ARTIST_SEPARATOR.width();
     let mut hits = Vec::new();
     let mut offset = 0usize;
 
-    for (index, name) in crate::app::artist_name_segments(artist)
+    for (index, name) in crate::app::tracks::artist_name_segments(artist)
         .into_iter()
         .enumerate()
     {

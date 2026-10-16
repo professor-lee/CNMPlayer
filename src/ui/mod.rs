@@ -41,12 +41,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.config.small_window_display
         && !matches!(app.page, Page::Login | Page::Loading)
-        && (size.width < crate::app::SMALL_WINDOW_MIN_WIDTH
-            || size.height < crate::app::SMALL_WINDOW_MIN_HEIGHT)
+        && (size.width < crate::app::presentation::SMALL_WINDOW_MIN_WIDTH
+            || size.height < crate::app::presentation::SMALL_WINDOW_MIN_HEIGHT)
     {
         match app.small_window_mode {
-            Some(crate::app::SmallWindowMode::Flat) => small_window::draw_flat(frame, app),
-            Some(crate::app::SmallWindowMode::Narrow) => small_window::draw_narrow(frame, app),
+            Some(crate::app::presentation::SmallWindowMode::Flat) => {
+                small_window::draw_flat(frame, app)
+            }
+            Some(crate::app::presentation::SmallWindowMode::Narrow) => {
+                small_window::draw_narrow(frame, app)
+            }
             None => draw_small_too_small(frame, app, size),
         }
         return;
