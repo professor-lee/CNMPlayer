@@ -29,6 +29,7 @@ impl<T> SharedTask<T> {
         self.output.peek()
     }
 }
+
 pub(super) fn spawn_shared<T: Clone + 'static>(
     future: Pin<Box<dyn Future<Output = Option<T>>>>,
     wake: WakeSignal,
