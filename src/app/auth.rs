@@ -4,6 +4,7 @@ use super::api::ApiState;
 use super::response::parse_value_as_string;
 use super::response::response_code;
 use super::response::response_message;
+use super::roam::fetch_private_roam_songs;
 use super::search_controller::SearchController;
 use super::sidebar::HomeSidebarState;
 use super::text::MAX_INPUT_LEN;
@@ -672,6 +673,10 @@ impl App {
         // 登录后这次刷新仍走同步链路：进度条只按时间缓动，不接后台步数。
         self.startup.init.reset_steps(0, 1);
         self.begin_startup_loading(Page::Home);
+        if !self.private_roam_refreshed_today() {
+            let tracks = fetch_private_roam_songs(&mut self.api).await;
+            self.apply_private_roam_refresh(tracks);
+        }
         if let Err(err) = self.load_home_recommendations().await {
             self.browse.home.status_line = format!("{}，推荐歌单加载失败: {}", text, err);
         }
