@@ -182,6 +182,12 @@ impl App {
     }
 
     pub(crate) fn set_terminal_size(&mut self, width: u16, height: u16) {
+        // 上一帧未再登记进度条（或被弹窗遮挡）时，不能把抓取带回后续帧。
+        self.cancel_invalid_player_bar_progress_drag();
+        if (self.term_width, self.term_height) != (width, height) {
+            self.input.player_bar_progress_drag = None;
+            self.clear_player_bar_hits();
+        }
         let was_small_context = self.is_small_window_context();
         self.term_width = width;
         self.term_height = height;
@@ -321,6 +327,8 @@ impl App {
         {
             return;
         }
+        self.input.player_bar_progress_drag = None;
+        self.clear_player_bar_hits();
         let now = Instant::now();
         let width = self.term_width.max(1) as f32;
         let current = self.flat_switch_offset().clamp(0.0, width);

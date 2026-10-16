@@ -329,14 +329,12 @@ fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
         }
 
         let info_l = info_panel::layout(left, size.width);
-        layout_out.info_progress = info_l.progress;
-        layout_out.info_volume = info_l.volume;
-        layout_out.info_controls = info_l.controls;
-        layout_out.info_meta = if info_panel::core_rows_visible(&info_l) {
-            info_l.meta
-        } else {
-            Rect::default()
-        };
+        if info_panel::core_rows_visible(&info_l) {
+            layout_out.info_progress = info_l.progress;
+            layout_out.info_volume = info_l.volume;
+            layout_out.info_controls = info_l.controls;
+            layout_out.info_meta = info_l.meta;
+        }
 
         // base styling
         f.render_widget(ratatui::widgets::Clear, size);
@@ -1997,11 +1995,10 @@ pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option
         return Some(Action::SetVolume(volume));
     }
 
-    if contains(layout.info_progress, col, row) {
-        return Some(Action::SeekToFraction(ratio_in_track(
-            layout.info_progress,
-            col,
-        )));
+    if contains(layout.info_progress, col, row)
+        && let Some(ratio) = progress_for_drag(layout, col)
+    {
+        return Some(Action::SeekToFraction(ratio));
     }
 
     None
@@ -2020,7 +2017,14 @@ pub fn volume_at(layout: &UiLayout, col: u16, row: u16) -> Option<f32> {
 /// 按住拖动时的音量换算：列超出条子按端点钳制、不再要求落在条内，
 /// 这样"起点在条内、拖出条外"仍持续生效。
 pub fn volume_for_drag(layout: &UiLayout, col: u16) -> Option<f32> {
-    (layout.info_volume.width > 2).then(|| ratio_in_bar(layout.info_volume, col))
+    (layout.info_volume.width > 2 && layout.info_volume.height > 0)
+        .then(|| ratio_in_bar(layout.info_volume, col))
+}
+
+/// 进度拖动与点击共用实际绘制的轨道；离开轨道行后仍按列换算并钳制。
+pub fn progress_for_drag(layout: &UiLayout, col: u16) -> Option<f32> {
+    (layout.info_progress.width > 1 && layout.info_progress.height > 0)
+        .then(|| ratio_in_track(layout.info_progress, col))
 }
 
 fn contains(r: Rect, col: u16, row: u16) -> bool {
@@ -3253,6 +3257,39 @@ mod tests {
         // 音量条没有绘制（宽度退化）时不改音量。
         let empty = UiLayout::default();
         assert_eq!(volume_for_drag(&empty, 3), None);
+    }
+
+    #[test]
+    fn progress_drag_matches_click_geometry_and_clamps_outside_track() {
+        let layout = UiLayout {
+            info_progress: rect(10, 6, 11, 1),
+            ..UiLayout::default()
+        };
+        let app = state(Overlay::None);
+        for (col, ratio) in [(10, 0.0), (15, 0.5), (20, 1.0)] {
+            assert_eq!(
+                hit_test(&layout, &app, col, 6),
+                Some(Action::SeekToFraction(ratio))
+            );
+            assert_eq!(progress_for_drag(&layout, col), Some(ratio));
+        }
+        assert_eq!(hit_test(&layout, &app, 15, 5), None);
+        assert_eq!(hit_test(&layout, &app, 21, 6), None);
+        assert_eq!(progress_for_drag(&layout, 0), Some(0.0));
+        assert_eq!(progress_for_drag(&layout, u16::MAX), Some(1.0));
+    }
+
+    #[test]
+    fn progress_drag_ignores_missing_or_degenerate_tracks() {
+        let app = state(Overlay::None);
+        for track in [Rect::default(), rect(10, 6, 1, 1), rect(10, 6, 11, 0)] {
+            let layout = UiLayout {
+                info_progress: track,
+                ..UiLayout::default()
+            };
+            assert_eq!(progress_for_drag(&layout, 10), None);
+            assert_eq!(hit_test(&layout, &app, 10, 6), None);
+        }
     }
 
     /// 按键提示弹窗的条目数必须由列表本身决定：写死会让末尾几行选不中

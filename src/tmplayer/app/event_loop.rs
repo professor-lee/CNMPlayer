@@ -574,6 +574,10 @@ async fn handle_action(
     action: Action,
     layout: &UiLayout,
 ) -> Result<()> {
+    if app.overlay != Overlay::None && app.overlay != Overlay::Playlist {
+        app.volume_drag = false;
+        app.progress_drag = false;
+    }
     match action {
         Action::Quit => {}
         Action::OpenSettingsModal => {
@@ -990,7 +994,6 @@ async fn handle_action(
             app.player.volume = next;
         }
         Action::SetVolume(v) => {
-            app.volume_drag = true;
             let next = v.clamp(0.0, 1.0);
             host_bridge.set_volume(next);
             app.player.volume = next;
@@ -1018,8 +1021,12 @@ async fn handle_action(
             sync_from_host_snapshot(app, host_bridge.snapshot());
         }
         Action::MouseClick { col, row } => {
-            // map click to controls/progress/volume/playlist
+            app.volume_drag = false;
+            app.progress_drag = false;
+            // Only a fresh press on a visible control can begin a drag.
             if let Some(a) = crate::tmplayer::ui::tui::hit_test(layout, app, col, row) {
+                app.volume_drag = matches!(&a, Action::SetVolume(_));
+                app.progress_drag = matches!(&a, Action::SeekToFraction(_));
                 Box::pin(handle_action(app, host_bridge, a, layout)).await?;
             }
         }
@@ -1047,15 +1054,25 @@ async fn handle_action(
             }
         }
         Action::MouseDrag { col, .. } => {
-            if app.volume_drag
-                && let Some(volume) = crate::tmplayer::ui::tui::volume_for_drag(layout, col)
-            {
-                app.player.volume = volume;
-                host_bridge.set_volume(volume);
+            if app.progress_drag {
+                if let Some(ratio) = crate::tmplayer::ui::tui::progress_for_drag(layout, col) {
+                    host_bridge.seek_to_ratio(ratio);
+                    sync_from_host_snapshot(app, host_bridge.snapshot());
+                } else {
+                    app.progress_drag = false;
+                }
+            } else if app.volume_drag {
+                if let Some(volume) = crate::tmplayer::ui::tui::volume_for_drag(layout, col) {
+                    app.player.volume = volume;
+                    host_bridge.set_volume(volume);
+                } else {
+                    app.volume_drag = false;
+                }
             }
         }
         Action::MouseUp => {
             app.volume_drag = false;
+            app.progress_drag = false;
         }
         Action::ModalSelect(idx) => {
             let Some(rect) = layout.modal_rows.get(idx) else {

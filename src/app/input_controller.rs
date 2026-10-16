@@ -28,7 +28,7 @@ pub(super) const CONTENT_DOUBLE_CLICK_MS: u64 = 400;
 
 const GLOBAL_HOTKEY_COOLDOWN_MS: u64 = 120;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct HitRect {
     pub(crate) x: u16,
     pub(crate) y: u16,
@@ -193,9 +193,23 @@ impl App {
 
     pub(crate) async fn handle_mouse(&mut self, mouse: MouseEvent) {
         // 松开左键总是收尾拖拽：即使中途切到小窗口/弹窗也不会卡住拖动状态
-        // （卡住会让 should_continuous_redraw 一直按高帧率重绘）。
+        // （歌词拖拽卡住会让 should_continuous_redraw 一直按高帧率重绘）。
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
+            self.input.player_bar_progress_drag = None;
             self.page_lyrics_release();
+            return;
+        }
+
+        self.cancel_invalid_player_bar_progress_drag();
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.input.player_bar_progress_drag = None;
+        }
+
+        if matches!(mouse.kind, MouseEventKind::Drag(MouseButton::Left))
+            && let Some(rect) = self.input.player_bar_progress_drag
+        {
+            // 抓取后只看列：离开原行仍拖动，超出左右端点则钳制。
+            self.seek_to_ratio(player_bar_progress_ratio(rect, mouse.column));
             return;
         }
 
@@ -204,9 +218,13 @@ impl App {
         }
 
         if self.is_small_window_context() {
-            if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                self.dispatch_player_bar_click(mouse.column, mouse.row)
-                    .await;
+            if self.overlay.is_none() && matches!(mouse.kind, MouseEventKind::Down(_)) {
+                self.dispatch_player_bar_click(
+                    mouse.column,
+                    mouse.row,
+                    matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)),
+                )
+                .await;
             }
             return;
         }
@@ -256,7 +274,7 @@ impl App {
                     return;
                 }
 
-                self.dispatch_player_bar_click(col, row).await;
+                self.dispatch_player_bar_click(col, row, true).await;
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 self.page_lyrics_drag(col, row);
@@ -269,7 +287,7 @@ impl App {
     ///
     /// 命中区每帧由 `draw_collapsed_player_bar` 重注册，这里只查表；
     /// 新增按钮必须同时登记进 `PlayerBarHitTargets` 与 `player_bar_contains`。
-    async fn dispatch_player_bar_click(&mut self, col: u16, row: u16) {
+    async fn dispatch_player_bar_click(&mut self, col: u16, row: u16, start_drag: bool) {
         let hits = self.player_bar_hits;
 
         if hits.download.is_some_and(|rect| rect.contains(col, row)) {
@@ -300,13 +318,26 @@ impl App {
         if let Some(rect) = hits.progress
             && rect.contains(col, row)
         {
-            let relative_x = col.saturating_sub(rect.x) as f32;
-            let ratio = if rect.width <= 1 {
-                0.0
-            } else {
-                (relative_x / (rect.width - 1) as f32).clamp(0.0, 1.0)
-            };
-            self.seek_to_ratio(ratio);
+            if start_drag {
+                self.input.player_bar_progress_drag = Some(rect);
+            }
+            self.seek_to_ratio(player_bar_progress_ratio(rect, col));
+        }
+    }
+
+    /// 在下一帧清命中区前以及每次鼠标事件前验证抓取，隐藏/遮挡后不得恢复旧拖拽。
+    pub(super) fn cancel_invalid_player_bar_progress_drag(&mut self) {
+        if self.overlay.is_some()
+            || matches!(self.page, Page::Login | Page::Loading)
+            || self.input.player_bar_progress_drag != self.player_bar_hits.progress
+            || (self.is_small_window_context()
+                && (self.small_window_mode.is_none()
+                    || (self.small_window_mode == Some(SmallWindowMode::Flat)
+                        && self.flat_exact_height
+                        && (self.flat_switch_animating()
+                            || self.flat_panel != super::presentation::FlatPanel::Player))))
+        {
+            self.input.player_bar_progress_drag = None;
         }
     }
 
@@ -357,6 +388,10 @@ impl App {
     }
 
     pub(crate) fn set_player_bar_hits(&mut self, hits: PlayerBarHitTargets) {
+        // clear_player_bar_hits 是每帧临时清表；只有重新登记后的几何变化才取消抓取。
+        if self.input.player_bar_progress_drag != hits.progress {
+            self.input.player_bar_progress_drag = None;
+        }
         self.player_bar_hits = hits;
     }
 
@@ -793,11 +828,21 @@ impl App {
     }
 }
 
-/// Search-box input and animation state.
+/// 与点击映射共用端点；宽度一格时保持原来的零进度语义。
+fn player_bar_progress_ratio(rect: HitRect, col: u16) -> f32 {
+    if rect.width <= 1 {
+        0.0
+    } else {
+        (col.saturating_sub(rect.x) as f32 / (rect.width - 1) as f32).clamp(0.0, 1.0)
+    }
+}
+
+/// Search-box input/animation and host mouse capture state.
 pub(crate) struct InputController {
     pub(crate) search_box_input: String,
     pub(crate) search_box_cursor: usize,
     pub(crate) search_motion: Toggle,
+    pub(super) player_bar_progress_drag: Option<HitRect>,
 }
 
 impl Default for InputController {
@@ -806,6 +851,7 @@ impl Default for InputController {
             search_box_input: String::new(),
             search_box_cursor: 0,
             search_motion: Toggle::new(false),
+            player_bar_progress_drag: None,
         }
     }
 }
@@ -839,5 +885,39 @@ impl InputController {
     pub(super) fn move_cursor(&mut self, delta: isize) {
         let len = self.search_box_input.chars().count() as isize;
         self.search_box_cursor = (self.search_box_cursor as isize + delta).clamp(0, len) as usize;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HitRect;
+    use super::player_bar_progress_ratio;
+
+    #[test]
+    fn progress_drag_clamps_both_endpoints() {
+        let rect = HitRect {
+            x: 10,
+            y: 4,
+            width: 9,
+            height: 1,
+        };
+        assert_eq!(player_bar_progress_ratio(rect, 0), 0.0);
+        assert_eq!(player_bar_progress_ratio(rect, 10), 0.0);
+        assert_eq!(player_bar_progress_ratio(rect, 14), 0.5);
+        assert_eq!(player_bar_progress_ratio(rect, 18), 1.0);
+        assert_eq!(player_bar_progress_ratio(rect, u16::MAX), 1.0);
+    }
+
+    #[test]
+    fn single_cell_progress_keeps_click_mapping_during_drag() {
+        let rect = HitRect {
+            x: 10,
+            y: 4,
+            width: 1,
+            height: 1,
+        };
+        assert_eq!(player_bar_progress_ratio(rect, 0), 0.0);
+        assert_eq!(player_bar_progress_ratio(rect, 10), 0.0);
+        assert_eq!(player_bar_progress_ratio(rect, u16::MAX), 0.0);
     }
 }

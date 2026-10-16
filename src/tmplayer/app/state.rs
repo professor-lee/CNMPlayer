@@ -268,6 +268,8 @@ pub struct AppState {
     pub playlist_list_rows: usize,
     /// 正在按住拖动全屏页音量条。
     pub volume_drag: bool,
+    /// 正在按住拖动全屏页进度条，与音量拖动互斥。
+    pub progress_drag: bool,
 
     // Legacy coordinates remain for hit-test/layout compatibility; motion owns the curve.
     pub playlist_slide_x: i16,
@@ -365,6 +367,7 @@ impl AppState {
             playlist_list_scroll: 0,
             playlist_list_rows: 0,
             volume_drag: false,
+            progress_drag: false,
             playlist_slide_x: 0,
             playlist_slide_target_x: 0,
             playlist_slide_from_x: 0,
