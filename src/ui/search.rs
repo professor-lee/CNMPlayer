@@ -4,7 +4,6 @@ use crate::app::search_controller::SearchController;
 use crate::app::search_controller::SearchItemKind;
 use crate::data::config::Language;
 use crate::data::icons::UiIcons;
-use crate::ui::page_lyrics;
 use crate::ui::player_bar;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -27,7 +26,7 @@ const ARTIST_CARD_TEXT_X: u16 = 10;
 /// 面板比这还窄 / 矮就用单行样式，避免卡片被压扁。
 const ARTIST_CARD_MIN_WIDTH: u16 = 24;
 
-pub fn draw_search(frame: &mut Frame, app: &mut App) {
+pub fn draw_search(frame: &mut Frame, app: &mut App) -> Option<Rect> {
     app.clear_player_bar_hits();
     app.clear_content_hits();
 
@@ -43,7 +42,7 @@ pub fn draw_search(frame: &mut Frame, app: &mut App) {
             .style(Style::default().fg(app.theme.color_subtext())),
             size,
         );
-        return;
+        return None;
     }
 
     let rows = Layout::default()
@@ -55,11 +54,8 @@ pub fn draw_search(frame: &mut Frame, app: &mut App) {
         .split(size);
 
     draw_result_panel(frame, app, rows[0]);
-    if app.config.page_lyrics {
-        page_lyrics::draw_page_lyrics_overlay(frame, app, rows[0]);
-    }
 
-    player_bar::draw_collapsed_player_bar(frame, app, rows[1]);
+    Some(rows[0])
 }
 
 fn draw_result_panel(frame: &mut Frame, app: &mut App, area: Rect) {

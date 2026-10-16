@@ -36,22 +36,26 @@ pub(crate) fn paint(target: &mut Buffer, source: &Buffer, dx: i32, clip: Rect) {
 }
 
 /// Shift an already-rendered page right, revealing the unshifted background.
-pub(crate) fn reveal_from_right(target: &mut Buffer, background: &Buffer, offset: u16) {
+pub(crate) fn reveal_from_right(target: &mut Buffer, background: &Buffer, offset: u16, clip: Rect) {
     if offset == 0 || target.area.is_empty() {
         return;
     }
     let area = target.area;
+    let clip = area.intersection(clip);
     let offset = offset.min(area.width);
     let width = usize::from(area.width);
     let shift = usize::from(offset);
-    for row in target.content.chunks_exact_mut(width) {
+    let start_row = usize::from(clip.top().saturating_sub(area.top()));
+    let left = usize::from(clip.left().saturating_sub(area.left()));
+    let right = usize::from(clip.right().saturating_sub(area.left()));
+    for row in target.content.chunks_exact_mut(width).skip(start_row).take(usize::from(clip.height)) {
         // Descending destinations keep every source cell intact until it is copied.
-        for destination in (shift..width).rev() {
+        for destination in (shift.max(left)..right).rev() {
             let (source, destination_cells) = row.split_at_mut(destination);
             let cell = &source[destination - shift];
             let dest = &mut destination_cells[0];
             dest.clone_from(cell);
-            if destination + cell.symbol().width() > width {
+            if destination + cell.symbol().width() > right {
                 dest.set_char(' ');
             }
         }
@@ -60,7 +64,7 @@ pub(crate) fn reveal_from_right(target: &mut Buffer, background: &Buffer, offset
         target,
         background,
         0,
-        Rect::new(area.x, area.y, offset, area.height),
+        Rect::new(area.x, area.y, offset, area.height).intersection(clip),
     );
 }
 
@@ -106,7 +110,7 @@ mod tests {
         expected.set_string(4, 8, "gh", back_style);
         expected.set_string(6, 8, "GHIJ", front_style);
 
-        reveal_from_right(&mut target, &background, 2);
+        reveal_from_right(&mut target, &background, 2, area);
 
         assert_eq!(target, expected);
     }
@@ -120,7 +124,7 @@ mod tests {
         let mut target = Buffer::empty(area);
         target.set_string(0, 0, "A中BCD", front_style);
 
-        reveal_from_right(&mut target, &background, 4);
+        reveal_from_right(&mut target, &background, 4, area);
 
         assert_eq!(row(&target, 0), "abcdA ");
         assert_eq!(target[(5, 0)].fg, Color::Red);
@@ -134,7 +138,7 @@ mod tests {
         let mut target = Buffer::empty(area);
         target.set_string(0, 0, "A中BCD", Style::default());
 
-        reveal_from_right(&mut target, &background, 3);
+        reveal_from_right(&mut target, &background, 3, area);
 
         assert_eq!(row(&target, 0), "abcA中 ");
     }
@@ -147,7 +151,7 @@ mod tests {
         let mut target = Buffer::empty(area);
         target.set_string(0, 0, "123456", Style::default());
 
-        reveal_from_right(&mut target, &background, 2);
+        reveal_from_right(&mut target, &background, 2, area);
 
         assert_eq!(row(&target, 0), "A 1234");
     }
@@ -159,7 +163,8 @@ mod tests {
         let mut target = Buffer::empty(Rect::new(5, 7, 6, 1));
         target.set_string(5, 7, "ABCDEF", Style::default());
 
-        reveal_from_right(&mut target, &background, 2);
+        let area = target.area;
+        reveal_from_right(&mut target, &background, 2, area);
 
         assert_eq!(row(&target, 7), " aABCD");
     }
@@ -173,12 +178,31 @@ mod tests {
         foreground.set_string(4, 7, "ABCDEF", Style::default());
         let mut target = foreground.clone();
 
-        reveal_from_right(&mut target, &background, 0);
+        reveal_from_right(&mut target, &background, 0, area);
         assert_eq!(target, foreground);
         for offset in [6, 9, u16::MAX] {
             target.clone_from(&foreground);
-            reveal_from_right(&mut target, &background, offset);
+            reveal_from_right(&mut target, &background, offset, area);
             assert_eq!(target, background);
         }
+    }
+
+    #[test]
+    fn reveal_leaves_fixed_regions_untouched() {
+        let area = Rect::new(4, 7, 6, 3);
+        let mut background = Buffer::empty(area);
+        background.set_string(4, 7, "abcdef", Style::default());
+        background.set_string(4, 8, "ghijkl", Style::default());
+        background.set_string(4, 9, "xxxxxx", Style::default());
+        let mut target = Buffer::empty(area);
+        target.set_string(4, 7, "HEADER", Style::default());
+        target.set_string(4, 8, "ABCDEF", Style::default());
+        target.set_string(4, 9, "PLAYER", Style::default());
+
+        reveal_from_right(&mut target, &background, 2, Rect::new(4, 8, 6, 1));
+
+        assert_eq!(row(&target, 7), "HEADER");
+        assert_eq!(row(&target, 8), "ghABCD");
+        assert_eq!(row(&target, 9), "PLAYER");
     }
 }

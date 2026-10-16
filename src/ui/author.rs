@@ -1,6 +1,5 @@
 use crate::app::App;
 use crate::data::config::Language;
-use crate::ui::page_lyrics;
 use crate::ui::player_bar;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -9,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
-pub fn draw_author(frame: &mut Frame, app: &mut App) {
+pub fn draw_author(frame: &mut Frame, app: &mut App) -> Option<Rect> {
     app.clear_player_bar_hits();
     app.clear_content_hits();
 
@@ -25,7 +24,7 @@ pub fn draw_author(frame: &mut Frame, app: &mut App) {
             .style(Style::default().fg(app.theme.color_subtext())),
             size,
         );
-        return;
+        return None;
     }
 
     let rows = Layout::default()
@@ -59,14 +58,11 @@ pub fn draw_author(frame: &mut Frame, app: &mut App) {
     draw_author_header(frame, app, main[0]);
     draw_author_tiles(frame, app, main[1]);
 
-    if app.config.page_lyrics {
-        page_lyrics::draw_page_lyrics_overlay(frame, app, content_area);
-    }
     if app.config.show_hints {
         draw_author_hint(frame, app, hint_area);
     }
 
-    player_bar::draw_collapsed_player_bar(frame, app, rows[1]);
+    Some(rows[0])
 }
 
 fn draw_author_header(frame: &mut Frame, app: &mut App, area: Rect) {

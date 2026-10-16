@@ -140,7 +140,9 @@ impl App {
         if let Some(author) = source_author.as_mut() {
             std::mem::swap(author, &mut self.browse.author);
         }
-        let captured = snapshot::capture(terminal, |frame| crate::ui::draw_page(frame, self));
+        let captured = snapshot::capture(terminal, |frame| {
+            crate::ui::draw_page(frame, self);
+        });
         if let Some(playlist) = source_playlist.as_mut() {
             std::mem::swap(playlist, &mut self.browse.playlist);
         }
@@ -190,7 +192,7 @@ impl App {
         }
     }
 
-    pub(crate) fn render_page_transition(&mut self, frame: &mut Frame) {
+    pub(crate) fn render_page_transition(&mut self, frame: &mut Frame, content: ratatui::layout::Rect) {
         let Some(drawer) = self.page_transition.drawer.as_ref() else {
             return;
         };
@@ -201,11 +203,10 @@ impl App {
         let offset = (f32::from(frame.area().width) * drawer.offset.value()).round() as u16;
         match drawer.direction {
             Direction::Open => {
-                drawer::reveal_from_right(frame.buffer_mut(), &drawer.source, offset);
+                drawer::reveal_from_right(frame.buffer_mut(), &drawer.source, offset, content);
             }
             Direction::Close => {
-                let area = frame.area();
-                drawer::paint(frame.buffer_mut(), &drawer.source, i32::from(offset), area);
+                drawer::paint(frame.buffer_mut(), &drawer.source, i32::from(offset), content);
             }
         }
     }

@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub fn draw_home(frame: &mut Frame, app: &mut App) {
+pub fn draw_home(frame: &mut Frame, app: &mut App) -> Option<Rect> {
     app.clear_player_bar_hits();
     app.clear_content_hits();
 
@@ -27,7 +27,7 @@ pub fn draw_home(frame: &mut Frame, app: &mut App) {
             .style(Style::default().fg(app.theme.color_subtext())),
             size,
         );
-        return;
+        return None;
     }
 
     let rows = Layout::default()
@@ -73,14 +73,11 @@ pub fn draw_home(frame: &mut Frame, app: &mut App) {
     if app.config.show_hints {
         draw_home_hint(frame, app, hint_area);
     }
-    if lyrics_area.height > 0 {
-        page_lyrics::draw_page_lyrics_overlay(frame, app, content_area);
-    }
     if app.browse.home_sidebar.is_visible() {
         draw_home_sidebar(frame, app, rows[0]);
     }
 
-    player_bar::draw_collapsed_player_bar(frame, app, rows[1]);
+    Some(content_area)
 }
 
 fn draw_tiles(frame: &mut Frame, app: &mut App, area: Rect) {
