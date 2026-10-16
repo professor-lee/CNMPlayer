@@ -380,7 +380,8 @@ fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
                     );
                 }
                 drawer::paint(f.buffer_mut(), &sidebar.buffer, i32::from(dx), visible);
-                layout_out.playlist_inner = translated_clip(pl_layout.inner, i32::from(dx), visible);
+                layout_out.playlist_inner =
+                    translated_clip(pl_layout.inner, i32::from(dx), visible);
                 layout_out.playlist_list_inner =
                     translated_clip(pl_layout.list_inner, i32::from(dx), visible);
             }
