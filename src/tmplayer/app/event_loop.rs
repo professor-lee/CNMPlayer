@@ -1019,7 +1019,7 @@ async fn handle_action(
         }
         Action::SeekToFraction(r) => {
             host_bridge.seek_to_ratio(r);
-            sync_from_host_snapshot(app, host_bridge.snapshot());
+            apply_host_runtime_snapshot(app, host_bridge.runtime_snapshot());
         }
         Action::MouseClick { col, row } => {
             app.volume_drag = false;
@@ -1059,7 +1059,7 @@ async fn handle_action(
                 if let Some(ratio) = crate::tmplayer::ui::tui::input::progress_for_drag(layout, col)
                 {
                     host_bridge.seek_to_ratio(ratio);
-                    sync_from_host_snapshot(app, host_bridge.snapshot());
+                    apply_host_runtime_snapshot(app, host_bridge.runtime_snapshot());
                 } else {
                     app.progress_drag = false;
                 }
