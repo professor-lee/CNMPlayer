@@ -41,15 +41,19 @@ pub(crate) fn render_pair(
         render_static(&lines[current], future_color(theme, 0), width)
     };
 
-    if state.current.is_some() && translation_text(&lines[current], options).is_some() {
-        rows[1] = render_translation_current(
-            &lines[current],
-            position_ms,
-            state.line_progress,
-            width,
-            theme,
-            options,
-        );
+    if let Some(translation) = translation_text(&lines[current], options) {
+        rows[1] = if state.current.is_some() {
+            render_translation_current(
+                &lines[current],
+                position_ms,
+                state.line_progress,
+                width,
+                theme,
+                options,
+            )
+        } else {
+            render_translation_static(translation, future_color(theme, 0), width)
+        };
     } else if let Some(next) = lines.get(current + 1) {
         rows[1] = render_static(next, future_color(theme, 1), width);
     }
@@ -518,6 +522,42 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect();
         assert_eq!(current, "你好");
+        assert_eq!(second, "hello");
+    }
+
+    #[test]
+    fn pair_shows_translation_before_the_line_starts() {
+        let lines = vec![
+            line_with_words(),
+            LyricLine {
+                start_ms: 2_000,
+                end_ms: Some(3_000),
+                text: "下一句".into(),
+                words: Vec::new(),
+                translation: Some("next".into()),
+            },
+        ];
+        let rows = render_pair(
+            &lines,
+            0,
+            30,
+            &theme(),
+            LyricOptions {
+                word_lyrics: true,
+                translation: true,
+            },
+        );
+        let first: String = rows[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let second: String = rows[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(first, "你好");
         assert_eq!(second, "hello");
     }
 
