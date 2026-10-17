@@ -131,6 +131,7 @@ impl App {
             return true;
         }
         if self.config.page_lyrics
+            && !matches!(self.page, Page::Login | Page::Loading)
             && self.playback.playback_state == PlaybackRuntimeState::Playing
             && self
                 .playback
