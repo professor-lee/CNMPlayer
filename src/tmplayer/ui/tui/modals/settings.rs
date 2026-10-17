@@ -61,7 +61,7 @@ pub(in crate::tmplayer::ui::tui) fn render_settings_modal(
         ),
         format!("{}...", lang_text(app, "播放设置", "Playback Settings")),
         format!("{}...", lang_text(app, "按键绑定", "Keybinds")),
-        format!("{}...", lang_text(app, "歌词浮窗", "Lyrics Overlay")),
+        format!("{}...", lang_text(app, "歌词设置", "Lyrics Settings")),
         format!(
             "{}: {}",
             lang_text(app, "显示提示", "Show Hints"),

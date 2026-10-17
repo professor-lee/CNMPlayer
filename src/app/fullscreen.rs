@@ -110,18 +110,18 @@ impl App {
                 .map(|v| v.len())
                 .unwrap_or(0)
                 .hash(&mut hasher);
-            track
-                .lyrics
-                .as_ref()
-                .map(|v| v.len())
-                .unwrap_or(0)
-                .hash(&mut hasher);
-            track
-                .lyrics
-                .as_ref()
-                .and_then(|v| v.last().map(|line| line.start_ms))
-                .unwrap_or(0)
-                .hash(&mut hasher);
+            match track.lyrics.as_ref() {
+                Some(lines) => {
+                    lines.len().hash(&mut hasher);
+                    for line in lines {
+                        line.start_ms.hash(&mut hasher);
+                        line.text.len().hash(&mut hasher);
+                        line.words.len().hash(&mut hasher);
+                        line.translation.as_ref().map(String::len).hash(&mut hasher);
+                    }
+                }
+                None => 0usize.hash(&mut hasher),
+            }
         }
 
         hasher.finish()

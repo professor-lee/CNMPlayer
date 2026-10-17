@@ -1,6 +1,7 @@
 use crate::app::sidebar::SIDEBAR_ANIM_DURATION;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
+use crate::lyrics::LyricLine;
 use crate::render::motion::{Curve, Transition};
 use crate::tmplayer::app::scope::ScopeGain;
 use crate::tmplayer::audio::spectrum::Spectrum;
@@ -58,12 +59,6 @@ impl EqSettings {
         }
         out
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct LyricLine {
-    pub start_ms: u64,
-    pub text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +273,10 @@ pub struct AppState {
     playlist_slide_motion: Transition,
 
     pub last_frame: Instant,
+    /// Wall-clock anchor for the last host position snapshot. Between the
+    /// host's ~20 Hz syncs the lyric layer extrapolates playback time so word
+    /// animation still follows the global frame rate.
+    pub position_anchor_at: Instant,
 }
 
 #[derive(Debug)]
@@ -373,6 +372,7 @@ impl AppState {
             playlist_slide_from_x: 0,
             playlist_slide_motion: Transition::new(0.0),
             last_frame: Instant::now(),
+            position_anchor_at: Instant::now(),
         }
     }
 
@@ -417,6 +417,30 @@ impl AppState {
             bytes: bytes.clone(),
             placeholder,
         });
+    }
+
+    /// Extrapolate the host's last position snapshot to `now`, then quantize
+    /// it to the global frame grid / lyric divisor.
+    pub fn lyric_position_ms(&self, now: Instant) -> u64 {
+        let mut position = self.player.position;
+        if self.player.playback == PlaybackState::Playing && !self.player.seeking {
+            position += now.saturating_duration_since(self.position_anchor_at);
+        }
+        if self.player.track.duration > Duration::ZERO {
+            position = position.min(self.player.track.duration);
+        }
+        crate::lyrics::quantized_position_ms(
+            position.as_millis() as u64,
+            self.config.ui_fps,
+            self.config.lyric_frame_divisor,
+        )
+    }
+
+    pub fn lyric_options(&self) -> crate::ui::lyric_view::LyricOptions {
+        crate::ui::lyric_view::LyricOptions {
+            word_lyrics: self.config.word_lyrics,
+            translation: self.config.lyric_translation,
+        }
     }
 
     pub fn tick(&mut self, now: Instant) {
@@ -514,6 +538,18 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
+        if self.player.playback == PlaybackState::Playing
+            && self.config.visualize != VisualizeMode::Hidden
+            && self
+                .player
+                .track
+                .lyrics
+                .as_ref()
+                .is_some_and(|lines| !lines.is_empty())
+        {
+            return true;
+        }
+
         if self.player.playback == PlaybackState::Playing
             && !matches!(
                 self.config.visualize,

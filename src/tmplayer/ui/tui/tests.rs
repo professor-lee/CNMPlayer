@@ -1265,7 +1265,13 @@ fn lyrics_modal_hit_rows_sit_on_the_drawn_rows() {
         render_lyrics_settings_modal(f, f.area(), app, rows)
     });
 
-    let expected = ["歌词浮窗:", "歌词浮窗拖动:", "歌词浮窗边缘吸附:"];
+    let expected = [
+        "歌词浮窗:",
+        "歌词浮窗拖动:",
+        "歌词浮窗边缘吸附:",
+        "逐字歌词:",
+        "歌词翻译:",
+    ];
     assert_eq!(rows.len(), expected.len());
 
     for (idx, label) in expected.iter().enumerate() {

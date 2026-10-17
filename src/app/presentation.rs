@@ -130,6 +130,16 @@ impl App {
         if self.page_transition_active() {
             return true;
         }
+        if self.config.page_lyrics
+            && self.playback.playback_state == PlaybackRuntimeState::Playing
+            && self
+                .playback
+                .now_playing
+                .as_ref()
+                .is_some_and(|track| track.lyrics.as_ref().is_some_and(|lines| !lines.is_empty()))
+        {
+            return true;
+        }
         if self.mini_spectrum_enabled()
             && self.playback.now_playing.is_some()
             && (self.playback.playback_state == PlaybackRuntimeState::Playing

@@ -71,6 +71,12 @@ pub struct Config {
     /// 歌词浮窗左上角在内容区内的归一化位置（0..=1）。
     pub page_lyrics_pos_x: f32,
     pub page_lyrics_pos_y: f32,
+    /// 有 YRC 数据时使用逐字着色。
+    pub word_lyrics: bool,
+    /// 有翻译时显示翻译行。
+    pub lyric_translation: bool,
+    /// 歌词刷新间隔 = 全局帧间隔 × 该倍率（1 = 跟随 `ui_fps`）。
+    pub lyric_frame_divisor: u32,
     pub audio_quality: AudioQuality,
     /// 下载音频档位，默认值由内嵌配置模板提供。
     pub download_audio_quality: AudioQuality,
@@ -364,6 +370,7 @@ impl Config {
 
         cfg.page_lyrics_pos_x = cfg.page_lyrics_pos_x.clamp(0.0, 1.0);
         cfg.page_lyrics_pos_y = cfg.page_lyrics_pos_y.clamp(0.0, 1.0);
+        cfg.lyric_frame_divisor = cfg.lyric_frame_divisor.clamp(1, 8);
 
         let mut migrated_legacy_sidebar = false;
         if is_legacy_sidebar_default(&cfg.keybind_sidebar) {

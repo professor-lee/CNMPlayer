@@ -26,7 +26,7 @@ const SETTINGS_ROOT_ITEMS: usize = 13;
 
 const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 
-const SETTINGS_LYRICS_ITEMS: usize = 3;
+const SETTINGS_LYRICS_ITEMS: usize = 5;
 
 pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 
@@ -215,7 +215,7 @@ impl App {
         ));
     }
 
-    /// “歌词浮窗”子页：三行开关。吸附行只在拖动开启时可改（关闭时灰置）。
+    /// “歌词”子页：浮窗开关、拖动/吸附，以及逐字与翻译显示。
     fn apply_settings_lyrics_delta(&mut self, delta: i32) {
         if delta == 0 {
             return;
@@ -238,13 +238,21 @@ impl App {
                 self.config.page_lyrics_snap = !self.config.page_lyrics_snap;
                 self.persist_config();
             }
+            3 => {
+                self.config.word_lyrics = !self.config.word_lyrics;
+                self.persist_config();
+            }
+            4 => {
+                self.config.lyric_translation = !self.config.lyric_translation;
+                self.persist_config();
+            }
             _ => {}
         }
     }
 
     pub(super) fn handle_settings_lyrics_key(&mut self, key: KeyEvent) {
         match key.code {
-            // 三行都是开关（值行）：与播放设置页同构，Left/Right 都用来改值，
+            // 五行都是开关（值行）：与播放设置页同构，Left/Right 都用来改值，
             // 返回上一级只走 Esc。
             KeyCode::Esc => self.overlay = Some(Overlay::Settings),
             KeyCode::Char('t') | KeyCode::Char('T') => {

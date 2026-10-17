@@ -6,6 +6,7 @@ pub mod author;
 pub mod home;
 pub mod loading;
 pub mod login;
+pub mod lyric_view;
 pub mod page_lyrics;
 pub mod player_bar;
 pub mod playlist;

@@ -30,7 +30,7 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
         Some(Overlay::Settings) => l(app, " 设置 ", " Settings "),
         Some(Overlay::SettingsPlayback) => l(app, " 播放设置 ", " Playback Settings "),
         Some(Overlay::SettingsKeybinds) => l(app, " 按键绑定 ", " Keybinds "),
-        Some(Overlay::SettingsLyrics) => l(app, " 歌词浮窗 ", " Lyrics Overlay "),
+        Some(Overlay::SettingsLyrics) => l(app, " 歌词 ", " Lyrics "),
         Some(Overlay::SettingsDownload) => l(app, " 下载设置 ", " Download Settings "),
         Some(Overlay::SettingsAbout) => " about ",
         _ => l(app, " 设置 ", " Settings "),
@@ -96,7 +96,7 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         ),
         format!("{}...", l(app, "播放设置", "Playback Settings")),
         format!("{}...", l(app, "按键绑定", "Keybinds")),
-        format!("{}...", l(app, "歌词浮窗", "Lyrics Overlay")),
+        format!("{}...", l(app, "歌词设置", "Lyrics Settings")),
         format!(
             "{}: {}",
             l(app, "显示提示", "Show Hints"),
@@ -316,6 +316,16 @@ fn draw_lyrics_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             "{}: {}",
             l(app, "歌词浮窗边缘吸附", "Lyrics Overlay Edge Snap"),
             on_off(app, app.config.page_lyrics_snap)
+        ),
+        format!(
+            "{}: {}",
+            l(app, "逐字歌词", "Word-by-word Lyrics"),
+            on_off(app, app.config.word_lyrics)
+        ),
+        format!(
+            "{}: {}",
+            l(app, "歌词翻译", "Lyrics Translation"),
+            on_off(app, app.config.lyric_translation)
         ),
     ];
 

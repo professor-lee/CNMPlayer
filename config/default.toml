@@ -17,6 +17,12 @@ page_lyrics_drag = true
 page_lyrics_snap = true
 page_lyrics_pos_x = 1.0
 page_lyrics_pos_y = 1.0
+# 有逐字歌词（YRC）时按词着色。
+word_lyrics = true
+# 有翻译歌词时显示翻译行。
+lyric_translation = false
+# 歌词刷新间隔 = 全局帧间隔 × 该倍率（1 = 跟随 ui_fps）。
+lyric_frame_divisor = 2
 audio_quality = "exhigh"
 # 下载音质（可选值与 audio_quality 一致，按 VIP 权限放开）。
 download_audio_quality = "exhigh"

@@ -1024,14 +1024,25 @@ async fn fetch_song_metadata(api: &ApiState, request: &DownloadRequest) -> SongM
 /// 歌词：拿不到（纯音乐）就返回 `None`，不写空标签。
 async fn fetch_lyrics(api: &ApiState, song_id: &str) -> Option<String> {
     let mut api = api.clone();
+    let read_lrc = |response: ncm_api::request::ApiResponse| {
+        response
+            .body
+            .pointer("/lrc/lyric")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+
+    if let Ok(response) = api.lyric_new(song_id).await {
+        let lyric = read_lrc(response);
+        if !lyric.is_empty() {
+            return Some(lyric);
+        }
+    }
+
     let response = api.lyric(song_id).await.ok()?;
-    let lyric = response
-        .body
-        .pointer("/lrc/lyric")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let lyric = read_lrc(response);
     if lyric.is_empty() { None } else { Some(lyric) }
 }
 
