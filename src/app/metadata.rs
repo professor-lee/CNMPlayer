@@ -310,6 +310,12 @@ impl App {
         if self.playback.playback_queue_cover.is_some() || self.cover_fetch_inflight_url.is_some() {
             return;
         }
+        let now = Instant::now();
+        if self.queue_cover_fetch_last_attempt_at.is_some_and(|last| {
+            now.duration_since(last) < Duration::from_millis(COVER_FETCH_RETRY_MS)
+        }) {
+            return;
+        }
         let generation = self.cover_fetch_generation.wrapping_add(1);
         if self
             .cover_fetch_tx
@@ -322,7 +328,7 @@ impl App {
         {
             self.cover_fetch_generation = generation;
             self.cover_fetch_inflight_url = Some(url);
-            self.cover_fetch_last_attempt_at = Some(Instant::now());
+            self.queue_cover_fetch_last_attempt_at = Some(now);
         }
     }
 
@@ -333,9 +339,6 @@ impl App {
             .as_ref()
             .map(|now| now.cover.is_none() && now.cover_url.is_some())
             .unwrap_or(false);
-        let needs_queue = self.playback.playback_queue_cover_url.is_some()
-            && self.playback.playback_queue_cover.is_none();
-        let _ = needs_queue;
         while let Ok(result) = self.cover_fetch_rx.try_recv() {
             self.apply_cover_fetch_result(result);
         }
