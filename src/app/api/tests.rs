@@ -227,6 +227,38 @@ fn display_cover_url_requests_one_target_size_and_keeps_other_params() {
     );
 }
 
+#[compio::test]
+async fn original_cover_download_drops_the_display_size_param() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let png = tiny_png();
+    let expected = png.clone();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0; 2048];
+        let read = socket.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(
+            request.starts_with("GET /cover "),
+            "size param leaked into original request: {request}"
+        );
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        )
+        .unwrap();
+        socket.write_all(&png).unwrap();
+    });
+    let api = ApiState::new(None, cyper::Client::builder().no_proxy().build().unwrap()).unwrap();
+    let bytes = api
+        .fetch_original_cover_bytes(&format!("http://{address}/cover?param=100y100"))
+        .await
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(bytes, expected);
+}
+
 #[test]
 fn download_cover_url_strips_size_param_but_keeps_everything_else() {
     use super::super::api::cover_url_for_download;

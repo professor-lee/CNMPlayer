@@ -58,17 +58,7 @@ pub(super) fn validate_cached_cover(bytes: Vec<u8>) -> Option<Vec<u8>> {
     if bytes.is_empty() {
         return None;
     }
-    let format = image::guess_format(&bytes).ok()?;
-    match format {
-        image::ImageFormat::Png
-            if !bytes.ends_with(&[0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]) =>
-        {
-            return None;
-        }
-        image::ImageFormat::Jpeg if !bytes.ends_with(&[0xff, 0xd9]) => return None,
-        image::ImageFormat::Png | image::ImageFormat::Jpeg => {}
-        _ => return None,
-    }
+    super::api::validate_cover_bytes(&bytes).ok()?;
     image::load_from_memory(&bytes).ok()?;
     Some(bytes)
 }

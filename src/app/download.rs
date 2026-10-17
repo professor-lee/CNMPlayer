@@ -3,7 +3,6 @@
 //! 单线程 compio runtime：所有阻塞 IO 都经 `spawn_blocking`，网络与文件写全程 await。
 
 use super::api::ApiState;
-use super::api::cover_url_for_download;
 use crate::data::config::AudioQuality;
 use crate::data::icons::UiIcons;
 use crate::launch;
@@ -928,10 +927,7 @@ async fn write_metadata(
         let lyrics = fetch_lyrics(api, &request.song_id).await;
         let cover = match metadata.album_cover_url.as_deref() {
             // Embed the original artwork; the playback path uses a 500px URL.
-            Some(url) => api
-                .fetch_cover_bytes(&cover_url_for_download(url))
-                .await
-                .ok(),
+            Some(url) => api.fetch_original_cover_bytes(url).await.ok(),
             None => None,
         };
         (metadata, lyrics, cover)

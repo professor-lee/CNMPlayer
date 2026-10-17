@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const MAX_COVER_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_ORIGINAL_COVER_BYTES: usize = 20 * 1024 * 1024;
 const COVER_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_COVER_VALIDATIONS: usize = 2;
 const COVER_SIZE_QUERY_KEY: &str = "param";
@@ -79,6 +80,26 @@ fn query_pairs_without_key(query: &str, key: &str) -> Vec<String> {
         .filter(|pair| pair.split('=').next() != Some(key))
         .map(str::to_string)
         .collect()
+}
+
+/// Decoders can recover incomplete images. A persisted or embedded cover must
+/// at least carry the format's terminal marker; full decoding is optional for
+/// byte-only paths that embed the original.
+pub(super) fn validate_cover_bytes(bytes: &[u8]) -> Result<()> {
+    match image::guess_format(bytes)? {
+        image::ImageFormat::Png => {
+            if !bytes.ends_with(&[0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]) {
+                bail!("PNG cover is missing its terminal IEND chunk");
+            }
+        }
+        image::ImageFormat::Jpeg => {
+            if !bytes.ends_with(&[0xff, 0xd9]) {
+                bail!("JPEG cover is missing its end-of-image marker");
+            }
+        }
+        _ => bail!("unsupported cover image format"),
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -546,7 +567,25 @@ impl ApiState {
         Ok(response)
     }
 
-    /// Fetch a complete cover within one 30s network budget, then await bounded validation.
+    /// Download path: fetch the original artwork. The bytes are embedded into
+    /// the tag as-is, so skip the full decode and only prove the container is
+    /// complete.
+    pub(super) async fn fetch_original_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let url = cover_url_for_download(url);
+        Ok(self
+            .fetch_cover_with_timeout(
+                &url,
+                COVER_NETWORK_TIMEOUT,
+                false,
+                false,
+                MAX_ORIGINAL_COVER_BYTES,
+            )
+            .await?
+            .0)
+    }
+
+    /// Raw-bytes helper retained for cover transport tests.
+    #[cfg(test)]
     pub(super) async fn fetch_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
         self.fetch_cover_bytes_with_timeout(url, COVER_NETWORK_TIMEOUT)
             .await
@@ -564,10 +603,16 @@ impl ApiState {
         url: &str,
     ) -> Result<std::sync::Arc<image::DynamicImage>> {
         let url = cover_url_for_display(url);
-        self.fetch_cover_with_timeout(&url, COVER_NETWORK_TIMEOUT, true)
-            .await?
-            .1
-            .ok_or_else(|| anyhow!("cover image URL was empty"))
+        self.fetch_cover_with_timeout(
+            &url,
+            COVER_NETWORK_TIMEOUT,
+            true,
+            true,
+            MAX_COVER_IMAGE_BYTES,
+        )
+        .await?
+        .1
+        .ok_or_else(|| anyhow!("cover image URL was empty"))
     }
 
     async fn fetch_cover_bytes_with_timeout(
@@ -575,7 +620,10 @@ impl ApiState {
         url: &str,
         timeout: Duration,
     ) -> Result<Vec<u8>> {
-        Ok(self.fetch_cover_with_timeout(url, timeout, false).await?.0)
+        Ok(self
+            .fetch_cover_with_timeout(url, timeout, false, true, MAX_COVER_IMAGE_BYTES)
+            .await?
+            .0)
     }
 
     async fn fetch_cover_with_timeout(
@@ -583,6 +631,8 @@ impl ApiState {
         url: &str,
         timeout: Duration,
         keep_image: bool,
+        decode_image: bool,
+        max_bytes: usize,
     ) -> Result<(Vec<u8>, Option<std::sync::Arc<image::DynamicImage>>)> {
         let url = url.trim();
         if url.is_empty() {
@@ -595,23 +645,17 @@ impl ApiState {
             let response = error_for_status(response)?;
             let expected_len = response.content_length();
             if let Some(content_len) = expected_len
-                && content_len > MAX_COVER_IMAGE_BYTES as u64
+                && content_len > max_bytes as u64
             {
-                return Err(anyhow!(
-                    "cover image exceeds {} byte limit",
-                    MAX_COVER_IMAGE_BYTES
-                ));
+                return Err(anyhow!("cover image exceeds {max_bytes} byte limit"));
             }
 
             let mut bytes = Vec::with_capacity(expected_len.unwrap_or(64 * 1024) as usize);
             let mut stream = response.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.with_context(|| format!("download cover image failed: {url}"))?;
-                if bytes.len().saturating_add(chunk.len()) > MAX_COVER_IMAGE_BYTES {
-                    return Err(anyhow!(
-                        "cover image exceeds {} byte limit",
-                        MAX_COVER_IMAGE_BYTES
-                    ));
+                if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                    return Err(anyhow!("cover image exceeds {max_bytes} byte limit"));
                 }
                 bytes.extend_from_slice(&chunk);
             }
@@ -633,26 +677,17 @@ impl ApiState {
         .map_err(|_| ncm_api::NcmError::Timeout { timeout })
         .with_context(|| format!("download cover image timed out: {url}"))??;
 
+        if !decode_image {
+            validate_cover_bytes(&bytes).with_context(|| format!("invalid cover image: {url}"))?;
+            return Ok((bytes, None));
+        }
+
         // Blocking decoders cannot be cancelled. The closure, not its caller,
         // owns admission until it finishes, even if the awaiting task is dropped.
         let permit = COVER_VALIDATION_GATE.acquire(timeout).await?;
         let validated = compio::runtime::spawn_blocking(move || -> Result<_> {
             let _permit = permit;
-            // Decoders can recover incomplete images. A cache entry must carry
-            // the format's terminal marker as well as successfully decode.
-            match image::guess_format(&bytes)? {
-                image::ImageFormat::Png => {
-                    if !bytes.ends_with(&[0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]) {
-                        bail!("PNG cover is missing its terminal IEND chunk");
-                    }
-                }
-                image::ImageFormat::Jpeg => {
-                    if !bytes.ends_with(&[0xff, 0xd9]) {
-                        bail!("JPEG cover is missing its end-of-image marker");
-                    }
-                }
-                _ => bail!("unsupported cover image format"),
-            }
+            validate_cover_bytes(&bytes)?;
             let decoded = load_from_memory(&bytes)?;
             let image = keep_image.then(|| std::sync::Arc::new(decoded.thumbnail(500, 500)));
             Ok((bytes, image))
