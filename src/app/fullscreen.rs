@@ -57,6 +57,7 @@ impl App {
         self.tick_like_sync();
         // 下载结果与图标状态同理（全屏页也能发起下载）。
         self.tick_download();
+        super::trim_allocator_periodically();
     }
 
     pub(crate) fn fullscreen_playback_snapshot(&self) -> FullscreenPlaybackSnapshot {
