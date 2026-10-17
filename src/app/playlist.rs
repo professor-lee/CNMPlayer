@@ -9,6 +9,7 @@ use super::likes::fetch_liked_refresh;
 use super::next_list_generation;
 use super::owned_task::SharedTask;
 use super::owned_task::peek_shared;
+use super::owned_task::spawn_shared;
 use super::playback_controller::PlaybackRuntimeState;
 use super::playback_controller::PlaybackTrack;
 use super::playlist_pagination;
@@ -640,7 +641,9 @@ impl App {
         }
     }
 
-    pub(super) async fn open_focused_playlist_album(&mut self) {
+    /// 歌单页打开专辑（作者专辑区等）：立即落占位专辑页 + 派发后台拉取，
+    /// 结果由 `tick_playlist_fetch` 搬进来（宿主循环在这期间照常重绘、照常响应输入）。
+    pub(super) fn open_focused_playlist_album(&mut self) {
         let (album_id, title, fallback_cover_url, track_kind) = {
             let Some(track) = self
                 .browse
@@ -678,27 +681,30 @@ impl App {
             None
         };
 
-        match self.load_album_detail(&album_id).await {
-            Ok(()) => {
-                self.playlist_section_return_snapshot = section_snapshot;
-                if let (None, Some(url)) = (&self.browse.playlist.cover.image, fallback_cover_url) {
-                    self.browse.playlist.cover.load(self.api.clone(), url)
-                }
-                self.set_runtime_status(format!(
-                    "{} {}",
-                    self.lang_text("已打开专辑", "Opened album"),
-                    title
-                ));
-                self.open_browse_page(Page::Playlist);
-            }
-            Err(err) => {
-                self.set_runtime_status(format!(
-                    "{}: {}",
-                    self.lang_text("打开专辑失败", "Failed to open album"),
-                    err
-                ));
-            }
-        }
+        self.browse.playlist.cancel_pagination();
+        // 同一页换来源：先保留当前页给切换动画当源快照；Esc 返回用的快照另存一份
+        // （有它时按 Esc 回到作者专辑区，而不是回首页）。
+        self.preserve_browse_page_for_transition(Page::Playlist);
+        self.browse.playlist = PlaylistState::placeholder(
+            title,
+            self.lang_text("正在加载专辑…", "Loading album…")
+                .to_string(),
+        );
+        self.playlist_section_return_snapshot = section_snapshot;
+
+        let fut = fetch_album_page(
+            self.api.clone(),
+            self.config.language,
+            album_id,
+            fallback_cover_url,
+        );
+        let fut: PlaylistFetchTask = Box::pin(async move { Some(fut.await) });
+        self.downloads.page_kind = PlaylistPageKind::Album;
+        self.browse.playlist_fetch = Some(PlaylistFetchSlot {
+            kind: PlaylistPageKind::Album,
+            future: spawn_shared(fut, self.wake.clone()),
+        });
+        self.open_browse_page(Page::Playlist);
     }
 
     pub(super) async fn handle_playlist_key(&mut self, key: KeyEvent) {
@@ -780,18 +786,5 @@ impl App {
             }
             self.apply_liked_song_ids(liked.ids);
         }
-    }
-
-    async fn load_album_detail(&mut self, album_id: &str) -> Result<()> {
-        let fetch = fetch_album_page(
-            self.api.clone(),
-            self.config.language,
-            album_id.to_string(),
-            None,
-        )
-        .await
-        .map_err(anyhow::Error::msg)?;
-        self.apply_playlist_fetch(fetch);
-        Ok(())
     }
 }

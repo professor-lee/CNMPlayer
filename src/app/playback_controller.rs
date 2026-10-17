@@ -619,7 +619,7 @@ impl App {
                 .await;
             }
             PlaylistTrackKind::Album | PlaylistTrackKind::Ep | PlaylistTrackKind::Single => {
-                self.open_focused_playlist_album().await;
+                self.open_focused_playlist_album();
             }
         }
     }
