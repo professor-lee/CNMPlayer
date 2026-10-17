@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Copy)]
@@ -18,7 +19,7 @@ struct CoverRef<'a> {
     title: &'a str,
     artist: &'a str,
     album: &'a str,
-    cover: Option<&'a [u8]>,
+    cover: Option<&'a Arc<[u8]>>,
     cover_hash: Option<u64>,
 }
 
@@ -28,7 +29,7 @@ impl<'a> From<&'a TrackMetadata> for CoverRef<'a> {
             title: &track.title,
             artist: &track.artist,
             album: &track.album,
-            cover: track.cover.as_deref(),
+            cover: track.cover.as_ref(),
             cover_hash: track.cover_hash,
         }
     }
@@ -40,7 +41,7 @@ impl<'a> From<&'a CoverSnapshot> for CoverRef<'a> {
             title: &snapshot.title,
             artist: &snapshot.artist,
             album: &snapshot.album,
-            cover: snapshot.cover.as_deref(),
+            cover: snapshot.cover.as_ref(),
             cover_hash: snapshot.cover_hash,
         }
     }
@@ -108,11 +109,11 @@ pub fn artist_row_hits(meta: Rect, artist: &str) -> Vec<(usize, Rect)> {
     }
 
     let budget = meta.width as usize;
-    let separator_w = crate::app::ARTIST_SEPARATOR.width();
+    let separator_w = crate::app::tracks::ARTIST_SEPARATOR.width();
     let mut hits = Vec::new();
     let mut offset = 0usize;
 
-    for (index, name) in crate::app::artist_name_segments(artist)
+    for (index, name) in crate::app::tracks::artist_name_segments(artist)
         .into_iter()
         .enumerate()
     {
@@ -753,55 +754,4 @@ fn compose_left_right_line(left: &str, right: &str, width: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{cover_content_rect, layout};
-    use ratatui::layout::{Constraint, Layout, Rect};
-
-    #[test]
-    fn cover_image_stays_square_in_full_width_and_two_panel_layouts() {
-        for (width, height) in [(80, 24), (120, 24), (120, 40), (200, 50), (51, 13)] {
-            let window = Rect::new(7, 5, width, height);
-            let left = Layout::horizontal([Constraint::Percentage(33), Constraint::Percentage(67)])
-                .split(window)[0];
-            for panel in [left, window] {
-                let info = layout(panel, width);
-                let image = cover_content_rect(info.cover);
-                if info.cover.is_empty() {
-                    assert!(image.is_empty());
-                    continue;
-                }
-                assert_eq!(
-                    image.width,
-                    image.height * 2,
-                    "image={image:?}, panel={panel:?}"
-                );
-                assert_eq!(info.cover.width, image.width + 2);
-                assert_eq!(info.cover.height, image.height + 2);
-                assert_eq!(image.x, info.cover.x + 1);
-                assert_eq!(image.y, info.cover.y + 1);
-                assert_eq!(info.cover.intersection(info.inner), info.cover);
-                let left_gap = info.cover.left() - info.inner.left();
-                let right_gap = info.inner.right() - info.cover.right();
-                assert!(left_gap.abs_diff(right_gap) <= 1);
-                assert!(info.meta.top() >= info.cover.bottom());
-            }
-        }
-    }
-
-    #[test]
-    fn small_cover_space_never_degrades_to_a_non_square_image() {
-        for width in 0..24 {
-            for height in 0..20 {
-                let info = layout(Rect::new(7, 5, width, height), width);
-                let image = cover_content_rect(info.cover);
-                if info.cover.is_empty() {
-                    assert_eq!((info.cover.width, info.cover.height), (0, 0));
-                } else {
-                    assert!(image.height > 0);
-                    assert_eq!(image.width, image.height * 2);
-                    assert_eq!(info.cover.intersection(info.inner), info.cover);
-                }
-            }
-        }
-    }
-}
+mod tests;

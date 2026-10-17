@@ -1,4 +1,4 @@
-use crate::app::SIDEBAR_ANIM_DURATION;
+use crate::app::sidebar::SIDEBAR_ANIM_DURATION;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
 use crate::render::motion::{Curve, Transition};
@@ -72,7 +72,7 @@ pub struct TrackMetadata {
     pub artist: String,
     pub album: String,
     pub duration: Duration,
-    pub cover: Option<Vec<u8>>,
+    pub cover: Option<Arc<[u8]>>,
     pub cover_hash: Option<u64>,
     pub lyrics: Option<Vec<LyricLine>>,
 }
@@ -82,7 +82,7 @@ pub struct CoverSnapshot {
     pub title: String,
     pub artist: String,
     pub album: String,
-    pub cover: Option<Vec<u8>>,
+    pub cover: Option<Arc<[u8]>>,
     pub cover_hash: Option<u64>,
 }
 
@@ -238,7 +238,7 @@ pub struct AppState {
     /// 「下载设置」页的选中行 / 待确认态 / 路径行编辑状态。
     pub download_settings_selected: usize,
     pub download_reset_armed: bool,
-    pub download_path_edit: Option<crate::app::DownloadPathEdit>,
+    pub download_path_edit: Option<crate::app::settings_controller::DownloadPathEdit>,
     /// 解析后的下载目录（`None` = 不可用，设置页除路径行外全部灰置）。
     pub download_root: Option<PathBuf>,
 
@@ -246,7 +246,7 @@ pub struct AppState {
     pub eq_selected: usize,
 
     // Host-provided playlist cover shown in the playlist overlay.
-    pub playlist_cover: Option<Vec<u8>>,
+    pub playlist_cover: Option<Arc<[u8]>>,
     pub playlist_cover_hash: Option<u64>,
 
     pub cover_anim: Option<CoverAnim>,
@@ -268,6 +268,8 @@ pub struct AppState {
     pub playlist_list_rows: usize,
     /// 正在按住拖动全屏页音量条。
     pub volume_drag: bool,
+    /// 正在按住拖动全屏页进度条，与音量拖动互斥。
+    pub progress_drag: bool,
 
     // Legacy coordinates remain for hit-test/layout compatibility; motion owns the curve.
     pub playlist_slide_x: i16,
@@ -281,7 +283,7 @@ pub struct AppState {
 #[derive(Debug)]
 struct CoverRenderRequest {
     key: CoverKey,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     placeholder: char,
 }
 
@@ -365,6 +367,7 @@ impl AppState {
             playlist_list_scroll: 0,
             playlist_list_rows: 0,
             volume_drag: false,
+            progress_drag: false,
             playlist_slide_x: 0,
             playlist_slide_target_x: 0,
             playlist_slide_from_x: 0,
@@ -401,7 +404,7 @@ impl AppState {
             crate::app::download::resolve_download_root(self.config.download_path.as_deref());
     }
 
-    pub fn queue_cover_ascii_render(&self, key: CoverKey, bytes: &[u8], placeholder: char) {
+    pub fn queue_cover_ascii_render(&self, key: CoverKey, bytes: &Arc<[u8]>, placeholder: char) {
         if self.cover_cache.borrow().contains(key) {
             return;
         }
@@ -411,7 +414,7 @@ impl AppState {
         self.cover_render_inflight.borrow_mut().insert(key);
         let _ = self.cover_render_tx.send(CoverRenderRequest {
             key,
-            bytes: bytes.to_vec(),
+            bytes: bytes.clone(),
             placeholder,
         });
     }
@@ -600,9 +603,9 @@ impl AppState {
         if self.overlay == Overlay::HelpModal {
             self.close_overlay();
         } else {
-            self.help_keybind_selected = self
-                .help_keybind_selected
-                .min(crate::tmplayer::ui::tui::help_item_count(self).saturating_sub(1));
+            self.help_keybind_selected = self.help_keybind_selected.min(
+                crate::tmplayer::ui::tui::modals::help::help_item_count(self).saturating_sub(1),
+            );
             self.help_keybind_scroll = 0;
             self.overlay = Overlay::HelpModal;
         }
@@ -614,50 +617,4 @@ impl AppState {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn settings_close_releases_overlay_immediately() {
-        let mut app = AppState::new(
-            Config::default(),
-            crate::ui::theme::Theme::default(),
-            Language::En,
-        );
-        for overlay in [
-            Overlay::SettingsModal,
-            Overlay::BarSettingsModal,
-            Overlay::LyricsSettingsModal,
-            Overlay::DownloadSettingsModal,
-            Overlay::DownloadPathEditModal,
-            Overlay::HelpModal,
-            Overlay::AboutModal,
-            Overlay::EqModal,
-        ] {
-            app.overlay = overlay;
-            app.close_overlay();
-            assert_eq!(
-                app.overlay,
-                Overlay::None,
-                "{overlay:?} must close without a tick"
-            );
-        }
-    }
-
-    #[test]
-    fn help_toggle_closes_the_whole_modal_instead_of_opening_settings() {
-        let mut app = AppState::new(
-            Config::default(),
-            crate::ui::theme::Theme::default(),
-            Language::En,
-        );
-        for parent in [Overlay::None, Overlay::SettingsModal] {
-            app.overlay = parent;
-            app.toggle_help_modal();
-            assert_eq!(app.overlay, Overlay::HelpModal);
-
-            app.toggle_help_modal();
-            assert_eq!(app.overlay, Overlay::None);
-        }
-    }
-}
+mod tests;

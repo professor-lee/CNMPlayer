@@ -1,0 +1,61 @@
+use futures::FutureExt;
+use std::future::Future;
+use std::pin::Pin;
+
+impl<T> super::super::owned_task::SharedTask<T> {
+    pub(in crate::app) fn unstarted(future: Pin<Box<dyn Future<Output = Option<T>>>>) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            output: future.shared(),
+            _runner: None,
+        }
+    }
+}
+
+use super::super::owned_task::spawn_shared;
+use crate::render::wake::WakeSignal;
+use futures::channel::oneshot;
+use std::cell::Cell;
+use std::rc::Rc;
+
+struct Released(Rc<Cell<usize>>);
+impl Drop for Released {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+#[compio::test]
+async fn last_owner_cancels_pending_work_but_live_clone_keeps_it_alive() {
+    let released = Rc::new(Cell::new(0));
+    let (started_tx, started_rx) = oneshot::channel();
+    let resource = Released(released.clone());
+    let task = spawn_shared(
+        Box::pin(async move {
+            let _resource = resource;
+            let _ = started_tx.send(());
+            futures::future::pending::<Option<usize>>().await
+        }),
+        WakeSignal::default(),
+    );
+    let clone = task.clone();
+    started_rx.await.unwrap();
+    drop(task);
+    compio::time::sleep(std::time::Duration::from_millis(1)).await;
+    assert_eq!(released.get(), 0);
+    drop(clone);
+    compio::time::sleep(std::time::Duration::from_millis(1)).await;
+    assert_eq!(released.get(), 1);
+}
+
+#[compio::test]
+async fn completed_output_remains_available_to_each_owner() {
+    let task = spawn_shared(Box::pin(async { Some(42) }), WakeSignal::default());
+    let clone = task.clone();
+    compio::time::sleep(std::time::Duration::from_millis(1)).await;
+    assert_eq!(task.peek(), Some(&Some(42)));
+    drop(task);
+    assert_eq!(clone.peek(), Some(&Some(42)));
+}

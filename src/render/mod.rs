@@ -1,5 +1,6 @@
 pub(crate) mod cover_pipeline;
 pub mod cover_renderer;
+pub(crate) mod drawer;
 pub(crate) mod frame_clock;
 pub mod graphics_overlay;
 #[cfg(feature = "easter-egg")]

@@ -1,22 +1,149 @@
 //! Streaming audio reader: async writes on the reactor, blocking reads/seeks only
 //! on decoder/audio workers. Published bytes are fully written before readers see them.
 
-use crate::app::api::error_for_status;
-use anyhow::{Context, Result, bail};
-use compio::io::{AsyncWrite, AsyncWriteExt};
+use super::api::error_for_status;
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::bail;
+use compio::io::AsyncWrite;
+use compio::io::AsyncWriteExt;
 use cyper::Response;
 use futures::StreamExt;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Condvar;
+use parking_lot::Mutex;
 use see::sync::Sender;
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Cursor, Error, ErrorKind, Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::io::Cursor;
+use std::io::Error;
+use std::io::ErrorKind;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::LazyLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+static ACTIVE_STREAMING_TEMPS: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn active_streaming_temps() -> &'static Mutex<HashSet<PathBuf>> {
+    &ACTIVE_STREAMING_TEMPS
+}
+
+fn reserve_streaming_temp(path: &Path) {
+    active_streaming_temps().lock().insert(path.to_path_buf());
+}
+
+fn release_streaming_temp(path: &Path) {
+    active_streaming_temps().lock().remove(path);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessLiveness {
+    Live,
+    Dead,
+    Unknown,
+}
+
+fn parse_streaming_temp_pid(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let name = name.strip_suffix(".part")?;
+    let (cache_key, job) = name.rsplit_once('.')?;
+    if !cache_key.contains("__") {
+        return None;
+    }
+    let (pid, counter) = job.split_once('-')?;
+    if counter.is_empty() {
+        return None;
+    }
+    counter.parse::<u64>().ok()?;
+    pid.parse::<u32>().ok()
+}
+
+fn process_liveness(pid: u32) -> ProcessLiveness {
+    if pid == 0 {
+        return ProcessLiveness::Unknown;
+    }
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return ProcessLiveness::Unknown;
+        };
+        // SAFETY: kill(pid, 0) only probes process existence and sends no signal.
+        let result = unsafe { libc::kill(pid, 0) };
+        if result == 0 {
+            return ProcessLiveness::Live;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(code) if code == libc::ESRCH => ProcessLiveness::Dead,
+            Some(code) if code == libc::EPERM => ProcessLiveness::Live,
+            _ => ProcessLiveness::Unknown,
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        ProcessLiveness::Unknown
+    }
+}
+
+fn should_reclaim_streaming_temp(
+    pid: u32,
+    current_pid: u32,
+    active: bool,
+    liveness: ProcessLiveness,
+) -> bool {
+    if active {
+        return false;
+    }
+    if pid == current_pid {
+        // A current-PID file not in the in-process registry is from an earlier
+        // incarnation of this PID, so it is safe to treat as an orphan.
+        return true;
+    }
+    matches!(liveness, ProcessLiveness::Dead)
+}
+
+/// Remove a temporary audio file only when its streaming naming convention and
+/// owning process prove that it is orphaned. The registry lock covers the
+/// check-and-remove sequence so a new stream cannot create the same path after
+/// the check and before removal.
+pub(super) fn reclaim_orphan_streaming_temp(path: &Path) -> bool {
+    let Some(pid) = parse_streaming_temp_pid(path) else {
+        return false;
+    };
+    let mut active = active_streaming_temps().lock();
+    let should_reclaim = should_reclaim_streaming_temp(
+        pid,
+        std::process::id(),
+        active.contains(path),
+        process_liveness(pid),
+    );
+    if !should_reclaim {
+        return false;
+    }
+    let removed = std::fs::remove_file(path).is_ok();
+    if removed {
+        active.remove(path);
+    }
+    removed
+}
+
+struct StreamingTempRegistration(PathBuf);
+
+impl Drop for StreamingTempRegistration {
+    fn drop(&mut self) {
+        release_streaming_temp(&self.0);
+    }
+}
 /// Its synchronous Read/Seek implementation must only run on blocking workers.
-pub struct StreamingReader {
+pub(super) struct StreamingReader {
     state: Arc<StreamingState>,
     file: File,
 }
@@ -53,12 +180,12 @@ impl StreamingState {
 }
 
 #[derive(Clone)]
-pub struct StreamingReaderHandle {
+pub(super) struct StreamingReaderHandle {
     state: Arc<StreamingState>,
 }
 
 impl StreamingReaderHandle {
-    pub fn cancel(&self) {
+    pub(super) fn cancel(&self) {
         self.state.cancel();
     }
 }
@@ -80,7 +207,7 @@ impl Drop for StreamingReader {
 }
 
 impl StreamingReader {
-    pub async fn new(
+    pub(super) async fn new(
         http: &cyper::Client,
         url: &str,
         cache_path: PathBuf,
@@ -109,13 +236,22 @@ impl StreamingReader {
         // A cancelled old reader may still be finishing an async write. Never let
         // its close/cleanup truncate or unlink the next reader's temporary file.
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = cache_path.with_extension(format!("{}-{id}.part", std::process::id()));
-        let writer_file = compio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp_path)
-            .await?;
+        let (tmp_path, writer_file, registration) = loop {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let candidate = cache_path.with_extension(format!("{}-{id}.part", std::process::id()));
+            reserve_streaming_temp(&candidate);
+            let registration = StreamingTempRegistration(candidate.clone());
+            match compio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)
+                .await
+            {
+                Ok(file) => break (candidate, file, registration),
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(err.into()),
+            }
+        };
         let reader_path = tmp_path.clone();
         let reader_file = compio::runtime::spawn_blocking(move || File::open(reader_path))
             .await
@@ -133,6 +269,7 @@ impl StreamingReader {
         state.total.store(total, Ordering::SeqCst);
         let task_state = state.clone();
         compio::runtime::spawn(async move {
+            let _registration = registration;
             let result = download_streaming(
                 response,
                 writer_file,
@@ -172,7 +309,7 @@ impl StreamingReader {
         }
     }
 
-    pub fn total(&self) -> u64 {
+    pub(super) fn total(&self) -> u64 {
         self.state.total.load(Ordering::SeqCst)
     }
 }
@@ -279,118 +416,4 @@ async fn download_streaming(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[compio::test]
-    async fn complete_stream_is_published_but_truncated_stream_is_not() {
-        for (index, body) in [b"abcdef".as_slice(), b"abc".as_slice()]
-            .into_iter()
-            .enumerate()
-        {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let address = listener.local_addr().unwrap();
-            let server = compio::runtime::spawn_blocking(move || {
-                let (mut socket, _) = listener.accept().unwrap();
-                let mut request = [0; 4096];
-                let received = socket.read(&mut request).unwrap();
-                assert!(received > 0, "client sent its HTTP request");
-                std::io::Write::write_all(
-                    &mut socket,
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n",
-                )
-                .unwrap();
-                std::io::Write::write_all(&mut socket, body).unwrap();
-            });
-            let directory = std::env::temp_dir().join(format!(
-                "cnmplayer-stream-http-{}-{index}",
-                std::process::id()
-            ));
-            let final_path = directory.join("song.audio");
-            let http = cyper::Client::builder().no_proxy().build().unwrap();
-            let (tx, _rx) = see::sync::channel((0, 0));
-            let reader = StreamingReader::new(
-                &http,
-                &format!("http://{address}/song"),
-                final_path.clone(),
-                None,
-                tx,
-            )
-            .await
-            .unwrap();
-            let result = compio::runtime::spawn_blocking(move || {
-                let mut reader = reader;
-                let mut bytes = Vec::new();
-                reader.read_to_end(&mut bytes).map(|_| bytes)
-            })
-            .await
-            .unwrap();
-            server.await.unwrap();
-            if index == 0 {
-                assert_eq!(result.unwrap(), b"abcdef");
-                assert_eq!(compio::fs::read(&final_path).await.unwrap(), b"abcdef");
-            } else {
-                assert!(result.is_err());
-                assert!(compio::fs::metadata(&final_path).await.is_err());
-            }
-            compio::runtime::spawn_blocking(move || std::fs::remove_dir_all(directory))
-                .await
-                .unwrap()
-                .unwrap();
-        }
-    }
-
-    #[test]
-    fn seek_rejects_negative_positions_and_overflow() {
-        assert_eq!(checked_seek(4, -3).unwrap(), 1);
-        assert_eq!(
-            checked_seek(4, -5).unwrap_err().kind(),
-            ErrorKind::InvalidInput
-        );
-        assert_eq!(
-            checked_seek(u64::MAX, 1).unwrap_err().kind(),
-            ErrorKind::InvalidInput
-        );
-    }
-
-    #[test]
-    fn reads_only_published_bytes_and_propagates_failure() {
-        let path =
-            std::env::temp_dir().join(format!("cnmplayer-stream-test-{}", std::process::id()));
-        std::fs::write(&path, b"abcdef").unwrap();
-        let state = Arc::new(StreamingState::default());
-        state.downloaded.store(3, Ordering::SeqCst);
-        state.total.store(6, Ordering::SeqCst);
-        let mut reader = StreamingReader {
-            state: state.clone(),
-            file: File::open(&path).unwrap(),
-        };
-        let mut buf = [0; 6];
-        assert_eq!(reader.read(&mut buf).unwrap(), 3);
-        assert_eq!(&buf[..3], b"abc");
-        state.finish(&Err(anyhow::anyhow!("truncated response")));
-        assert!(
-            reader
-                .read(&mut buf)
-                .unwrap_err()
-                .to_string()
-                .contains("truncated response")
-        );
-        drop(reader);
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn cancellation_wakes_waiting_reader() {
-        let state = Arc::new(StreamingState::default());
-        let waiting = state.clone();
-        let worker = std::thread::spawn(move || {
-            let mut guard = waiting.wait_lock.lock();
-            while !waiting.cancelled.load(Ordering::SeqCst) {
-                waiting.condvar.wait(&mut guard);
-            }
-        });
-        state.cancel();
-        worker.join().unwrap();
-    }
-}
+mod tests;

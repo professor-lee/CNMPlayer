@@ -2,7 +2,8 @@ use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
 use crate::tmplayer::app::state::{AppState, Overlay, PlaybackState, RepeatMode};
-use crate::tmplayer::ui::tui::{Tui, UiLayout};
+use crate::tmplayer::ui::tui::Tui;
+use crate::tmplayer::ui::tui::layout::UiLayout;
 use crate::tmplayer::utils::input::{Action, map_key, map_mouse};
 use crate::tmplayer::{
     HostPlaybackBridge, HostPlaybackRuntimeSnapshot, HostPlaybackSnapshot, HostPlaybackState,
@@ -574,6 +575,10 @@ async fn handle_action(
     action: Action,
     layout: &UiLayout,
 ) -> Result<()> {
+    if app.overlay != Overlay::None && app.overlay != Overlay::Playlist {
+        app.volume_drag = false;
+        app.progress_drag = false;
+    }
     match action {
         Action::Quit => {}
         Action::OpenSettingsModal => {
@@ -804,7 +809,7 @@ async fn handle_action(
                 }
                 sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
-                let count = crate::tmplayer::ui::tui::help_item_count(app);
+                let count = crate::tmplayer::ui::tui::modals::help::help_item_count(app);
                 if count == 0 {
                     return Ok(());
                 }
@@ -835,7 +840,7 @@ async fn handle_action(
                 }
                 sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
-                let count = crate::tmplayer::ui::tui::help_item_count(app);
+                let count = crate::tmplayer::ui::tui::modals::help::help_item_count(app);
                 if count > 0 {
                     app.help_keybind_selected = (app.help_keybind_selected + 1) % count;
                 }
@@ -990,7 +995,6 @@ async fn handle_action(
             app.player.volume = next;
         }
         Action::SetVolume(v) => {
-            app.volume_drag = true;
             let next = v.clamp(0.0, 1.0);
             host_bridge.set_volume(next);
             app.player.volume = next;
@@ -1015,11 +1019,15 @@ async fn handle_action(
         }
         Action::SeekToFraction(r) => {
             host_bridge.seek_to_ratio(r);
-            sync_from_host_snapshot(app, host_bridge.snapshot());
+            apply_host_runtime_snapshot(app, host_bridge.runtime_snapshot());
         }
         Action::MouseClick { col, row } => {
-            // map click to controls/progress/volume/playlist
-            if let Some(a) = crate::tmplayer::ui::tui::hit_test(layout, app, col, row) {
+            app.volume_drag = false;
+            app.progress_drag = false;
+            // Only a fresh press on a visible control can begin a drag.
+            if let Some(a) = crate::tmplayer::ui::tui::input::hit_test(layout, app, col, row) {
+                app.volume_drag = matches!(&a, Action::SetVolume(_));
+                app.progress_drag = matches!(&a, Action::SeekToFraction(_));
                 Box::pin(handle_action(app, host_bridge, a, layout)).await?;
             }
         }
@@ -1037,7 +1045,7 @@ async fn handle_action(
             }
 
             // 侧边栏（播放列表面板）：滚轮滚动聚焦。
-            if crate::tmplayer::ui::tui::wheel_over_playlist(layout, app, col, row) {
+            if crate::tmplayer::ui::tui::input::wheel_over_playlist(layout, app, col, row) {
                 let action = if forward {
                     Action::PlaylistDown
                 } else {
@@ -1047,15 +1055,27 @@ async fn handle_action(
             }
         }
         Action::MouseDrag { col, .. } => {
-            if app.volume_drag
-                && let Some(volume) = crate::tmplayer::ui::tui::volume_for_drag(layout, col)
-            {
-                app.player.volume = volume;
-                host_bridge.set_volume(volume);
+            if app.progress_drag {
+                if let Some(ratio) = crate::tmplayer::ui::tui::input::progress_for_drag(layout, col)
+                {
+                    host_bridge.seek_to_ratio(ratio);
+                    apply_host_runtime_snapshot(app, host_bridge.runtime_snapshot());
+                } else {
+                    app.progress_drag = false;
+                }
+            } else if app.volume_drag {
+                if let Some(volume) = crate::tmplayer::ui::tui::input::volume_for_drag(layout, col)
+                {
+                    app.player.volume = volume;
+                    host_bridge.set_volume(volume);
+                } else {
+                    app.volume_drag = false;
+                }
             }
         }
         Action::MouseUp => {
             app.volume_drag = false;
+            app.progress_drag = false;
         }
         Action::ModalSelect(idx) => {
             let Some(rect) = layout.modal_rows.get(idx) else {
@@ -1251,7 +1271,7 @@ fn begin_download_path_edit(app: &mut AppState) {
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| app.download_display_path());
-    app.download_path_edit = Some(crate::app::DownloadPathEdit {
+    app.download_path_edit = Some(crate::app::settings_controller::DownloadPathEdit {
         cursor: current.chars().count(),
         buffer: current,
         window_col: 0,
@@ -1435,177 +1455,4 @@ fn max_display_bars(width_cells: u16, gap: bool) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn paused_oscilloscope_schedules_the_exact_flat_frame_without_input() {
-        let config = Config {
-            visualize: VisualizeMode::Oscilloscope,
-            ..Config::default()
-        };
-        let mut app = AppState::new(
-            config,
-            crate::ui::theme::Theme::default(),
-            crate::data::config::Language::Zh,
-        );
-        let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
-        ring.push(&[0.5; 512], &[0.5; 512], 48_000);
-        app.pcm_ring = Some(ring);
-        let start = Instant::now();
-        app.last_frame = start;
-        app.player.playback = PlaybackState::Playing;
-        tick_visual_state(&mut app, start);
-        tick_visual_state(&mut app, start + Duration::from_millis(100));
-        assert!(app.scope_gain.value() > 0.7);
-        app.player.playback = PlaybackState::Paused;
-        let mut settled = None;
-        for frame in 1..=120 {
-            let before = app.scope_gain.value();
-            let now = start + Duration::from_millis(100 + frame * 16);
-            let dirty = tick_visual_state(&mut app, now);
-            if before > 0.0 && app.scope_gain.value() == 0.0 {
-                assert!(
-                    dirty,
-                    "the final flat frame must be painted even when animation stops"
-                );
-                assert!(
-                    !app.should_continuous_redraw(),
-                    "the final frame does not require permanent animation"
-                );
-                settled = Some(now);
-                break;
-            }
-        }
-        let settled = settled.expect("pause reaches exact zero without an input event");
-        assert!(!tick_visual_state(
-            &mut app,
-            settled + Duration::from_millis(16)
-        ));
-    }
-
-    #[test]
-    fn missing_pcm_releases_scope_without_changing_playback_state() {
-        let config = Config {
-            visualize: VisualizeMode::Oscilloscope,
-            ..Config::default()
-        };
-        let mut app = AppState::new(
-            config,
-            crate::ui::theme::Theme::default(),
-            crate::data::config::Language::En,
-        );
-        let ring = std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new());
-        ring.push(&[0.5; 512], &[-0.5; 512], 48_000);
-        app.pcm_ring = Some(ring);
-        app.player.playback = PlaybackState::Playing;
-        let start = Instant::now();
-        app.last_frame = start;
-        tick_visual_state(&mut app, start);
-        tick_visual_state(&mut app, start + Duration::from_millis(100));
-        assert!(app.scope_gain.value() > 0.7, "fresh PCM opens the scope");
-        tick_visual_state(&mut app, start + Duration::from_millis(160));
-        let dirty = tick_visual_state(&mut app, start + Duration::from_millis(500));
-        assert_eq!(app.player.playback, PlaybackState::Playing);
-        assert_eq!(
-            app.scope_gain.value(),
-            0.0,
-            "stalled PCM must not hold the old waveform open"
-        );
-        assert!(dirty, "the settled scope frame must be submitted");
-    }
-
-    /// 挂在设置弹窗下面的子页必须全部登记进 `settings_parent`：
-    /// 漏一个，那个页面按 Esc 就会直接退出全屏页（按键提示弹窗就这么漏过）。
-    #[test]
-    fn every_settings_child_returns_to_the_settings_modal() {
-        for child in [
-            Overlay::BarSettingsModal,
-            Overlay::LyricsSettingsModal,
-            Overlay::HelpModal,
-            Overlay::AboutModal,
-        ] {
-            assert_eq!(
-                settings_parent(child),
-                Some(Overlay::SettingsModal),
-                "{child:?} 应该回设置弹窗"
-            );
-        }
-
-        // 设置弹窗本身与 EQ/播放列表没有上一级。
-        assert_eq!(settings_parent(Overlay::SettingsModal), None);
-        assert_eq!(settings_parent(Overlay::EqModal), None);
-        assert_eq!(settings_parent(Overlay::Playlist), None);
-        assert_eq!(settings_parent(Overlay::None), None);
-    }
-
-    #[test]
-    fn host_song_identity_starts_cover_slide_and_resets_smoothing() {
-        let mut app = AppState::new(
-            Config::default(),
-            crate::ui::theme::Theme::default(),
-            crate::data::config::Language::Zh,
-        );
-        let snapshot = |id: &str| HostPlaybackSnapshot {
-            playlist: vec![crate::tmplayer::FullscreenPlaylistItemSeed {
-                id: Some(id.to_string()),
-                title: "Same title".to_string(),
-                artist: "Same artist".to_string(),
-                album: "Same album".to_string(),
-                duration: Duration::from_secs(60),
-            }],
-            current_index: Some(0),
-            ..HostPlaybackSnapshot::default()
-        };
-        sync_from_host_snapshot(&mut app, snapshot("first"));
-        assert!(
-            app.cover_anim.is_none(),
-            "initial sync is not a track transition"
-        );
-        app.spectrum.bars.fill(1.0);
-        let now = Instant::now();
-        app.pending_system_cover_anim = Some((
-            crate::tmplayer::app::state::CoverSnapshot::from(&app.player.track),
-            1,
-            now,
-        ));
-        sync_from_host_snapshot(&mut app, snapshot("second"));
-        assert_eq!(app.playlist.items[0].song_id.as_deref(), Some("second"));
-        assert_eq!(app.cover_anim.as_ref().unwrap().dir, 1);
-        assert!(app.pending_system_cover_anim.is_none());
-        assert!(app.spectrum.bars.iter().all(|value| *value == 0.0));
-        sync_from_host_snapshot(&mut app, HostPlaybackSnapshot::default());
-        assert!(app.cover_anim.is_none());
-        assert!(app.playlist.items.is_empty());
-    }
-    #[test]
-    fn appended_host_page_keeps_playlist_focus_on_the_boundary_row() {
-        let mut app = AppState::new(
-            Config::default(),
-            crate::ui::theme::Theme::default(),
-            crate::data::config::Language::Zh,
-        );
-        let snapshot = |ids: &[&str]| HostPlaybackSnapshot {
-            playlist: ids
-                .iter()
-                .map(|id| crate::tmplayer::FullscreenPlaylistItemSeed {
-                    id: Some(id.to_string()),
-                    title: id.to_string(),
-                    artist: String::new(),
-                    album: String::new(),
-                    duration: Duration::from_secs(60),
-                })
-                .collect(),
-            current_index: Some(0),
-            ..Default::default()
-        };
-        sync_from_host_snapshot(&mut app, snapshot(&["99", "100"]));
-        app.overlay = Overlay::Playlist;
-        app.playlist_view.selected = 1;
-        sync_from_host_snapshot(&mut app, snapshot(&["99", "100", "101"]));
-        assert_eq!(app.playlist_view.selected, 1);
-        assert_eq!(app.playlist_view.items[2].song_id.as_deref(), Some("101"));
-        sync_from_host_snapshot(&mut app, snapshot(&["new-a", "new-b", "new-c"]));
-        assert_eq!(app.playlist_view.selected, 0, "替换来源时聚焦当前播放项");
-    }
-}
+mod tests;

@@ -2,31 +2,38 @@
 //!
 //! 单线程 compio runtime：所有阻塞 IO 都经 `spawn_blocking`，网络与文件写全程 await。
 
-use crate::app::api::ApiState;
+use super::api::ApiState;
 use crate::data::config::AudioQuality;
 use crate::data::icons::UiIcons;
 use crate::launch;
-use anyhow::{Context, Result};
-use compio::io::{AsyncWrite, AsyncWriteExt};
-use directories::{BaseDirs, UserDirs};
+use anyhow::Context;
+use anyhow::Result;
+use compio::io::AsyncWrite;
+use compio::io::AsyncWriteExt;
+use directories::BaseDirs;
+use directories::UserDirs;
 use futures::StreamExt;
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
+use futures::channel::mpsc::UnboundedReceiver;
+use futures::channel::mpsc::UnboundedSender;
+use futures::channel::mpsc::unbounded;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// 默认下载目录名：`{系统音乐目录}/cnmplayer/`。
-pub const DOWNLOAD_DIR_NAME: &str = "cnmplayer";
+const DOWNLOAD_DIR_NAME: &str = "cnmplayer";
 
 /// 系统既没有音乐目录也没有家目录时的显示值（设置弹窗里照原样显示这个字面量）。
-pub const DOWNLOAD_PATH_NULL: &str = "Null";
+pub(crate) const DOWNLOAD_PATH_NULL: &str = "Null";
 
 /// 认识这两种载荷（`type` 字段只会有这两个值；网易云的九个档位都落在这两容器里）。
-pub const AUDIO_EXTENSIONS: [&str; 2] = ["mp3", "flac"];
+const AUDIO_EXTENSIONS: [&str; 2] = ["mp3", "flac"];
 
 /// 取消标志的轮询间隔（读取流时的超时切片）。
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -39,14 +46,14 @@ const NET_PHASE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 下载按钮/图标三态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DownloadState {
+pub(crate) enum DownloadState {
     NotDownloaded,
     Downloading,
     Done,
 }
 
 /// 三态对应的字形；`Downloading` 按相位取旋转帧（time-based，空闲节流下也自洽）。
-pub fn state_glyph(state: DownloadState, phase: Duration, icons: UiIcons) -> char {
+pub(crate) fn state_glyph(state: DownloadState, phase: Duration, icons: UiIcons) -> char {
     match state {
         DownloadState::NotDownloaded => icons.download(),
         DownloadState::Done => icons.downloaded(),
@@ -56,7 +63,7 @@ pub fn state_glyph(state: DownloadState, phase: Duration, icons: UiIcons) -> cha
 
 /// 下载目录不可用的原因（文案由两端各自的 `lang_text` 生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DownloadPathError {
+pub(crate) enum DownloadPathError {
     /// 不是绝对路径。
     NotAbsolute,
     /// 建不出来或不可写。
@@ -65,7 +72,7 @@ pub enum DownloadPathError {
 
 /// 用户在设置里填的下载目录。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DownloadPathChoice {
+pub(crate) enum DownloadPathChoice {
     /// 显式禁用下载（填的就是字面量 `Null`）。
     Disabled,
     /// 可写的绝对路径。
@@ -76,7 +83,7 @@ pub enum DownloadPathChoice {
 ///
 /// 优先级：用户自定义（`Null` = 显式禁用）→ 系统音乐目录下的 `cnmplayer/`
 /// → `~/Music/cnmplayer/` → `None`（下载整体禁用，UI 不显示下载入口）。
-pub fn resolve_download_root(custom: Option<&str>) -> Option<PathBuf> {
+pub(crate) fn resolve_download_root(custom: Option<&str>) -> Option<PathBuf> {
     if let Some(raw) = custom.map(str::trim).filter(|value| !value.is_empty()) {
         if is_null_download_path(raw) {
             return None;
@@ -92,14 +99,14 @@ pub fn resolve_download_root(custom: Option<&str>) -> Option<PathBuf> {
 }
 
 /// 填的是不是"禁用下载"的哨兵值（`Null`，忽略大小写与首尾空白）。
-pub fn is_null_download_path(raw: &str) -> bool {
+fn is_null_download_path(raw: &str) -> bool {
     raw.trim().eq_ignore_ascii_case(DOWNLOAD_PATH_NULL)
 }
 
 /// Pure syntax parsing for configuration/UI: never creates directories or probes disk.
 /// Empty/`Null` disables downloads; other paths must be absolute.
 /// Settings commits must additionally await [`validate_download_path`].
-pub fn parse_download_path(raw: &str) -> Result<DownloadPathChoice, DownloadPathError> {
+fn parse_download_path(raw: &str) -> Result<DownloadPathChoice, DownloadPathError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || is_null_download_path(trimmed) {
         return Ok(DownloadPathChoice::Disabled);
@@ -114,7 +121,9 @@ pub fn parse_download_path(raw: &str) -> Result<DownloadPathChoice, DownloadPath
 }
 
 /// Validate a settings edit without blocking the UI/reactor.
-pub async fn validate_download_path(raw: &str) -> Result<DownloadPathChoice, DownloadPathError> {
+pub(crate) async fn validate_download_path(
+    raw: &str,
+) -> Result<DownloadPathChoice, DownloadPathError> {
     let choice = parse_download_path(raw)?;
     if let DownloadPathChoice::Dir(dir) = &choice {
         compio::fs::create_dir_all(dir)
@@ -201,7 +210,7 @@ fn truncate_bytes(text: &str, budget: usize) -> String {
 }
 
 /// 文件名主干：`标题 - 作者 - 专辑`（缺失的段直接省略，专辑名里已含标题时也保留）。
-pub fn download_file_stem(title: &str, artist: &str, album: &str) -> String {
+pub(super) fn download_file_stem(title: &str, artist: &str, album: &str) -> String {
     let mut parts = vec![sanitize_component(title, "未知歌曲")];
     for raw in [artist, album] {
         let part = sanitize_component(raw, "");
@@ -214,17 +223,17 @@ pub fn download_file_stem(title: &str, artist: &str, album: &str) -> String {
 
 /// 一次下载的目标位置：下载根目录 + 文件名主干（所有下载都直接落根目录）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DownloadTarget {
-    pub dir: PathBuf,
-    pub base: String,
+pub(super) struct DownloadTarget {
+    pub(super) dir: PathBuf,
+    pub(super) base: String,
 }
 
 impl DownloadTarget {
-    pub fn file_path(&self, ext: &str) -> PathBuf {
+    pub(super) fn file_path(&self, ext: &str) -> PathBuf {
         self.dir.join(format!("{}.{ext}", self.base))
     }
 
-    pub fn part_path(&self, ext: &str) -> PathBuf {
+    fn part_path(&self, ext: &str) -> PathBuf {
         self.dir.join(format!("{}.{ext}.part", self.base))
     }
 
@@ -239,18 +248,18 @@ impl DownloadTarget {
 
 /// 下载请求：UI 侧决定落点，任务侧只负责取流与写标签。
 #[derive(Debug, Clone)]
-pub struct DownloadRequest {
-    pub song_id: String,
-    pub level: AudioQuality,
-    pub title: String,
-    pub artist: String,
-    pub album: String,
-    pub target: DownloadTarget,
+pub(super) struct DownloadRequest {
+    pub(super) song_id: String,
+    pub(super) level: AudioQuality,
+    pub(super) title: String,
+    pub(super) artist: String,
+    pub(super) album: String,
+    pub(super) target: DownloadTarget,
 }
 
 /// 任务结束的通知（由 `DownloadManager::poll` 交给 UI 写状态行）。
 #[derive(Debug, Clone)]
-pub enum DownloadEvent {
+pub(super) enum DownloadEvent {
     /// 排队中的任务真正开始写盘（先来后到，队列里可能有多个）。
     Started {
         title: String,
@@ -274,12 +283,12 @@ pub enum DownloadEvent {
 
 /// 任务结果。
 #[derive(Debug, Clone)]
-pub struct DownloadOutcome {
-    pub path: PathBuf,
-    pub level: String,
-    pub file_type: String,
+struct DownloadOutcome {
+    pub(super) path: PathBuf,
+    pub(super) level: String,
+    pub(super) file_type: String,
     /// 标签/封面写入失败不影响音频落盘，单独报告。
-    pub tag_error: Option<String>,
+    pub(super) tag_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -307,26 +316,20 @@ struct JobHandle {
 /// 行内图标的预计算行：文件名与磁盘缓存 key 随列表一起生成一次，
 /// 之后每帧只做一次 HashMap 查，不再重建 key。
 #[derive(Debug, Clone)]
-pub struct DownloadRow {
-    pub song_id: String,
-    pub target: DownloadTarget,
+pub(super) struct DownloadRow {
+    pub(super) song_id: String,
+    pub(super) target: DownloadTarget,
     key: String,
 }
 
 impl DownloadRow {
-    pub fn new(song_id: String, target: DownloadTarget) -> Self {
+    pub(super) fn new(song_id: String, target: DownloadTarget) -> Self {
         let key = target.dir.join(&target.base).display().to_string();
         Self {
             song_id,
             target,
             key,
         }
-    }
-
-    /// 磁盘缓存 key（与 `DownloadManager::state_of` 内部一致）。
-    #[cfg(test)]
-    pub fn key(&self) -> &str {
-        &self.key
     }
 }
 
@@ -340,7 +343,7 @@ impl DownloadRow {
 ///
 /// 两个都不变时每帧只做两次 u64 比较，行内取值是一次切片索引。
 #[derive(Default)]
-pub struct DownloadRowCache {
+pub(super) struct DownloadRowCache {
     epoch: (u64, u64),
     initialized: bool,
     rows: Vec<Option<DownloadRow>>,
@@ -349,7 +352,7 @@ pub struct DownloadRowCache {
 }
 
 impl DownloadRowCache {
-    pub fn refresh(
+    pub(super) fn refresh(
         &mut self,
         epoch: (u64, u64),
         manager: &mut DownloadManager,
@@ -385,7 +388,7 @@ impl DownloadRowCache {
         }
     }
 
-    pub fn state_at(&self, index: usize) -> Option<DownloadState> {
+    pub(super) fn state_at(&self, index: usize) -> Option<DownloadState> {
         self.states.get(index).copied().flatten()
     }
 }
@@ -404,7 +407,7 @@ type DiskLookupReceiver = std::sync::mpsc::Receiver<DiskLookupResult>;
 /// 队列按先来后到顺序执行——同一时刻最多一个在写盘，取消在途任务后下一个
 /// 立刻顶上。队列排空后任务自己退出（空闲不留常驻 async 任务），
 /// 下一次 `enqueue` 再起一个。进度与结果通过每个任务自己的 `JobShared` 回传。
-pub struct DownloadManager {
+pub(super) struct DownloadManager {
     /// 当前在途的下载任务；`None` 或已关闭 = 没有任务占着（下次按需现起）。
     worker_tx: Option<UnboundedSender<DownloadMessage>>,
     /// 起新任务时用的 API 句柄（`enqueue` 时刷新，保证带最新 cookie）。
@@ -421,7 +424,7 @@ pub struct DownloadManager {
 }
 
 impl DownloadManager {
-    pub fn new(api: ApiState) -> Self {
+    pub(super) fn new(api: ApiState) -> Self {
         Self {
             worker_tx: None,
             api,
@@ -435,7 +438,7 @@ impl DownloadManager {
     }
 
     /// 任务表 / 磁盘缓存的变化计数（事件驱动 memo 的版本号）。
-    pub fn version(&self) -> u64 {
+    pub(super) fn version(&self) -> u64 {
         self.version
     }
 
@@ -444,7 +447,11 @@ impl DownloadManager {
     }
 
     /// 发起下载（进队列）；同一首歌已在队列 / 下载中时返回错误文案。
-    pub fn enqueue(&mut self, api: &ApiState, request: DownloadRequest) -> Result<(), String> {
+    pub(super) fn enqueue(
+        &mut self,
+        api: &ApiState,
+        request: DownloadRequest,
+    ) -> Result<(), String> {
         if let Some(job) = self.jobs.get(&request.song_id) {
             return Err(if job.cancelling {
                 "正在取消上一任务，请稍候".to_string()
@@ -519,7 +526,7 @@ impl DownloadManager {
     }
 
     /// 请求取消：立刻把图标恢复成"未下载"，任务退出前不允许对同一首歌再发起下载。
-    pub fn cancel(&mut self, song_id: &str) -> bool {
+    pub(super) fn cancel(&mut self, song_id: &str) -> bool {
         let Some(job) = self.jobs.get_mut(song_id) else {
             return false;
         };
@@ -531,22 +538,22 @@ impl DownloadManager {
     }
 
     /// 是否有任务在途（含正在取消的），用于高频重绘判定。
-    pub fn is_active(&self) -> bool {
+    pub(super) fn is_active(&self) -> bool {
         self.jobs.values().any(|job| !job.cancelling)
     }
 
     /// 该歌曲是否有在途任务（含正在取消的）。
-    pub fn is_busy(&self, song_id: &str) -> bool {
+    pub(super) fn is_busy(&self, song_id: &str) -> bool {
         self.jobs.contains_key(song_id)
     }
 
     /// 该歌曲是否处于可取消的下载中。
-    pub fn is_downloading(&self, song_id: &str) -> bool {
+    pub(super) fn is_downloading(&self, song_id: &str) -> bool {
         self.jobs.get(song_id).is_some_and(|job| !job.cancelling)
     }
 
     /// 每帧搬运完成的任务。
-    pub fn poll(&mut self) -> Vec<DownloadEvent> {
+    pub(super) fn poll(&mut self) -> Vec<DownloadEvent> {
         let mut events = Vec::new();
         self.poll_disk_status();
 
@@ -612,13 +619,13 @@ impl DownloadManager {
 
     /// Rendering fallback; unknown disk status displays as not downloaded.
     /// Actions must use [`Self::known_state_of`] and defer while it returns `None`.
-    pub fn state_of(&mut self, song_id: &str, target: &DownloadTarget) -> DownloadState {
+    pub(super) fn state_of(&mut self, song_id: &str, target: &DownloadTarget) -> DownloadState {
         self.known_state_of(song_id, target)
             .unwrap_or(DownloadState::NotDownloaded)
     }
 
     /// `None` means a bounded background disk lookup is pending, not an absent file.
-    pub fn known_state_of(
+    pub(super) fn known_state_of(
         &mut self,
         song_id: &str,
         target: &DownloadTarget,
@@ -628,7 +635,7 @@ impl DownloadManager {
     }
 
     /// 用预计算行查状态：key 不重建，命中缓存时零分配。
-    pub fn state_of_row(&mut self, row: &DownloadRow) -> DownloadState {
+    fn state_of_row(&mut self, row: &DownloadRow) -> DownloadState {
         self.state_of_key(&row.song_id, &row.key, &row.target)
             .unwrap_or(DownloadState::NotDownloaded)
     }
@@ -700,7 +707,7 @@ impl DownloadManager {
     }
 
     /// 下载根目录变化（设置里改了路径）后作废磁盘缓存。
-    pub fn clear_disk_cache(&mut self) {
+    pub(super) fn clear_disk_cache(&mut self) {
         self.disk_cache.clear();
         self.disk_pending.clear();
         self.disk_epoch = self.disk_epoch.wrapping_add(1);
@@ -919,7 +926,8 @@ async fn write_metadata(
         let metadata = fetch_song_metadata(api, request).await;
         let lyrics = fetch_lyrics(api, &request.song_id).await;
         let cover = match metadata.album_cover_url.as_deref() {
-            Some(url) => api.fetch_cover_bytes(url).await.ok(),
+            // Embed the original artwork; the playback path uses a 500px URL.
+            Some(url) => api.fetch_original_cover_bytes(url).await.ok(),
             None => None,
         };
         (metadata, lyrics, cover)
@@ -1112,306 +1120,4 @@ fn civil_date_from_unix_ms(ms: i64) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[compio::test]
-    async fn row_status_is_loaded_by_poll_and_invalidated_after_root_change() {
-        let directory =
-            std::env::temp_dir().join(format!("cnmplayer-download-status-{}", std::process::id()));
-        compio::fs::create_dir_all(&directory).await.unwrap();
-        let target = DownloadTarget {
-            dir: directory.clone(),
-            base: "song".to_string(),
-        };
-        compio::fs::write(target.file_path("mp3"), b"audio".to_vec())
-            .await
-            .0
-            .unwrap();
-        let api = ApiState::new(None, cyper::Client::builder().build().unwrap()).unwrap();
-        let mut manager = DownloadManager::new(api.clone());
-        let row = DownloadRow::new("42".to_string(), target.clone());
-        assert_eq!(
-            manager.state_of_row(&row),
-            DownloadState::NotDownloaded,
-            "render-time lookup must not stat an uncached row"
-        );
-        let request = DownloadRequest {
-            song_id: "42".to_string(),
-            level: AudioQuality::Exhigh,
-            title: "song".to_string(),
-            artist: String::new(),
-            album: String::new(),
-            target: target.clone(),
-        };
-        let initial_version = manager.version();
-        // Deliberately do not poll: the lookup stays unresolved deterministically.
-        assert_eq!(manager.known_state_of("42", &target), None);
-        assert!(manager.enqueue(&api, request.clone()).is_err());
-        assert!(
-            !manager.is_busy("42"),
-            "pending lookup must not admit a download job"
-        );
-        assert_eq!(manager.version(), initial_version);
-        assert_eq!(
-            compio::fs::read(target.file_path("mp3")).await.unwrap(),
-            b"audio"
-        );
-        compio::time::timeout(Duration::from_secs(5), async {
-            while manager.state_of_row(&row) != DownloadState::Done {
-                manager.poll();
-                compio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(
-            manager.known_state_of("42", &target),
-            Some(DownloadState::Done)
-        );
-        assert!(manager.enqueue(&api, request).is_err());
-        assert!(!manager.is_busy("42"));
-        assert_eq!(
-            compio::fs::read(target.file_path("mp3")).await.unwrap(),
-            b"audio"
-        );
-        compio::fs::remove_file(target.file_path("mp3"))
-            .await
-            .unwrap();
-        manager.clear_disk_cache();
-        let version = manager.version();
-        assert_eq!(manager.state_of_row(&row), DownloadState::NotDownloaded);
-        compio::time::timeout(Duration::from_secs(5), async {
-            while manager.version() == version {
-                manager.poll();
-                compio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(manager.state_of_row(&row), DownloadState::NotDownloaded);
-        compio::runtime::spawn_blocking(move || std::fs::remove_dir_all(directory))
-            .await
-            .unwrap()
-            .unwrap();
-    }
-
-    #[test]
-    fn stem_skips_missing_parts() {
-        assert_eq!(
-            download_file_stem("歌名", "作者", "专辑"),
-            "歌名 - 作者 - 专辑"
-        );
-        assert_eq!(download_file_stem("歌名", "作者", ""), "歌名 - 作者");
-        assert_eq!(download_file_stem("歌名", "", ""), "歌名");
-        assert_eq!(download_file_stem("  ", "", ""), "未知歌曲");
-    }
-
-    #[test]
-    fn stem_strips_path_separators_and_controls() {
-        // 路径分隔符换 `-`（比直接吞掉可读），非法字符丢掉，控制字符丢掉。
-        let stem = download_file_stem("a/b:c*d", "AC/DC", "g\nh");
-        assert_eq!(stem, "a-b-cd - AC-DC - gh");
-    }
-
-    #[test]
-    fn stem_collapses_repeated_spaces() {
-        assert_eq!(
-            download_file_stem("Title", "Woodkid   /   Connelly", "Album"),
-            "Title - Woodkid - Connelly - Album"
-        );
-    }
-
-    /// 回归：NAME_MAX 是 255 **字节**，CJK 每字 3 字节——按字符数截断
-    /// 挡不住上限（长标题曾必然 ENAMETOOLONG、整首下载固定失败）。
-    #[test]
-    fn stem_respects_the_byte_budget_of_name_max() {
-        let long_cjk: String = "歌".repeat(150);
-        for (title, artist, album) in [
-            (long_cjk.as_str(), "", ""),
-            (long_cjk.as_str(), long_cjk.as_str(), long_cjk.as_str()),
-            ("T", long_cjk.as_str(), long_cjk.as_str()),
-        ] {
-            let stem = download_file_stem(title, artist, album);
-            assert!(
-                stem.len() <= STEM_BYTE_BUDGET,
-                "主干 {len} 字节应 ≤ {STEM_BYTE_BUDGET}",
-                len = stem.len()
-            );
-            let path = format!("{stem}.flac.part");
-            assert!(path.len() < 255, "含 .flac.part 后仍须 <255 字节");
-        }
-
-        // 截断必须落在字符边界上（结果仍是合法 UTF-8，且是原串前缀）。
-        let stem = download_file_stem(&long_cjk, &long_cjk, &long_cjk);
-        let joined = format!("{long_cjk} - {long_cjk} - {long_cjk}");
-        assert!(joined.starts_with(&stem));
-
-        // 常规名字不受影响。
-        assert_eq!(
-            download_file_stem("歌名", "作者", "专辑"),
-            "歌名 - 作者 - 专辑"
-        );
-    }
-
-    #[test]
-    fn civil_date_matches_known_timestamps() {
-        assert_eq!(civil_date_from_unix_ms(0), None);
-        assert_eq!(
-            civil_date_from_unix_ms(1_600_000_000_000).as_deref(),
-            Some("2020-09-13")
-        );
-        assert_eq!(
-            civil_date_from_unix_ms(1_700_000_000_000).as_deref(),
-            Some("2023-11-14")
-        );
-    }
-
-    #[test]
-    fn target_paths_use_extension_and_part_suffix() {
-        let target = DownloadTarget {
-            dir: PathBuf::from("/tmp/cnm"),
-            base: "A - B".to_string(),
-        };
-        assert_eq!(
-            target.file_path("flac"),
-            PathBuf::from("/tmp/cnm/A - B.flac")
-        );
-        assert_eq!(
-            target.part_path("mp3"),
-            PathBuf::from("/tmp/cnm/A - B.mp3.part")
-        );
-    }
-
-    #[test]
-    fn state_glyph_uses_the_fixed_nerd_font_set() {
-        let icons = UiIcons::new();
-        let phase = Duration::ZERO;
-        assert_eq!(
-            state_glyph(DownloadState::NotDownloaded, phase, icons),
-            '\u{ec74}'
-        );
-        assert_eq!(state_glyph(DownloadState::Done, phase, icons), '\u{f00c}');
-        assert_eq!(
-            state_glyph(DownloadState::Downloading, phase, icons),
-            '\u{280b}'
-        );
-    }
-
-    /// 预计算行的 key 必须与 `state_of` 内部构造的一致（否则磁盘缓存查不到）。
-    #[test]
-    fn row_key_matches_the_manager_key() {
-        let target = DownloadTarget {
-            dir: PathBuf::from("/tmp/cnm"),
-            base: "A - B".to_string(),
-        };
-        let row = DownloadRow::new("42".to_string(), target.clone());
-        assert_eq!(
-            row.key(),
-            target.dir.join(&target.base).display().to_string()
-        );
-    }
-
-    /// memo 只在"列表代变化"时重建行数据、只在"任务版本变化"时重算状态。
-    #[test]
-    fn row_cache_rebuilds_only_on_epoch_and_version_changes() {
-        use std::cell::Cell;
-
-        fn refresh(
-            cache: &mut DownloadRowCache,
-            epoch: (u64, u64),
-            version: u64,
-            builds: &Cell<u32>,
-            resolves: &Cell<u32>,
-        ) {
-            cache.refresh_inner(
-                epoch,
-                version,
-                || {
-                    builds.set(builds.get() + 1);
-                    vec![Some(DownloadRow::new(
-                        "1".to_string(),
-                        DownloadTarget {
-                            dir: PathBuf::from("/tmp/cnm"),
-                            base: "A".to_string(),
-                        },
-                    ))]
-                },
-                |_row| {
-                    resolves.set(resolves.get() + 1);
-                    DownloadState::NotDownloaded
-                },
-            );
-        }
-
-        let mut cache = DownloadRowCache::default();
-        let builds = Cell::new(0);
-        let resolves = Cell::new(0);
-
-        refresh(&mut cache, (1, 0), 7, &builds, &resolves);
-        assert_eq!((builds.get(), resolves.get()), (1, 1));
-        assert_eq!(cache.state_at(0), Some(DownloadState::NotDownloaded));
-
-        // 同代同版本：什么都不做。
-        refresh(&mut cache, (1, 0), 7, &builds, &resolves);
-        assert_eq!((builds.get(), resolves.get()), (1, 1), "不该重建/重算");
-
-        // 任务事件（版本 +1）：只重算状态。
-        refresh(&mut cache, (1, 0), 8, &builds, &resolves);
-        assert_eq!((builds.get(), resolves.get()), (1, 2), "只重算状态");
-
-        // 换列表（代 +1）：重建行数据并重算状态。
-        refresh(&mut cache, (2, 0), 8, &builds, &resolves);
-        assert_eq!((builds.get(), resolves.get()), (2, 3), "换列表要重建行数据");
-
-        // 回归：两个计数器同时 +1。旧实现把两者异或折叠成一个 u64，
-        // 2^0 == 3^1 == 2，键不变 → 行数据陈旧（图标错位）；二元组必须照常重建。
-        refresh(&mut cache, (3, 1), 8, &builds, &resolves);
-        assert_eq!(
-            (builds.get(), resolves.get()),
-            (3, 4),
-            "列表代与根目录代同增时必须重建行数据"
-        );
-
-        assert_eq!(cache.state_at(9), None, "越界行没有图标");
-    }
-
-    #[test]
-    fn parse_rejects_relative_paths() {
-        assert_eq!(
-            parse_download_path("relative/dir"),
-            Err(DownloadPathError::NotAbsolute)
-        );
-        assert_eq!(
-            parse_download_path("  相对/路径  "),
-            Err(DownloadPathError::NotAbsolute)
-        );
-    }
-
-    /// 留空 = 按需求回填成 `Null`（禁用下载），不是"保留旧值"。
-    #[test]
-    fn empty_path_falls_back_to_null() {
-        assert_eq!(parse_download_path(""), Ok(DownloadPathChoice::Disabled));
-        assert_eq!(
-            parse_download_path("   \t "),
-            Ok(DownloadPathChoice::Disabled)
-        );
-    }
-
-    /// `Null` 是"显式禁用下载"的哨兵：解析成 Disabled，解析根目录得到 None。
-    #[test]
-    fn null_path_disables_downloads() {
-        assert_eq!(
-            parse_download_path("Null"),
-            Ok(DownloadPathChoice::Disabled)
-        );
-        assert_eq!(
-            parse_download_path("  null  "),
-            Ok(DownloadPathChoice::Disabled)
-        );
-        assert!(is_null_download_path("NULL"));
-        assert!(!is_null_download_path("Nullx"));
-        assert_eq!(resolve_download_root(Some("Null")), None);
-        assert_eq!(resolve_download_root(Some("null")), None);
-    }
-}
+mod tests;

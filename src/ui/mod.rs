@@ -1,5 +1,6 @@
 use crate::app::{App, Overlay, Page};
 use ratatui::Frame;
+use ratatui::layout::Rect;
 
 pub mod author;
 pub mod home;
@@ -35,26 +36,55 @@ pub fn draw_settings(frame: &mut Frame, app: &mut App) {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if let Some(content) = draw_page(frame, app) {
+        app.render_page_transition(frame, content);
+        // These surfaces belong to the host, not to the sliding browse page.
+        if app.config.page_lyrics {
+            page_lyrics::draw_page_lyrics_overlay(frame, app, content);
+        }
+        let area = frame.area();
+        let player = Rect::new(
+            area.x,
+            content.bottom(),
+            area.width,
+            area.bottom().saturating_sub(content.bottom()),
+        );
+        player_bar::draw_collapsed_player_bar(frame, app, player);
+    }
+}
+
+/// Untranslated page layout, also used by on-demand transition snapshots.
+pub(crate) fn draw_page(frame: &mut Frame, app: &mut App) -> Option<Rect> {
     app.covers.begin_frame();
     let size = frame.area();
     app.set_terminal_size(size.width, size.height);
 
     if app.config.small_window_display
         && !matches!(app.page, Page::Login | Page::Loading)
-        && (size.width < crate::app::SMALL_WINDOW_MIN_WIDTH
-            || size.height < crate::app::SMALL_WINDOW_MIN_HEIGHT)
+        && (size.width < crate::app::presentation::SMALL_WINDOW_MIN_WIDTH
+            || size.height < crate::app::presentation::SMALL_WINDOW_MIN_HEIGHT)
     {
         match app.small_window_mode {
-            Some(crate::app::SmallWindowMode::Flat) => small_window::draw_flat(frame, app),
-            Some(crate::app::SmallWindowMode::Narrow) => small_window::draw_narrow(frame, app),
+            Some(crate::app::presentation::SmallWindowMode::Flat) => {
+                small_window::draw_flat(frame, app)
+            }
+            Some(crate::app::presentation::SmallWindowMode::Narrow) => {
+                small_window::draw_narrow(frame, app)
+            }
             None => draw_small_too_small(frame, app, size),
         }
-        return;
+        return None;
     }
 
     match app.page {
-        Page::Login => login::draw_login(frame, app),
-        Page::Loading => loading::draw_loading(frame, app),
+        Page::Login => {
+            login::draw_login(frame, app);
+            None
+        }
+        Page::Loading => {
+            loading::draw_loading(frame, app);
+            None
+        }
         Page::Home => home::draw_home(frame, app),
         Page::Playlist => playlist::draw_playlist(frame, app),
         Page::Author => author::draw_author(frame, app),

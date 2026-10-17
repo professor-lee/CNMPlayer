@@ -63,15 +63,29 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
             current_index: runtime.current_index,
             current_liked: runtime.now_playing_liked,
             state: match runtime.state {
-                app::PlaybackRuntimeState::Playing => tmplayer::HostPlaybackState::Playing,
-                app::PlaybackRuntimeState::Paused => tmplayer::HostPlaybackState::Paused,
-                app::PlaybackRuntimeState::Stopped => tmplayer::HostPlaybackState::Stopped,
+                app::playback_controller::PlaybackRuntimeState::Playing => {
+                    tmplayer::HostPlaybackState::Playing
+                }
+                app::playback_controller::PlaybackRuntimeState::Paused => {
+                    tmplayer::HostPlaybackState::Paused
+                }
+                app::playback_controller::PlaybackRuntimeState::Stopped => {
+                    tmplayer::HostPlaybackState::Stopped
+                }
             },
             repeat_mode: match runtime.repeat_mode {
-                app::PlaybackRepeatMode::Sequence => tmplayer::HostRepeatMode::Sequence,
-                app::PlaybackRepeatMode::Shuffle => tmplayer::HostRepeatMode::Shuffle,
-                app::PlaybackRepeatMode::LoopAll => tmplayer::HostRepeatMode::LoopAll,
-                app::PlaybackRepeatMode::LoopOne => tmplayer::HostRepeatMode::LoopOne,
+                app::playback_controller::PlaybackRepeatMode::Sequence => {
+                    tmplayer::HostRepeatMode::Sequence
+                }
+                app::playback_controller::PlaybackRepeatMode::Shuffle => {
+                    tmplayer::HostRepeatMode::Shuffle
+                }
+                app::playback_controller::PlaybackRepeatMode::LoopAll => {
+                    tmplayer::HostRepeatMode::LoopAll
+                }
+                app::playback_controller::PlaybackRepeatMode::LoopOne => {
+                    tmplayer::HostRepeatMode::LoopOne
+                }
             },
             position: runtime.position,
             volume: runtime.volume,
@@ -105,10 +119,18 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
                 current_liked: snapshot.now_playing_liked,
                 state: tmplayer::HostPlaybackState::Stopped,
                 repeat_mode: match snapshot.repeat_mode {
-                    app::PlaybackRepeatMode::Sequence => tmplayer::HostRepeatMode::Sequence,
-                    app::PlaybackRepeatMode::Shuffle => tmplayer::HostRepeatMode::Shuffle,
-                    app::PlaybackRepeatMode::LoopAll => tmplayer::HostRepeatMode::LoopAll,
-                    app::PlaybackRepeatMode::LoopOne => tmplayer::HostRepeatMode::LoopOne,
+                    app::playback_controller::PlaybackRepeatMode::Sequence => {
+                        tmplayer::HostRepeatMode::Sequence
+                    }
+                    app::playback_controller::PlaybackRepeatMode::Shuffle => {
+                        tmplayer::HostRepeatMode::Shuffle
+                    }
+                    app::playback_controller::PlaybackRepeatMode::LoopAll => {
+                        tmplayer::HostRepeatMode::LoopAll
+                    }
+                    app::playback_controller::PlaybackRepeatMode::LoopOne => {
+                        tmplayer::HostRepeatMode::LoopOne
+                    }
                 },
                 position: Duration::from_secs(0),
             };
@@ -148,15 +170,29 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
             current_track,
             current_liked: snapshot.now_playing_liked,
             state: match snapshot.state {
-                app::PlaybackRuntimeState::Playing => tmplayer::HostPlaybackState::Playing,
-                app::PlaybackRuntimeState::Paused => tmplayer::HostPlaybackState::Paused,
-                app::PlaybackRuntimeState::Stopped => tmplayer::HostPlaybackState::Stopped,
+                app::playback_controller::PlaybackRuntimeState::Playing => {
+                    tmplayer::HostPlaybackState::Playing
+                }
+                app::playback_controller::PlaybackRuntimeState::Paused => {
+                    tmplayer::HostPlaybackState::Paused
+                }
+                app::playback_controller::PlaybackRuntimeState::Stopped => {
+                    tmplayer::HostPlaybackState::Stopped
+                }
             },
             repeat_mode: match snapshot.repeat_mode {
-                app::PlaybackRepeatMode::Sequence => tmplayer::HostRepeatMode::Sequence,
-                app::PlaybackRepeatMode::Shuffle => tmplayer::HostRepeatMode::Shuffle,
-                app::PlaybackRepeatMode::LoopAll => tmplayer::HostRepeatMode::LoopAll,
-                app::PlaybackRepeatMode::LoopOne => tmplayer::HostRepeatMode::LoopOne,
+                app::playback_controller::PlaybackRepeatMode::Sequence => {
+                    tmplayer::HostRepeatMode::Sequence
+                }
+                app::playback_controller::PlaybackRepeatMode::Shuffle => {
+                    tmplayer::HostRepeatMode::Shuffle
+                }
+                app::playback_controller::PlaybackRepeatMode::LoopAll => {
+                    tmplayer::HostRepeatMode::LoopAll
+                }
+                app::playback_controller::PlaybackRepeatMode::LoopOne => {
+                    tmplayer::HostRepeatMode::LoopOne
+                }
             },
             position: snapshot.position,
         }
@@ -406,6 +442,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         let now = Instant::now();
         clock.set_fps(app.config.ui_fps, now);
         app.tick().await;
+        app.prepare_page_transition(terminal)?;
         let continuous = app.should_continuous_redraw();
         if app.covers.poll() || continuous {
             clock.mark_dirty();
@@ -430,6 +467,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
                 ui::draw_settings(frame, app);
             })?;
             app.covers.prepare();
+            app.page_transition_presented(Instant::now());
             clock.presented(Instant::now());
         }
 
@@ -457,6 +495,7 @@ async fn launch_tmplayer_fullscreen(
     app: &mut App,
     bootstrap: tmplayer::FullscreenBootstrap,
 ) -> Result<()> {
+    app.cancel_page_transition();
     let host_snapshot = capture_host_snapshot(terminal, app)?;
     app.reset_main_spectrum();
 

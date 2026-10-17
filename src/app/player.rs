@@ -1,26 +1,40 @@
+use super::streaming::StreamingReader;
+use super::streaming::StreamingReaderHandle;
+use super::streaming::reclaim_orphan_streaming_temp;
 use crate::STORAGE;
-use crate::app::streaming::{StreamingReader, StreamingReaderHandle};
-use crate::data::config::{CacheCleanStrategy, Config};
-use crate::tmplayer::app::state::{EQ_BANDS, EQ_FREQS_HZ, EqSettings};
+use crate::data::config::CacheCleanStrategy;
+use crate::data::config::Config;
+use crate::tmplayer::app::state::EQ_BANDS;
+use crate::tmplayer::app::state::EQ_FREQS_HZ;
+use crate::tmplayer::app::state::EqSettings;
 use crate::tmplayer::audio::lufs_meter::LufsMeter;
-use crate::tmplayer::audio::pcm_tap::{PcmRing, PcmTap};
-use anyhow::{Context, Result};
-use parking_lot::{Condvar, Mutex};
+use crate::tmplayer::audio::pcm_tap::PcmRing;
+use crate::tmplayer::audio::pcm_tap::PcmTap;
+use anyhow::Context;
+use anyhow::Result;
+use parking_lot::Condvar;
+use parking_lot::Mutex;
+use rodio::DeviceSinkBuilder;
+use rodio::MixerDeviceSink;
+use rodio::Player;
+use rodio::Source;
 use rodio::cpal::Error;
 use rodio::decoder::DecoderBuilder;
 use rodio::source::SeekError;
-use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use see::sync::Receiver;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::num::NonZero;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime};
-pub struct AudioPlayer {
+use std::time::Duration;
+use std::time::SystemTime;
+pub(super) struct AudioPlayer {
     _device_sink: MixerDeviceSink,
     player: Arc<Player>,
     error: MaybeError,
@@ -156,7 +170,7 @@ impl SeekWorker {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AudioPlayerState {
+pub(super) enum AudioPlayerState {
     Playing,
     Paused,
     Stopped,
@@ -221,7 +235,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub fn new(config: &Config) -> Result<Self> {
+    pub(super) fn new(config: &Config) -> Result<Self> {
         let error = Arc::new(Mutex::new(None));
         let (player, sink) = build_player(error.clone())?;
         let cache_root = resolve_cache_root(config);
@@ -236,6 +250,7 @@ impl AudioPlayer {
         let cache_policy = config.cache.clone();
         compio::runtime::spawn_blocking(move || {
             let _ = fs::create_dir_all(&startup_dir);
+            let _ = cleanup_orphan_streaming_temps(&startup_dir);
             if cache_policy.clean_on_startup {
                 let _ = cleanup_cache_dir(&startup_dir, &cache_policy);
             }
@@ -261,22 +276,22 @@ impl AudioPlayer {
         Ok(player)
     }
 
-    pub fn cached_song_path(&self, song_id: &str, quality_level: &str) -> PathBuf {
+    pub(super) fn cached_song_path(&self, song_id: &str, quality_level: &str) -> PathBuf {
         let quality = sanitize_cache_key(quality_level);
         let name = format!("{song_id}__{quality}.audio");
         self.cache_dir.join(name)
     }
 
     /// 共享 PCM 抽头环的句柄，供全屏页示波器读取真实波形。
-    pub fn pcm_ring(&self) -> Arc<PcmRing> {
+    pub(super) fn pcm_ring(&self) -> Arc<PcmRing> {
         self.pcm_ring.clone()
     }
 
-    pub fn lufs_meter(&self) -> Arc<LufsMeter> {
+    pub(super) fn lufs_meter(&self) -> Arc<LufsMeter> {
         self.lufs_meter.clone()
     }
 
-    pub async fn play_from_file(&mut self, file_path: &Path) -> Result<()> {
+    pub(super) async fn play_from_file(&mut self, file_path: &Path) -> Result<()> {
         let file_path = file_path.to_path_buf();
         let decoder = compio::runtime::spawn_blocking(move || -> Result<_> {
             let file = File::open(file_path)?;
@@ -299,7 +314,7 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub async fn play_streaming(
+    pub(super) async fn play_streaming(
         &mut self,
         reader: StreamingReader,
         progress_rx: Receiver<(u64, u64)>,
@@ -333,12 +348,12 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub fn set_eq(&mut self, eq: EqSettings) -> Result<()> {
+    pub(super) fn set_eq(&mut self, eq: EqSettings) -> Result<()> {
         self.eq_params.set_from(eq.clamp());
         Ok(())
     }
 
-    pub fn toggle_play_pause(&mut self) {
+    pub(super) fn toggle_play_pause(&mut self) {
         if self.player.empty() {
             return;
         }
@@ -350,7 +365,7 @@ impl AudioPlayer {
         }
     }
 
-    pub fn state(&self) -> AudioPlayerState {
+    pub(super) fn state(&self) -> AudioPlayerState {
         if self.player.empty() {
             return AudioPlayerState::Stopped;
         }
@@ -362,7 +377,7 @@ impl AudioPlayer {
         }
     }
 
-    pub fn stop(&mut self) {
+    pub(super) fn stop(&mut self) {
         if let Some(handle) = self.stream_handle.take() {
             handle.cancel();
         }
@@ -376,26 +391,30 @@ impl AudioPlayer {
         self.total_duration = None;
     }
 
-    pub fn set_volume(&mut self, volume: f32) {
+    pub(super) fn set_volume(&mut self, volume: f32) {
         let volume = volume.clamp(0.0, 1.0);
         self.player.set_volume(volume);
     }
 
-    pub fn volume(&self) -> f32 {
+    pub(super) fn volume(&self) -> f32 {
         self.player.volume()
     }
 
-    pub fn duration(&self) -> Option<Duration> {
+    pub(super) fn duration(&self) -> Option<Duration> {
         self.total_duration
     }
 
     /// Returns the latest buffered progress (downloaded, total).
     /// Uses watch channel which caches the latest value.
-    pub fn recv_progress(&mut self) -> Option<(u64, u64)> {
+    pub(super) fn recv_progress(&mut self) -> Option<(u64, u64)> {
         self.progress_rx.as_mut().map(|rx| *rx.borrow())
     }
 
-    pub fn seek_to_ratio(&mut self, ratio: f32, fallback_total: Option<Duration>) -> Result<()> {
+    pub(super) fn seek_to_ratio(
+        &mut self,
+        ratio: f32,
+        fallback_total: Option<Duration>,
+    ) -> Result<()> {
         let Some(total) = self.total_duration.or(fallback_total) else {
             return Ok(());
         };
@@ -408,14 +427,14 @@ impl AudioPlayer {
     }
 
     /// 是否正在后台加载跳转目标（UI 据此显示加载动画）。
-    pub fn is_seeking(&self) -> bool {
+    pub(super) fn is_seeking(&self) -> bool {
         // An invalidated old request may remain blocked until stream cancellation
         // wakes it; it must not keep the new track's UI in a loading state.
         self.seek_worker.state.lock().pending_target.is_some()
     }
 
     /// 用于界面显示的播放位置：后台加载期间直接显示跳转目标。
-    pub fn display_position(&self) -> Duration {
+    pub(super) fn display_position(&self) -> Duration {
         self.seek_worker
             .state
             .lock()
@@ -423,7 +442,7 @@ impl AudioPlayer {
             .unwrap_or_else(|| self.player.get_pos())
     }
 
-    pub fn position(&self) -> Duration {
+    pub(super) fn position(&self) -> Duration {
         self.player.get_pos()
     }
 }
@@ -639,7 +658,7 @@ where
     }
 }
 
-pub async fn is_nonempty_file(path: &Path) -> bool {
+pub(super) async fn is_nonempty_file(path: &Path) -> bool {
     compio::fs::metadata(path)
         .await
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
@@ -661,7 +680,7 @@ fn sanitize_cache_key(raw: &str) -> String {
     }
 }
 
-pub(crate) fn resolve_cache_root(config: &Config) -> PathBuf {
+pub(super) fn resolve_cache_root(config: &Config) -> PathBuf {
     if let Some(custom) = config
         .cache
         .path
@@ -682,10 +701,26 @@ struct CacheEntry {
     modified: SystemTime,
 }
 
-pub(crate) fn cleanup_cache_dir(
+pub(super) fn cleanup_orphan_streaming_temps(cache_dir: &Path) -> Result<()> {
+    if !cache_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(cache_dir)
+        .with_context(|| format!("read cache dir failed: {}", cache_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "part") {
+            reclaim_orphan_streaming_temp(&path);
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn cleanup_cache_dir(
     cache_dir: &Path,
     policy: &crate::data::config::CacheConfig,
 ) -> Result<()> {
+    cleanup_orphan_streaming_temps(cache_dir)?;
     let mut entries = list_cache_entries(cache_dir)?;
 
     if matches!(
@@ -744,7 +779,8 @@ fn list_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry>> {
     {
         let entry = entry?;
         let path = entry.path();
-        // Active writers own temporary files; maintenance must never delete them.
+        // Streaming orphan files were handled by the dedicated pass above;
+        // ordinary download `.part` files are never cache entries.
         if path.extension().is_some_and(|ext| ext == "part") {
             continue;
         }
@@ -768,235 +804,4 @@ fn list_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry>> {
 }
 
 #[cfg(test)]
-mod seek_worker_tests {
-    use super::*;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::mpsc::{self, Receiver as TestReceiver, Sender};
-
-    #[derive(Default)]
-    struct Gate {
-        open: Mutex<bool>,
-        wake: Condvar,
-    }
-
-    impl Gate {
-        fn wait(&self) {
-            let mut open = self.open.lock();
-            while !*open {
-                self.wake.wait(&mut open);
-            }
-        }
-
-        fn release(&self) {
-            *self.open.lock() = true;
-            self.wake.notify_all();
-        }
-    }
-
-    struct ProbeSource {
-        id: u8,
-        seeks: Sender<(u8, Duration)>,
-        gate: Arc<Gate>,
-    }
-
-    impl Iterator for ProbeSource {
-        type Item = f32;
-
-        fn next(&mut self) -> Option<f32> {
-            Some(0.0)
-        }
-    }
-
-    impl Source for ProbeSource {
-        fn current_span_len(&self) -> Option<usize> {
-            None
-        }
-
-        fn channels(&self) -> rodio::ChannelCount {
-            NonZero::new(1).unwrap()
-        }
-
-        fn sample_rate(&self) -> rodio::SampleRate {
-            NonZero::new(1000).unwrap()
-        }
-
-        fn total_duration(&self) -> Option<Duration> {
-            Some(Duration::from_secs(10))
-        }
-
-        fn try_seek(&mut self, target: Duration) -> std::result::Result<(), SeekError> {
-            self.seeks.send((self.id, target)).unwrap();
-            self.gate.wait();
-            Ok(())
-        }
-    }
-
-    struct Probe {
-        worker: SeekWorker,
-        mixer: rodio::mixer::Mixer,
-        events: TestReceiver<(u8, Duration)>,
-        sender: Sender<(u8, Duration)>,
-        gate: Arc<Gate>,
-        render_stop: Arc<AtomicBool>,
-        render: Option<JoinHandle<()>>,
-    }
-
-    impl Probe {
-        fn new(execute: impl Fn(Arc<Player>, Duration) + Send + 'static) -> Self {
-            let (mixer, mut output) =
-                rodio::mixer::mixer(NonZero::new(1).unwrap(), NonZero::new(1000).unwrap());
-            let render_stop = Arc::new(AtomicBool::new(false));
-            let stop = render_stop.clone();
-            let render = std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
-                    // A clocked software audio callback, not an executor poll.
-                    for _ in 0..5 {
-                        let _ = output.next();
-                    }
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            });
-            let (sender, events) = mpsc::channel();
-            Self {
-                worker: SeekWorker::with_executor(
-                    Arc::new(Mutex::new(SeekState::default())),
-                    execute,
-                ),
-                mixer,
-                events,
-                sender,
-                gate: Arc::new(Gate::default()),
-                render_stop,
-                render: Some(render),
-            }
-        }
-
-        fn player(&self, id: u8) -> Arc<Player> {
-            let player = Arc::new(Player::connect_new(&self.mixer));
-            player.append(ProbeSource {
-                id,
-                seeks: self.sender.clone(),
-                gate: self.gate.clone(),
-            });
-            player
-        }
-
-        fn event(&self) -> (u8, Duration) {
-            self.events.recv_timeout(Duration::from_secs(3)).unwrap()
-        }
-
-        fn idle(&self) {
-            let mut state = self.worker.state.lock();
-            while state.in_flight || state.pending.is_some() {
-                let wait = self
-                    .worker
-                    .wake
-                    .wait_for(&mut state, Duration::from_secs(3));
-                assert!(!wait.timed_out(), "seek worker did not become idle");
-            }
-        }
-    }
-
-    impl Drop for Probe {
-        fn drop(&mut self) {
-            {
-                let mut state = self.worker.state.lock();
-                state.shutdown = true;
-                state.pending = None;
-            }
-            self.gate.release();
-            self.worker.shutdown();
-            self.render_stop.store(true, Ordering::SeqCst);
-            if let Some(render) = self.render.take() {
-                let _ = render.join();
-            }
-        }
-    }
-
-    #[test]
-    fn seek_worker_singleflight_coalesces_latest() {
-        let probe = Probe::new(|player, target| {
-            let _ = player.try_seek(target);
-        });
-        let player = probe.player(1);
-        probe.worker.submit(player.clone(), Duration::from_secs(1));
-        assert_eq!(probe.event(), (1, Duration::from_secs(1)));
-        for seconds in [2, 3, 4] {
-            probe
-                .worker
-                .submit(player.clone(), Duration::from_secs(seconds));
-        }
-        assert!(probe.worker.state.lock().in_flight);
-        assert_eq!(
-            probe.worker.state.lock().pending_target,
-            Some(Duration::from_secs(4))
-        );
-        probe.gate.release();
-        assert_eq!(probe.event(), (1, Duration::from_secs(4)));
-        probe.idle();
-        assert!(probe.events.try_recv().is_err());
-        assert!(probe.worker.state.lock().pending_target.is_none());
-    }
-
-    #[test]
-    fn seek_worker_invalidate_drops_pending_and_preserves_new_intent() {
-        let probe = Probe::new(|player, target| {
-            let _ = player.try_seek(target);
-        });
-        let old = probe.player(1);
-        probe.worker.submit(old.clone(), Duration::from_secs(1));
-        assert_eq!(probe.event(), (1, Duration::from_secs(1)));
-        probe.worker.submit(old.clone(), Duration::from_secs(2));
-        // stop/change/rebuild all use this invalidation before replacing queues.
-        probe.worker.invalidate();
-        assert!(probe.worker.state.lock().pending_target.is_none());
-        old.stop();
-        let new = probe.player(2);
-        probe.worker.submit(new, Duration::from_secs(3));
-        probe.gate.release();
-        assert_eq!(probe.event(), (2, Duration::from_secs(3)));
-        probe.idle();
-        assert!(probe.events.try_recv().is_err());
-    }
-
-    #[test]
-    fn seek_worker_admitted_old_request_cannot_seek_fresh_player() {
-        let before_call = Arc::new(Gate::default());
-        let frozen = before_call.clone();
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let probe = Probe::new(move |player, target| {
-            entered_tx.send(target).unwrap();
-            frozen.wait();
-            let _ = player.try_seek(target);
-        });
-        struct ReleaseOnDrop(Arc<Gate>);
-        impl Drop for ReleaseOnDrop {
-            fn drop(&mut self) {
-                self.0.release();
-            }
-        }
-        // Declared after Probe so assertion unwinding opens the admission gate
-        // before Probe joins its worker.
-        let _release = ReleaseOnDrop(before_call.clone());
-        let old = probe.player(1);
-        probe.gate.release();
-        probe.worker.submit(old.clone(), Duration::from_secs(1));
-        assert_eq!(
-            entered_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Duration::from_secs(1)
-        );
-        probe.worker.invalidate();
-        old.stop();
-        let new = probe.player(2);
-        probe.worker.submit(new, Duration::from_secs(4));
-        before_call.release();
-        let first = probe.event();
-        if first == (1, Duration::from_secs(1)) {
-            assert_eq!(probe.event(), (2, Duration::from_secs(4)));
-        } else {
-            assert_eq!(first, (2, Duration::from_secs(4)));
-        }
-        probe.idle();
-        assert!(probe.events.try_recv().is_err());
-    }
-}
+mod seek_worker_tests;

@@ -1,34 +1,130 @@
-use anyhow::{Context, Result, anyhow, bail};
-use cyper::{Client, Response};
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::anyhow;
+use anyhow::bail;
+use cyper::Client;
+use cyper::Response;
 use futures::StreamExt;
 use image::load_from_memory;
-use ncm_api::{ApiClient, ApiResponse, Query};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use ncm_api::ApiClient;
+use ncm_api::ApiResponse;
+use ncm_api::Query;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const MAX_COVER_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_ORIGINAL_COVER_BYTES: usize = 20 * 1024 * 1024;
 const COVER_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_COVER_VALIDATIONS: usize = 2;
-static COVER_VALIDATION_GATE: CoverValidationGate = CoverValidationGate::new();
+const MAX_COVER_DOWNLOADS: usize = 4;
+const COVER_SIZE_QUERY_KEY: &str = "param";
+const DISPLAY_COVER_EDGE: u32 = 500;
+static COVER_VALIDATION_GATE: CoverGate = CoverGate::new(MAX_COVER_VALIDATIONS);
+static COVER_DOWNLOAD_GATE: CoverGate = CoverGate::new(MAX_COVER_DOWNLOADS);
 
-#[derive(Debug)]
-struct CoverValidationGate {
-    in_flight: AtomicUsize,
+/// Playback/UI covers are small on screen. Ask the CDN for that size instead of
+/// downloading the original and relying on a post-decode resize.
+pub(super) fn cover_url_for_display(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() || !url.starts_with("http") {
+        return url.to_string();
+    }
+    set_url_query_param(
+        url,
+        COVER_SIZE_QUERY_KEY,
+        &format!("{DISPLAY_COVER_EDGE}y{DISPLAY_COVER_EDGE}"),
+    )
 }
 
-impl CoverValidationGate {
-    const fn new() -> Self {
+/// Song downloads embed the original artwork; size params on API URLs would
+/// silently replace it with a thumbnail.
+pub(super) fn cover_url_for_download(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return url.to_string();
+    }
+    remove_url_query_param(url, COVER_SIZE_QUERY_KEY)
+}
+
+fn set_url_query_param(url: &str, key: &str, value: &str) -> String {
+    let (base, query, fragment) = split_url_query(url);
+    let mut pairs = query_pairs_without_key(query, key);
+    pairs.push(format!("{key}={value}"));
+    format!("{base}?{}{fragment}", pairs.join("&"))
+}
+
+fn remove_url_query_param(url: &str, key: &str) -> String {
+    let (base, query, fragment) = split_url_query(url);
+    let pairs = query_pairs_without_key(query, key);
+    if pairs.is_empty() {
+        format!("{base}{fragment}")
+    } else {
+        format!("{base}?{}{fragment}", pairs.join("&"))
+    }
+}
+
+fn split_url_query(url: &str) -> (&str, &str, &str) {
+    let (body, fragment) = match url.find('#') {
+        Some(index) => (&url[..index], &url[index..]),
+        None => (url, ""),
+    };
+    match body.find('?') {
+        Some(index) => (&body[..index], &body[index + 1..], fragment),
+        None => (body, "", fragment),
+    }
+}
+
+fn query_pairs_without_key(query: &str, key: &str) -> Vec<String> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter(|pair| pair.split('=').next() != Some(key))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Decoders can recover incomplete images. A persisted or embedded cover must
+/// at least carry the format's terminal marker; full decoding is optional for
+/// byte-only paths that embed the original.
+pub(super) fn validate_cover_bytes(bytes: &[u8]) -> Result<()> {
+    match image::guess_format(bytes)? {
+        image::ImageFormat::Png => {
+            if !bytes.ends_with(&[0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]) {
+                bail!("PNG cover is missing its terminal IEND chunk");
+            }
+        }
+        image::ImageFormat::Jpeg => {
+            if !bytes.ends_with(&[0xff, 0xd9]) {
+                bail!("JPEG cover is missing its end-of-image marker");
+            }
+        }
+        _ => bail!("unsupported cover image format"),
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CoverGate {
+    in_flight: AtomicUsize,
+    max: usize,
+}
+
+impl CoverGate {
+    const fn new(max: usize) -> Self {
         Self {
             in_flight: AtomicUsize::new(0),
+            max,
         }
     }
 
-    fn try_acquire(&self) -> Result<CoverValidationPermit<'_>> {
+    fn try_acquire(&self) -> Result<CoverGatePermit<'_>> {
         let mut count = self.in_flight.load(Ordering::Acquire);
         loop {
-            if count >= MAX_COVER_VALIDATIONS {
+            if count >= self.max {
                 bail!(
-                    "cover image validation is busy ({MAX_COVER_VALIDATIONS} jobs already running)"
+                    "cover admission is busy ({} slots already running)",
+                    self.max
                 );
             }
             match self.in_flight.compare_exchange_weak(
@@ -37,13 +133,13 @@ impl CoverValidationGate {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(CoverValidationPermit { gate: self }),
+                Ok(_) => return Ok(CoverGatePermit { gate: self }),
                 Err(actual) => count = actual,
             }
         }
     }
 
-    async fn acquire(&self, timeout: Duration) -> Result<CoverValidationPermit<'_>> {
+    async fn acquire(&self, timeout: Duration) -> Result<CoverGatePermit<'_>> {
         compio::time::timeout(timeout, async {
             loop {
                 if let Ok(permit) = self.try_acquire() {
@@ -53,23 +149,23 @@ impl CoverValidationGate {
             }
         })
         .await
-        .map_err(|_| anyhow!("cover decoder admission timed out"))
+        .map_err(|_| anyhow!("cover admission timed out"))
     }
 }
 
 #[derive(Debug)]
-struct CoverValidationPermit<'a> {
-    gate: &'a CoverValidationGate,
+struct CoverGatePermit<'a> {
+    gate: &'a CoverGate,
 }
 
-impl Drop for CoverValidationPermit<'_> {
+impl Drop for CoverGatePermit<'_> {
     fn drop(&mut self) {
         self.gate.in_flight.fetch_sub(1, Ordering::Release);
     }
 }
 
 #[derive(Clone)]
-pub struct ApiState {
+pub(crate) struct ApiState {
     client: ApiClient,
     cookie: Option<String>,
     http: Client,
@@ -77,7 +173,7 @@ pub struct ApiState {
 }
 
 impl ApiState {
-    pub fn new(cookie: Option<String>, http: Client) -> Result<Self> {
+    pub(super) fn new(cookie: Option<String>, http: Client) -> Result<Self> {
         let client = ApiClient::new(cookie.clone(), http.clone());
 
         Ok(Self {
@@ -92,26 +188,26 @@ impl ApiState {
         self.wake.clone()
     }
 
-    pub fn session_cookie(&self) -> Option<&str> {
+    pub(super) fn session_cookie(&self) -> Option<&str> {
         self.cookie.as_deref()
     }
 
     /// Get the HTTP client for streaming playback.
-    pub fn http_client(&self) -> &Client {
+    pub(super) fn http_client(&self) -> &Client {
         &self.http
     }
 
-    pub fn set_cookie(&mut self, cookie: String) {
+    pub(super) fn set_cookie(&mut self, cookie: String) {
         self.cookie = Some(cookie.clone());
         self.client.set_cookie(cookie);
     }
 
-    pub fn clear_cookie(&mut self) {
+    pub(super) fn clear_cookie(&mut self) {
         self.cookie = None;
         self.client.set_cookie(String::new());
     }
 
-    pub async fn validate_cookie(&mut self, cookie: &str) -> Result<bool> {
+    pub(super) async fn validate_cookie(&mut self, cookie: &str) -> Result<bool> {
         let query = Query::new().cookie(cookie);
         let response = self.client.login_status(&query).await?;
         let code = response
@@ -129,21 +225,21 @@ impl ApiState {
         Ok(false)
     }
 
-    pub async fn login_status(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn login_status(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.login_status(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn user_account(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn user_account(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.user_account(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn user_playlist_create(
+    pub(super) async fn user_playlist_create(
         &mut self,
         uid: &str,
         limit: usize,
@@ -158,7 +254,7 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn user_playlist_collect(
+    pub(super) async fn user_playlist_collect(
         &mut self,
         uid: &str,
         limit: usize,
@@ -173,7 +269,7 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn login_email(&mut self, email: &str, password: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_email(&mut self, email: &str, password: &str) -> Result<ApiResponse> {
         let query = Query::new()
             .param("email", email)
             .param("password", password);
@@ -182,51 +278,55 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn captcha_sent(&mut self, phone: &str) -> Result<ApiResponse> {
+    pub(super) async fn captcha_sent(&mut self, phone: &str) -> Result<ApiResponse> {
         let query = Query::new().param("phone", phone);
         let response = self.client.captcha_sent(&query).await?;
         Ok(response)
     }
 
-    pub async fn login_phone_captcha(&mut self, phone: &str, captcha: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_phone_captcha(
+        &mut self,
+        phone: &str,
+        captcha: &str,
+    ) -> Result<ApiResponse> {
         let query = Query::new().param("phone", phone).param("captcha", captcha);
         let response = self.client.login_cellphone(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn login_qr_key(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn login_qr_key(&mut self) -> Result<ApiResponse> {
         let query = Query::new();
         let response = self.client.login_qr_key(&query).await?;
         Ok(response)
     }
 
-    pub async fn login_qr_create(&mut self, key: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_qr_create(&mut self, key: &str) -> Result<ApiResponse> {
         let query = Query::new().param("key", key);
         let response = self.client.login_qr_create(&query).await?;
         Ok(response)
     }
 
-    pub async fn login_qr_check(&mut self, key: &str) -> Result<ApiResponse> {
+    pub(super) async fn login_qr_check(&mut self, key: &str) -> Result<ApiResponse> {
         let query = Query::new().param("key", key);
         let response = self.client.login_qr_check(&query).await?;
         self.capture_cookie(&response);
         Ok(response)
     }
 
-    pub async fn recommend_resource(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn recommend_resource(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.recommend_resource(&query).await?;
         Ok(response)
     }
 
-    pub async fn recommend_songs(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn recommend_songs(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.recommend_songs(&query).await?;
         Ok(response)
     }
 
-    pub async fn personalized(&mut self, limit: usize) -> Result<ApiResponse> {
+    pub(super) async fn personalized(&mut self, limit: usize) -> Result<ApiResponse> {
         let limit = limit.max(1).to_string();
         let query = self.query_with_cookie().param("limit", &limit);
         let response = self.client.personalized(&query).await?;
@@ -234,7 +334,11 @@ impl ApiState {
     }
 
     /// 私人漫游（私人 FM 模式选择）
-    pub async fn personal_fm_mode(&mut self, mode: &str, limit: usize) -> Result<ApiResponse> {
+    pub(super) async fn personal_fm_mode(
+        &mut self,
+        mode: &str,
+        limit: usize,
+    ) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("mode", mode)
@@ -243,12 +347,12 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn playlist_detail(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn playlist_detail(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.playlist_detail(&query).await?;
         Ok(response)
     }
-    pub async fn playlist_track_all(
+    pub(super) async fn playlist_track_all(
         &mut self,
         id: &str,
         limit: usize,
@@ -263,31 +367,31 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn album(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn album(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.album(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_detail(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn artist_detail(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_detail(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_desc(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn artist_desc(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_desc(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_top_song(&mut self, id: &str) -> Result<ApiResponse> {
+    pub(super) async fn artist_top_song(&mut self, id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", id);
         let response = self.client.artist_top_song(&query).await?;
         Ok(response)
     }
 
-    pub async fn artist_album(
+    pub(super) async fn artist_album(
         &mut self,
         id: &str,
         limit: usize,
@@ -302,7 +406,11 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn artist_sublist(&mut self, limit: usize, offset: usize) -> Result<ApiResponse> {
+    pub(super) async fn artist_sublist(
+        &mut self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("limit", &limit.max(1).to_string())
@@ -311,19 +419,19 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn song_detail(&mut self, song_id: &str) -> Result<ApiResponse> {
+    pub(super) async fn song_detail(&mut self, song_id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("ids", song_id);
         let response = self.client.song_detail(&query).await?;
         Ok(response)
     }
 
-    pub async fn lyric(&mut self, song_id: &str) -> Result<ApiResponse> {
+    pub(super) async fn lyric(&mut self, song_id: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("id", song_id);
         let response = self.client.lyric(&query).await?;
         Ok(response)
     }
 
-    pub async fn like_song(&mut self, song_id: &str, like: bool) -> Result<ApiResponse> {
+    pub(super) async fn like_song(&mut self, song_id: &str, like: bool) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -332,19 +440,19 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
+    pub(super) async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("uid", uid);
         let response = self.client.likelist(&query).await?;
         Ok(response)
     }
 
-    pub async fn song_like_check(&mut self, ids_json: &str) -> Result<ApiResponse> {
+    pub(super) async fn song_like_check(&mut self, ids_json: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("ids", ids_json);
         let response = self.client.song_like_check(&query).await?;
         Ok(response)
     }
 
-    pub async fn song_url(&mut self, song_id: &str) -> Result<ApiResponse> {
+    async fn song_url(&mut self, song_id: &str) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -353,7 +461,7 @@ impl ApiState {
         Ok(response)
     }
 
-    pub async fn song_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
+    async fn song_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -363,11 +471,7 @@ impl ApiState {
     }
 
     /// 客户端下载链接（新版）：登录后可用，对免费歌曲能拿到比播放更高的档位。
-    pub async fn song_download_url_v1(
-        &mut self,
-        song_id: &str,
-        level: &str,
-    ) -> Result<ApiResponse> {
+    async fn song_download_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
         let query = self
             .query_with_cookie()
             .param("id", song_id)
@@ -378,7 +482,7 @@ impl ApiState {
 
     /// 下载取链：`download/url/v1` 优先（未登录/无版权时回包里的 url 为空），
     /// 退回 `player/url/v1`，再退回旧 `/song/url`。
-    pub async fn audio_download_url(
+    pub(super) async fn audio_download_url(
         &mut self,
         song_id: &str,
         level: &str,
@@ -404,7 +508,7 @@ impl ApiState {
         })
     }
 
-    pub async fn song_stream_url_with_quality(
+    pub(super) async fn song_stream_url_with_quality(
         &mut self,
         song_id: &str,
         level: &str,
@@ -439,19 +543,19 @@ impl ApiState {
         ))
     }
 
-    pub async fn vip_info(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn vip_info(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.vip_info(&query).await?;
         Ok(response)
     }
 
-    pub async fn vip_info_v2(&mut self) -> Result<ApiResponse> {
+    pub(super) async fn vip_info_v2(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.vip_info_v2(&query).await?;
         Ok(response)
     }
 
-    pub async fn search(
+    pub(super) async fn search(
         &mut self,
         keywords: &str,
         search_type: i32,
@@ -468,21 +572,52 @@ impl ApiState {
         Ok(response)
     }
 
-    /// Fetch a complete cover within one 30s network budget, then await bounded validation.
-    pub async fn fetch_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
+    /// Download path: fetch the original artwork. The bytes are embedded into
+    /// the tag as-is, so skip the full decode and only prove the container is
+    /// complete.
+    pub(super) async fn fetch_original_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let url = cover_url_for_download(url);
+        Ok(self
+            .fetch_cover_with_timeout(
+                &url,
+                COVER_NETWORK_TIMEOUT,
+                false,
+                false,
+                MAX_ORIGINAL_COVER_BYTES,
+            )
+            .await?
+            .0)
+    }
+
+    /// Raw-bytes helper retained for cover transport tests.
+    #[cfg(test)]
+    pub(super) async fn fetch_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
         self.fetch_cover_bytes_with_timeout(url, COVER_NETWORK_TIMEOUT)
             .await
     }
 
+    /// Playback cover path: request the CDN's display-sized artwork.
+    pub(super) async fn fetch_display_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        self.fetch_cover_bytes_with_timeout(&cover_url_for_display(url), COVER_NETWORK_TIMEOUT)
+            .await
+    }
+
     /// UI consumers keep the one validated decode, reduced off the reactor.
-    pub async fn fetch_cover_image(
+    pub(super) async fn fetch_cover_image(
         &self,
         url: &str,
     ) -> Result<std::sync::Arc<image::DynamicImage>> {
-        self.fetch_cover_with_timeout(url, COVER_NETWORK_TIMEOUT, true)
-            .await?
-            .1
-            .ok_or_else(|| anyhow!("cover image URL was empty"))
+        let url = cover_url_for_display(url);
+        self.fetch_cover_with_timeout(
+            &url,
+            COVER_NETWORK_TIMEOUT,
+            true,
+            true,
+            MAX_COVER_IMAGE_BYTES,
+        )
+        .await?
+        .1
+        .ok_or_else(|| anyhow!("cover image URL was empty"))
     }
 
     async fn fetch_cover_bytes_with_timeout(
@@ -490,7 +625,10 @@ impl ApiState {
         url: &str,
         timeout: Duration,
     ) -> Result<Vec<u8>> {
-        Ok(self.fetch_cover_with_timeout(url, timeout, false).await?.0)
+        Ok(self
+            .fetch_cover_with_timeout(url, timeout, false, true, MAX_COVER_IMAGE_BYTES)
+            .await?
+            .0)
     }
 
     async fn fetch_cover_with_timeout(
@@ -498,6 +636,8 @@ impl ApiState {
         url: &str,
         timeout: Duration,
         keep_image: bool,
+        decode_image: bool,
+        max_bytes: usize,
     ) -> Result<(Vec<u8>, Option<std::sync::Arc<image::DynamicImage>>)> {
         let url = url.trim();
         if url.is_empty() {
@@ -506,27 +646,22 @@ impl ApiState {
 
         // Do not reset the budget between headers and individual body chunks.
         let bytes = compio::time::timeout(timeout, async {
+            let _download_permit = COVER_DOWNLOAD_GATE.acquire(timeout).await?;
             let response = self.http.get(url)?.send().await?;
             let response = error_for_status(response)?;
             let expected_len = response.content_length();
             if let Some(content_len) = expected_len
-                && content_len > MAX_COVER_IMAGE_BYTES as u64
+                && content_len > max_bytes as u64
             {
-                return Err(anyhow!(
-                    "cover image exceeds {} byte limit",
-                    MAX_COVER_IMAGE_BYTES
-                ));
+                return Err(anyhow!("cover image exceeds {max_bytes} byte limit"));
             }
 
             let mut bytes = Vec::with_capacity(expected_len.unwrap_or(64 * 1024) as usize);
             let mut stream = response.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.with_context(|| format!("download cover image failed: {url}"))?;
-                if bytes.len().saturating_add(chunk.len()) > MAX_COVER_IMAGE_BYTES {
-                    return Err(anyhow!(
-                        "cover image exceeds {} byte limit",
-                        MAX_COVER_IMAGE_BYTES
-                    ));
+                if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                    return Err(anyhow!("cover image exceeds {max_bytes} byte limit"));
                 }
                 bytes.extend_from_slice(&chunk);
             }
@@ -548,26 +683,17 @@ impl ApiState {
         .map_err(|_| ncm_api::NcmError::Timeout { timeout })
         .with_context(|| format!("download cover image timed out: {url}"))??;
 
+        if !decode_image {
+            validate_cover_bytes(&bytes).with_context(|| format!("invalid cover image: {url}"))?;
+            return Ok((bytes, None));
+        }
+
         // Blocking decoders cannot be cancelled. The closure, not its caller,
         // owns admission until it finishes, even if the awaiting task is dropped.
         let permit = COVER_VALIDATION_GATE.acquire(timeout).await?;
         let validated = compio::runtime::spawn_blocking(move || -> Result<_> {
             let _permit = permit;
-            // Decoders can recover incomplete images. A cache entry must carry
-            // the format's terminal marker as well as successfully decode.
-            match image::guess_format(&bytes)? {
-                image::ImageFormat::Png => {
-                    if !bytes.ends_with(&[0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]) {
-                        bail!("PNG cover is missing its terminal IEND chunk");
-                    }
-                }
-                image::ImageFormat::Jpeg => {
-                    if !bytes.ends_with(&[0xff, 0xd9]) {
-                        bail!("JPEG cover is missing its end-of-image marker");
-                    }
-                }
-                _ => bail!("unsupported cover image format"),
-            }
+            validate_cover_bytes(&bytes)?;
             let decoded = load_from_memory(&bytes)?;
             let image = keep_image.then(|| std::sync::Arc::new(decoded.thumbnail(500, 500)));
             Ok((bytes, image))
@@ -598,10 +724,10 @@ impl ApiState {
 
 /// 下载取链的结果：直链、载荷类型（mp3/flac）与实际档位（可能被账号权限降级）。
 #[derive(Debug, Clone)]
-pub struct AudioDownloadSource {
-    pub url: String,
-    pub file_type: String,
-    pub level: String,
+pub(super) struct AudioDownloadSource {
+    pub(super) url: String,
+    pub(super) file_type: String,
+    pub(super) level: String,
 }
 
 /// 从 `…/url` 系列回包里取第一条 `data[0]`：空 url 视为不可用。
@@ -634,7 +760,7 @@ fn parse_audio_source(
     })
 }
 
-pub fn error_for_status(resp: Response) -> Result<Response> {
+pub(super) fn error_for_status(resp: Response) -> Result<Response> {
     let status = resp.status();
     let url = resp.url();
     let reason = status.canonical_reason().unwrap_or_default();
@@ -646,209 +772,4 @@ pub fn error_for_status(resp: Response) -> Result<Response> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::ApiState;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    #[compio::test]
-    async fn busy_cover_decoder_waits_for_capacity_instead_of_losing_image() {
-        static GATE: super::CoverValidationGate = super::CoverValidationGate::new();
-        let first = GATE.try_acquire().unwrap();
-        let second = GATE.try_acquire().unwrap();
-        let release = compio::runtime::spawn(async move {
-            compio::time::sleep(Duration::from_millis(30)).await;
-            drop(first);
-        });
-        let third = GATE.acquire(Duration::from_secs(1)).await.unwrap();
-        assert!(
-            GATE.try_acquire().is_err(),
-            "waiting did not increase decoder concurrency"
-        );
-        drop(third);
-        drop(second);
-        release.await.unwrap();
-    }
-
-    #[compio::test]
-    async fn cover_network_deadline_is_not_reset_after_headers() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let png = tiny_png();
-        let server = compio::runtime::spawn_blocking(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut request = [0; 1024];
-            assert_ne!(socket.read(&mut request).unwrap(), 0);
-            std::thread::sleep(Duration::from_millis(200));
-            write!(
-                socket,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                png.len()
-            )
-            .unwrap();
-            socket.write_all(&png[..8]).unwrap();
-            std::thread::sleep(Duration::from_millis(200));
-            // A single deadline has expired; a fresh body deadline would accept this PNG.
-            let _ = socket.write_all(&png[8..]);
-        });
-        let http = cyper::Client::builder().no_proxy().build().unwrap();
-        let api = ApiState::new(None, http).unwrap();
-        let url = format!("http://{address}/slow-cover");
-        let result = compio::time::timeout(
-            Duration::from_secs(2),
-            api.fetch_cover_bytes_with_timeout(&url, Duration::from_millis(300)),
-        )
-        .await;
-        server.await.unwrap();
-        let error = result
-            .expect("the cover deadline must beat the watchdog")
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<ncm_api::NcmError>(),
-            Some(ncm_api::NcmError::Timeout { timeout })
-                if *timeout == Duration::from_millis(300)
-        ));
-        let message = format!("{error:#}");
-        assert!(message.contains("complete response"));
-        assert!(message.contains(&url));
-    }
-
-    #[compio::test]
-    async fn cover_validation_admission_lives_until_blocking_work_finishes() {
-        static GATE: super::CoverValidationGate = super::CoverValidationGate::new();
-        let first = GATE.try_acquire().unwrap();
-        let second = GATE.try_acquire().unwrap();
-        assert!(GATE.try_acquire().unwrap_err().to_string().contains("busy"));
-        let (release, wait_for_release) = mpsc::channel();
-        let worker = compio::runtime::spawn_blocking(move || {
-            let _permit = first;
-            let _ = wait_for_release.recv_timeout(Duration::from_secs(2));
-        });
-        drop(worker);
-        // Dropping the caller does not free the running decoder's slot.
-        assert!(GATE.try_acquire().is_err());
-        let _ = release.send(());
-        compio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                if let Ok(permit) = GATE.try_acquire() {
-                    drop(permit);
-                    break;
-                }
-                compio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .expect("finishing blocking work must release its admission slot");
-        drop(second);
-        let _first = GATE.try_acquire().unwrap();
-        let _second = GATE.try_acquire().unwrap();
-    }
-
-    fn tiny_png() -> Vec<u8> {
-        use image::ImageEncoder;
-        let mut bytes = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut bytes)
-            .write_image(&[0, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
-            .unwrap();
-        bytes
-    }
-
-    #[compio::test]
-    async fn cover_download_accepts_only_complete_valid_images() {
-        let png = tiny_png();
-        let length_header = format!("Content-Length: {}\r\n", png.len());
-        let cases: &[(&[u8], &str, bool)] = &[
-            (&png, &length_header, true),
-            (&png, "", true),
-            (b"not-an-image", "Content-Length: 12\r\n", false),
-            (&png[..20], &length_header, false),
-            (&png[..png.len() - 12], "", false),
-            (b"a\r\nabc", "Transfer-Encoding: chunked\r\n", false),
-        ];
-        for (index, (body, headers, expected_ok)) in cases.iter().enumerate() {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let address = listener.local_addr().unwrap();
-            let body = body.to_vec();
-            let headers = headers.to_string();
-            let server = compio::runtime::spawn_blocking(move || {
-                let (mut socket, _) = listener.accept().unwrap();
-                let mut request = [0; 1024];
-                let _ = socket.read(&mut request);
-                write!(
-                    socket,
-                    "HTTP/1.1 200 OK\r\n{headers}Connection: close\r\n\r\n"
-                )
-                .unwrap();
-                socket.write_all(&body).unwrap();
-            });
-            let http = cyper::Client::builder().no_proxy().build().unwrap();
-            let api = ApiState::new(None, http).unwrap();
-            let result = api
-                .fetch_cover_bytes(&format!("http://{address}/cover-{index}"))
-                .await;
-            server.await.unwrap();
-            assert_eq!(result.is_ok(), *expected_ok, "case {index}: {result:?}");
-            if *expected_ok {
-                assert_eq!(result.unwrap(), png);
-            }
-        }
-    }
-
-    #[compio::test]
-    async fn cover_download_rejects_declared_oversize_before_body() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = compio::runtime::spawn_blocking(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            let _ = socket.read(&mut request);
-            write!(
-                socket,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                super::MAX_COVER_IMAGE_BYTES + 1
-            )
-            .unwrap();
-        });
-        let http = cyper::Client::builder().no_proxy().build().unwrap();
-        let api = ApiState::new(None, http).unwrap();
-        assert!(
-            api.fetch_cover_bytes(&format!("http://{address}/oversize"))
-                .await
-                .is_err()
-        );
-        server.await.unwrap();
-    }
-
-    #[compio::test]
-    async fn cover_download_caps_body_without_content_length() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = compio::runtime::spawn_blocking(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let mut request = [0; 1024];
-            let _ = socket.read(&mut request);
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
-                .unwrap();
-            let block = [0; 8192];
-            for _ in 0..=(super::MAX_COVER_IMAGE_BYTES / block.len()) {
-                if socket.write_all(&block).is_err() {
-                    break;
-                }
-            }
-        });
-        let http = cyper::Client::builder().no_proxy().build().unwrap();
-        let api = ApiState::new(None, http).unwrap();
-        let error = api
-            .fetch_cover_bytes(&format!("http://{address}/unbounded"))
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("byte limit"));
-        server.await.unwrap();
-    }
-}
+mod tests;

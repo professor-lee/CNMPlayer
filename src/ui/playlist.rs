@@ -1,7 +1,6 @@
 use crate::app::App;
 use crate::data::config::Language;
 use crate::data::icons::UiIcons;
-use crate::ui::page_lyrics;
 use crate::ui::player_bar;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -10,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub fn draw_playlist(frame: &mut Frame, app: &mut App) {
+pub fn draw_playlist(frame: &mut Frame, app: &mut App) -> Option<Rect> {
     app.clear_player_bar_hits();
     app.clear_content_hits();
 
@@ -26,7 +25,7 @@ pub fn draw_playlist(frame: &mut Frame, app: &mut App) {
             .style(Style::default().fg(app.theme.color_subtext())),
             size,
         );
-        return;
+        return None;
     }
 
     let rows = Layout::default()
@@ -59,13 +58,10 @@ pub fn draw_playlist(frame: &mut Frame, app: &mut App) {
 
     draw_playlist_header(frame, app, main[0]);
     draw_playlist_tracks(frame, app, main[1]);
-    if app.config.page_lyrics {
-        page_lyrics::draw_page_lyrics_overlay(frame, app, content_area);
-    }
     if app.config.show_hints {
         draw_playlist_hint(frame, app, hint_area);
     }
-    player_bar::draw_collapsed_player_bar(frame, app, rows[1]);
+    Some(rows[0])
 }
 
 fn draw_playlist_header(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -255,7 +251,7 @@ fn draw_playlist_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         app.push_playlist_track_hit(
-            crate::app::HitRect {
+            crate::app::input_controller::HitRect {
                 x: row.x,
                 y: row.y,
                 width: row.width,
@@ -357,7 +353,7 @@ fn draw_playlist_tracks(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
             spans.push(Span::styled(" ", style));
             app.push_playlist_track_download_hit(
-                crate::app::HitRect {
+                crate::app::input_controller::HitRect {
                     x: icon_x,
                     y: row.y,
                     width: 1,
