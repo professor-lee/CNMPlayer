@@ -7,7 +7,7 @@ use std::time::Duration;
 
 #[compio::test]
 async fn busy_cover_decoder_waits_for_capacity_instead_of_losing_image() {
-    static GATE: super::CoverValidationGate = super::CoverValidationGate::new();
+    static GATE: super::CoverGate = super::CoverGate::new(2);
     let first = GATE.try_acquire().unwrap();
     let second = GATE.try_acquire().unwrap();
     let release = compio::runtime::spawn(async move {
@@ -72,7 +72,7 @@ async fn cover_network_deadline_is_not_reset_after_headers() {
 
 #[compio::test]
 async fn cover_validation_admission_lives_until_blocking_work_finishes() {
-    static GATE: super::CoverValidationGate = super::CoverValidationGate::new();
+    static GATE: super::CoverGate = super::CoverGate::new(2);
     let first = GATE.try_acquire().unwrap();
     let second = GATE.try_acquire().unwrap();
     assert!(GATE.try_acquire().unwrap_err().to_string().contains("busy"));

@@ -17,9 +17,11 @@ const MAX_COVER_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_ORIGINAL_COVER_BYTES: usize = 20 * 1024 * 1024;
 const COVER_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_COVER_VALIDATIONS: usize = 2;
+const MAX_COVER_DOWNLOADS: usize = 4;
 const COVER_SIZE_QUERY_KEY: &str = "param";
 const DISPLAY_COVER_EDGE: u32 = 500;
-static COVER_VALIDATION_GATE: CoverValidationGate = CoverValidationGate::new();
+static COVER_VALIDATION_GATE: CoverGate = CoverGate::new(MAX_COVER_VALIDATIONS);
+static COVER_DOWNLOAD_GATE: CoverGate = CoverGate::new(MAX_COVER_DOWNLOADS);
 
 /// Playback/UI covers are small on screen. Ask the CDN for that size instead of
 /// downloading the original and relying on a post-decode resize.
@@ -103,23 +105,26 @@ pub(super) fn validate_cover_bytes(bytes: &[u8]) -> Result<()> {
 }
 
 #[derive(Debug)]
-struct CoverValidationGate {
+struct CoverGate {
     in_flight: AtomicUsize,
+    max: usize,
 }
 
-impl CoverValidationGate {
-    const fn new() -> Self {
+impl CoverGate {
+    const fn new(max: usize) -> Self {
         Self {
             in_flight: AtomicUsize::new(0),
+            max,
         }
     }
 
-    fn try_acquire(&self) -> Result<CoverValidationPermit<'_>> {
+    fn try_acquire(&self) -> Result<CoverGatePermit<'_>> {
         let mut count = self.in_flight.load(Ordering::Acquire);
         loop {
-            if count >= MAX_COVER_VALIDATIONS {
+            if count >= self.max {
                 bail!(
-                    "cover image validation is busy ({MAX_COVER_VALIDATIONS} jobs already running)"
+                    "cover admission is busy ({} slots already running)",
+                    self.max
                 );
             }
             match self.in_flight.compare_exchange_weak(
@@ -128,13 +133,13 @@ impl CoverValidationGate {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(CoverValidationPermit { gate: self }),
+                Ok(_) => return Ok(CoverGatePermit { gate: self }),
                 Err(actual) => count = actual,
             }
         }
     }
 
-    async fn acquire(&self, timeout: Duration) -> Result<CoverValidationPermit<'_>> {
+    async fn acquire(&self, timeout: Duration) -> Result<CoverGatePermit<'_>> {
         compio::time::timeout(timeout, async {
             loop {
                 if let Ok(permit) = self.try_acquire() {
@@ -144,16 +149,16 @@ impl CoverValidationGate {
             }
         })
         .await
-        .map_err(|_| anyhow!("cover decoder admission timed out"))
+        .map_err(|_| anyhow!("cover admission timed out"))
     }
 }
 
 #[derive(Debug)]
-struct CoverValidationPermit<'a> {
-    gate: &'a CoverValidationGate,
+struct CoverGatePermit<'a> {
+    gate: &'a CoverGate,
 }
 
-impl Drop for CoverValidationPermit<'_> {
+impl Drop for CoverGatePermit<'_> {
     fn drop(&mut self) {
         self.gate.in_flight.fetch_sub(1, Ordering::Release);
     }
@@ -641,6 +646,7 @@ impl ApiState {
 
         // Do not reset the budget between headers and individual body chunks.
         let bytes = compio::time::timeout(timeout, async {
+            let _download_permit = COVER_DOWNLOAD_GATE.acquire(timeout).await?;
             let response = self.http.get(url)?.send().await?;
             let response = error_for_status(response)?;
             let expected_len = response.content_length();
