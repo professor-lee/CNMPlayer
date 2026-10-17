@@ -297,6 +297,7 @@ impl App {
             .clamp_for_vip(self.vip_audio_unlocked);
         config.page_lyrics_pos_x = config.page_lyrics_pos_x.clamp(0.0, 1.0);
         config.page_lyrics_pos_y = config.page_lyrics_pos_y.clamp(0.0, 1.0);
+        config.lyric_frame_divisor = config.lyric_frame_divisor.clamp(1, 8);
         if config.download_path != self.config.download_path
             && let Some(raw) = config.download_path.as_deref()
             && crate::app::download::validate_download_path(raw)
