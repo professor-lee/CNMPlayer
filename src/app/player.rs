@@ -1,5 +1,6 @@
 use super::streaming::StreamingReader;
 use super::streaming::StreamingReaderHandle;
+use super::streaming::reclaim_orphan_streaming_temp;
 use crate::STORAGE;
 use crate::data::config::CacheCleanStrategy;
 use crate::data::config::Config;
@@ -249,6 +250,7 @@ impl AudioPlayer {
         let cache_policy = config.cache.clone();
         compio::runtime::spawn_blocking(move || {
             let _ = fs::create_dir_all(&startup_dir);
+            let _ = cleanup_orphan_streaming_temps(&startup_dir);
             if cache_policy.clean_on_startup {
                 let _ = cleanup_cache_dir(&startup_dir, &cache_policy);
             }
@@ -699,10 +701,26 @@ struct CacheEntry {
     modified: SystemTime,
 }
 
+pub(super) fn cleanup_orphan_streaming_temps(cache_dir: &Path) -> Result<()> {
+    if !cache_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(cache_dir)
+        .with_context(|| format!("read cache dir failed: {}", cache_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().is_some_and(|ext| ext == "part") {
+            reclaim_orphan_streaming_temp(&path);
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn cleanup_cache_dir(
     cache_dir: &Path,
     policy: &crate::data::config::CacheConfig,
 ) -> Result<()> {
+    cleanup_orphan_streaming_temps(cache_dir)?;
     let mut entries = list_cache_entries(cache_dir)?;
 
     if matches!(
@@ -761,7 +779,8 @@ fn list_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry>> {
     {
         let entry = entry?;
         let path = entry.path();
-        // Active writers own temporary files; maintenance must never delete them.
+        // Streaming orphan files were handled by the dedicated pass above;
+        // ordinary download `.part` files are never cache entries.
         if path.extension().is_some_and(|ext| ext == "part") {
             continue;
         }

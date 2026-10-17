@@ -12,6 +12,7 @@ use futures::StreamExt;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 use see::sync::Sender;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Cursor;
 use std::io::Error;
@@ -19,13 +20,128 @@ use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+static ACTIVE_STREAMING_TEMPS: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn active_streaming_temps() -> &'static Mutex<HashSet<PathBuf>> {
+    &ACTIVE_STREAMING_TEMPS
+}
+
+fn reserve_streaming_temp(path: &Path) {
+    active_streaming_temps().lock().insert(path.to_path_buf());
+}
+
+fn release_streaming_temp(path: &Path) {
+    active_streaming_temps().lock().remove(path);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessLiveness {
+    Live,
+    Dead,
+    Unknown,
+}
+
+fn parse_streaming_temp_pid(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let name = name.strip_suffix(".part")?;
+    let (cache_key, job) = name.rsplit_once('.')?;
+    if !cache_key.contains("__") {
+        return None;
+    }
+    let (pid, counter) = job.split_once('-')?;
+    if counter.is_empty() {
+        return None;
+    }
+    counter.parse::<u64>().ok()?;
+    pid.parse::<u32>().ok()
+}
+
+fn process_liveness(pid: u32) -> ProcessLiveness {
+    if pid == 0 {
+        return ProcessLiveness::Unknown;
+    }
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return ProcessLiveness::Unknown;
+        };
+        // SAFETY: kill(pid, 0) only probes process existence and sends no signal.
+        let result = unsafe { libc::kill(pid, 0) };
+        if result == 0 {
+            return ProcessLiveness::Live;
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(code) if code == libc::ESRCH => ProcessLiveness::Dead,
+            Some(code) if code == libc::EPERM => ProcessLiveness::Live,
+            _ => ProcessLiveness::Unknown,
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        ProcessLiveness::Unknown
+    }
+}
+
+fn should_reclaim_streaming_temp(
+    pid: u32,
+    current_pid: u32,
+    active: bool,
+    liveness: ProcessLiveness,
+) -> bool {
+    if active {
+        return false;
+    }
+    if pid == current_pid {
+        // A current-PID file not in the in-process registry is from an earlier
+        // incarnation of this PID, so it is safe to treat as an orphan.
+        return true;
+    }
+    matches!(liveness, ProcessLiveness::Dead)
+}
+
+/// Remove a temporary audio file only when its streaming naming convention and
+/// owning process prove that it is orphaned. The registry lock covers the
+/// check-and-remove sequence so a new stream cannot create the same path after
+/// the check and before removal.
+pub(super) fn reclaim_orphan_streaming_temp(path: &Path) -> bool {
+    let Some(pid) = parse_streaming_temp_pid(path) else {
+        return false;
+    };
+    let mut active = active_streaming_temps().lock();
+    let should_reclaim = should_reclaim_streaming_temp(
+        pid,
+        std::process::id(),
+        active.contains(path),
+        process_liveness(pid),
+    );
+    if !should_reclaim {
+        return false;
+    }
+    let removed = std::fs::remove_file(path).is_ok();
+    if removed {
+        active.remove(path);
+    }
+    removed
+}
+
+struct StreamingTempRegistration(PathBuf);
+
+impl Drop for StreamingTempRegistration {
+    fn drop(&mut self) {
+        release_streaming_temp(&self.0);
+    }
+}
 /// Its synchronous Read/Seek implementation must only run on blocking workers.
 pub(super) struct StreamingReader {
     state: Arc<StreamingState>,
@@ -120,13 +236,22 @@ impl StreamingReader {
         // A cancelled old reader may still be finishing an async write. Never let
         // its close/cleanup truncate or unlink the next reader's temporary file.
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let tmp_path = cache_path.with_extension(format!("{}-{id}.part", std::process::id()));
-        let writer_file = compio::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp_path)
-            .await?;
+        let (tmp_path, writer_file, registration) = loop {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let candidate = cache_path.with_extension(format!("{}-{id}.part", std::process::id()));
+            reserve_streaming_temp(&candidate);
+            let registration = StreamingTempRegistration(candidate.clone());
+            match compio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)
+                .await
+            {
+                Ok(file) => break (candidate, file, registration),
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+                Err(err) => return Err(err.into()),
+            }
+        };
         let reader_path = tmp_path.clone();
         let reader_file = compio::runtime::spawn_blocking(move || File::open(reader_path))
             .await
@@ -144,6 +269,7 @@ impl StreamingReader {
         state.total.store(total, Ordering::SeqCst);
         let task_state = state.clone();
         compio::runtime::spawn(async move {
+            let _registration = registration;
             let result = download_streaming(
                 response,
                 writer_file,

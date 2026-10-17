@@ -7,6 +7,103 @@ use std::io::Read;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+#[test]
+fn streaming_temp_names_are_distinct_from_download_parts() {
+    use super::super::streaming::parse_streaming_temp_pid;
+    use std::path::Path;
+
+    assert_eq!(
+        parse_streaming_temp_pid(Path::new("song__exhigh.1234-7.part")),
+        Some(1234)
+    );
+    for unrelated in [
+        "song.flac.part",
+        "song.audio.part",
+        "song.audio.1234.part",
+        "song.audio.1234-x.part",
+        "song.audio.1234-7.tmp",
+        "song__exhigh.part",
+    ] {
+        assert_eq!(parse_streaming_temp_pid(Path::new(unrelated)), None);
+    }
+}
+
+#[test]
+fn orphan_reclamation_rejects_live_and_unrelated_files() {
+    use super::super::streaming::{ProcessLiveness, should_reclaim_streaming_temp};
+
+    assert!(!should_reclaim_streaming_temp(
+        42,
+        42,
+        true,
+        ProcessLiveness::Live
+    ));
+    // A same-PID file not registered by this process belongs to the previous
+    // incarnation after PID reuse and is safe to reclaim.
+    assert!(should_reclaim_streaming_temp(
+        42,
+        42,
+        false,
+        ProcessLiveness::Live
+    ));
+    assert!(should_reclaim_streaming_temp(
+        7,
+        42,
+        false,
+        ProcessLiveness::Dead
+    ));
+    assert!(!should_reclaim_streaming_temp(
+        7,
+        42,
+        false,
+        ProcessLiveness::Live
+    ));
+    assert!(!should_reclaim_streaming_temp(
+        7,
+        42,
+        false,
+        ProcessLiveness::Unknown
+    ));
+}
+
+#[test]
+fn pid_zero_never_proves_an_owner() {
+    use super::super::streaming::{ProcessLiveness, process_liveness};
+
+    assert_eq!(process_liveness(0), ProcessLiveness::Unknown);
+}
+
+#[test]
+fn cache_maintenance_reclaims_orphans_but_keeps_active_and_unrelated_parts() {
+    use super::{StreamingTempRegistration, reserve_streaming_temp};
+    use crate::app::player::cleanup_orphan_streaming_temps;
+
+    let directory = std::env::temp_dir().join(format!(
+        "cnmplayer-orphan-maintenance-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let pid = std::process::id();
+    let active = directory.join(format!("123__exhigh.{pid}-0.part"));
+    let stale = directory.join(format!("456__exhigh.{pid}-1.part"));
+    let unrelated = directory.join("track.flac.part");
+    let unknown = directory.join("789__exhigh.0-0.part");
+    for path in [&active, &stale, &unrelated, &unknown] {
+        std::fs::write(path, b"partial").unwrap();
+    }
+    reserve_streaming_temp(&active);
+    let registration = StreamingTempRegistration(active.clone());
+    cleanup_orphan_streaming_temps(&directory).unwrap();
+    assert!(active.is_file());
+    assert!(!stale.exists());
+    assert!(unrelated.is_file());
+    assert!(unknown.is_file());
+    drop(registration);
+    cleanup_orphan_streaming_temps(&directory).unwrap();
+    assert!(!active.exists());
+    assert_eq!(std::fs::read(unrelated).unwrap(), b"partial");
+    std::fs::remove_dir_all(directory).unwrap();
+}
 #[compio::test]
 async fn complete_stream_is_published_but_truncated_stream_is_not() {
     for (index, body) in [b"abcdef".as_slice(), b"abc".as_slice()]
