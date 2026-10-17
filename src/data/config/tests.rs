@@ -119,6 +119,25 @@ fn partial_user_configuration_preserves_overrides_and_completes_nested_fields() 
 }
 
 #[test]
+fn lyric_frame_divisor_is_clamped_to_supported_range() {
+    let dir = std::env::temp_dir().join(format!(
+        "cnmplayer-lyric-divisor-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("default.toml");
+    for (raw, expected) in [
+        ("lyric_frame_divisor = 0\n", 1),
+        ("lyric_frame_divisor = 99\n", 8),
+    ] {
+        std::fs::write(&path, raw).unwrap();
+        let loaded = super::Config::load_from_path(&path).unwrap();
+        assert_eq!(loaded.lyric_frame_divisor, expected);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn invalid_user_values_are_rejected_without_defaulting_or_rewriting() {
     let dir = std::env::temp_dir().join(format!(
         "cnmplayer-invalid-values-test-{}",

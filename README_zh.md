@@ -234,6 +234,9 @@ sudo apt install -y build-essential cmake pkg-config \
 | `page_lyrics_snap` | `true` | 拖动结束后吸附到最近的边（左/右/上/下，另一轴保持自由；仅拖动开启时可改） |
 | `page_lyrics_pos_x` | `1.0` | 歌词浮窗左上角的归一化横坐标（0=左，1=右） |
 | `page_lyrics_pos_y` | `1.0` | 歌词浮窗左上角的归一化纵坐标（0=上，1=下） |
+| `word_lyrics` | `true` | 逐字着色：有 YRC 词时间时按词，否则按整行进度 |
+| `lyric_translation` | `false` | 显示歌词翻译 |
+| `lyric_frame_divisor` | `2` | 歌词动画采样倍率（基于 `ui_fps`，1–8）；不改变重绘频率 |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
@@ -321,7 +324,7 @@ sudo apt install -y build-essential cmake pkg-config \
 设置弹窗：
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` 移动，`Left` / `Right` / `Enter` 修改取值，`Esc` 逐级返回
-- 鼠标：滚轮移动选中行，单击聚焦、双击执行；「歌词浮窗」子页为单击直接改值
+- 鼠标：滚轮移动选中行，单击聚焦、双击执行；「歌词设置」子页为单击直接改值
 - 按键绑定页：`Enter` 开始重绑，等待输入时按 `Esc` 取消；`Ctrl+K` 关闭整窗并取消待输入的重绑，不修改原快捷键
 
 全屏播放页：

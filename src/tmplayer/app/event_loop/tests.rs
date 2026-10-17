@@ -170,3 +170,31 @@ fn appended_host_page_keeps_playlist_focus_on_the_boundary_row() {
     sync_from_host_snapshot(&mut app, snapshot(&["new-a", "new-b", "new-c"]));
     assert_eq!(app.playlist_view.selected, 0, "替换来源时聚焦当前播放项");
 }
+
+#[test]
+fn runtime_snapshot_resets_position_anchor_when_position_is_unchanged() {
+    let mut app = AppState::new(
+        Config::default(),
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::Zh,
+    );
+    app.player.playback = PlaybackState::Playing;
+    app.player.position = Duration::from_secs(10);
+    app.position_anchor_at = Instant::now() - Duration::from_secs(5);
+    let before = app.position_anchor_at;
+
+    apply_host_runtime_snapshot(
+        &mut app,
+        HostPlaybackRuntimeSnapshot {
+            state: HostPlaybackState::Playing,
+            position: Duration::from_secs(10),
+            volume: 1.0,
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        app.position_anchor_at > before + Duration::from_secs(4),
+        "an unchanged position snapshot must still refresh the anchor"
+    );
+}

@@ -110,18 +110,18 @@ impl App {
                 .map(|v| v.len())
                 .unwrap_or(0)
                 .hash(&mut hasher);
-            track
-                .lyrics
-                .as_ref()
-                .map(|v| v.len())
-                .unwrap_or(0)
-                .hash(&mut hasher);
-            track
-                .lyrics
-                .as_ref()
-                .and_then(|v| v.last().map(|line| line.start_ms))
-                .unwrap_or(0)
-                .hash(&mut hasher);
+            match track.lyrics.as_ref() {
+                Some(lines) => {
+                    lines.len().hash(&mut hasher);
+                    for line in lines {
+                        line.start_ms.hash(&mut hasher);
+                        line.text.len().hash(&mut hasher);
+                        line.words.len().hash(&mut hasher);
+                        line.translation.as_ref().map(String::len).hash(&mut hasher);
+                    }
+                }
+                None => 0usize.hash(&mut hasher),
+            }
         }
 
         hasher.finish()
@@ -297,6 +297,7 @@ impl App {
             .clamp_for_vip(self.vip_audio_unlocked);
         config.page_lyrics_pos_x = config.page_lyrics_pos_x.clamp(0.0, 1.0);
         config.page_lyrics_pos_y = config.page_lyrics_pos_y.clamp(0.0, 1.0);
+        config.lyric_frame_divisor = config.lyric_frame_divisor.clamp(1, 8);
         if config.download_path != self.config.download_path
             && let Some(raw) = config.download_path.as_deref()
             && crate::app::download::validate_download_path(raw)

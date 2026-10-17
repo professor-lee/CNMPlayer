@@ -16,7 +16,7 @@ use super::tracks::PlaylistTrackKind;
 use super::tracks::format_duration;
 use crate::data::persistence::PersistenceKey;
 use crate::data::playback_session;
-use crate::tmplayer::app::state::LyricLine;
+use crate::lyrics::LyricLine;
 use crate::tmplayer::audio::pcm_tap::PcmRing;
 use std::sync::Arc;
 use std::time::Duration;

@@ -4,10 +4,9 @@ use super::latest_fetch;
 use super::playback_controller::PlaybackTrack;
 use crate::data::atomic_file::write_atomic;
 use crate::data::persistence::PersistenceHandle;
+use crate::lyrics::LyricLine;
+use crate::lyrics::parse_lyric_response;
 use crate::render::wake::WakeSignal;
-use crate::tmplayer::app::state::LyricLine;
-use crate::tmplayer::playback::metadata::parse_lrc;
-use crate::tmplayer::playback::metadata::parse_plain_lyrics;
 use cyper::Client;
 use futures::channel::mpsc as async_mpsc;
 use see::unsync as watch;
@@ -146,6 +145,20 @@ pub(super) async fn loop_cover_fetch(
     .await;
 }
 
+/// Fetch the complete lyric document, including YRC word timings and
+/// translations, regardless of `word_lyrics` / `lyric_translation`. Those
+/// settings are display-only and must never gate this path.
+pub(super) async fn fetch_lyrics(api: &mut ApiState, song_id: &str) -> Option<Vec<LyricLine>> {
+    if let Ok(response) = api.lyric_new(song_id).await
+        && let Some(lines) = parse_lyric_response(&response.body)
+    {
+        return Some(lines);
+    }
+
+    let response = api.lyric(song_id).await.ok()?;
+    parse_lyric_response(&response.body)
+}
+
 pub(super) async fn loop_lyric_fetch(
     rx: watch::Receiver<Option<LyricFetchRequest>>,
     tx: async_mpsc::Sender<LyricFetchResult>,
@@ -157,9 +170,7 @@ pub(super) async fn loop_lyric_fetch(
             api.set_cookie(cookie.to_string());
         }
 
-        let lyric = api.lyric(&req.song_id).await.ok()?;
-        let lrc = lyric.body.pointer("/lrc/lyric")?.as_str()?;
-        parse_lrc(lrc).or_else(|| parse_plain_lyrics(lrc))
+        fetch_lyrics(&mut api, &req.song_id).await
     };
     latest_fetch::run_latest(
         rx,
@@ -178,6 +189,22 @@ pub(super) async fn loop_lyric_fetch(
 }
 
 impl App {
+    /// Playback position quantized to the global frame grid / lyric divisor.
+    pub(crate) fn lyric_position_ms(&self) -> u64 {
+        crate::lyrics::quantized_position_ms(
+            self.playback_position().as_millis() as u64,
+            self.config.ui_fps,
+            self.config.lyric_frame_divisor,
+        )
+    }
+
+    pub(crate) fn lyric_options(&self) -> crate::ui::lyric_view::LyricOptions {
+        crate::ui::lyric_view::LyricOptions {
+            word_lyrics: self.config.word_lyrics,
+            translation: self.config.lyric_translation,
+        }
+    }
+
     fn cover_cache_path_for_url(&self, url: &str) -> Option<PathBuf> {
         cover_cache_path_for_dir(&self.cover_cache_dir, url)
     }
@@ -484,48 +511,8 @@ impl App {
             track.cover = Some(bytes);
         }
 
-        if allow_network
-            && track.lyrics.is_none()
-            && let Ok(lyric) = self.api.lyric(&track.song_id).await
-            && let Some(raw_lrc) = lyric
-                .body
-                .pointer("/lrc/lyric")
-                .and_then(|value| value.as_str())
-        {
-            track.lyrics = crate::tmplayer::playback::metadata::parse_lrc(raw_lrc)
-                .or_else(|| crate::tmplayer::playback::metadata::parse_plain_lyrics(raw_lrc));
+        if allow_network && track.lyrics.is_none() {
+            track.lyrics = fetch_lyrics(&mut self.api, &track.song_id).await;
         }
-    }
-
-    pub(crate) fn current_page_lyric_lines(&self) -> (String, String) {
-        let Some(track) = self.playback.now_playing.as_ref() else {
-            return (String::new(), String::new());
-        };
-        let Some(lines) = track.lyrics.as_ref() else {
-            return (String::new(), String::new());
-        };
-        if lines.is_empty() {
-            return (String::new(), String::new());
-        }
-
-        let pos_ms = self.playback_position().as_millis() as u64;
-        let mut idx = 0usize;
-        for (line_idx, line) in lines.iter().enumerate() {
-            if line.start_ms <= pos_ms {
-                idx = line_idx;
-            } else {
-                break;
-            }
-        }
-
-        let current = lines
-            .get(idx)
-            .map(|line| line.text.clone())
-            .unwrap_or_default();
-        let next = lines
-            .get(idx + 1)
-            .map(|line| line.text.clone())
-            .unwrap_or_default();
-        (current, next)
     }
 }

@@ -1,5 +1,6 @@
 mod app;
 mod data;
+mod lyrics;
 mod render;
 mod tmplayer;
 mod ui;

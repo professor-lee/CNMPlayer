@@ -154,6 +154,7 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
         app.player.repeat_mode = map_host_repeat(snapshot.repeat_mode);
         app.player.liked = false;
         app.player.position = snapshot.position;
+        app.position_anchor_at = Instant::now();
         app.player.track = empty_track_metadata();
         return;
     }
@@ -254,6 +255,7 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
     app.player.repeat_mode = map_host_repeat(snapshot.repeat_mode);
     app.player.liked = snapshot.current_liked;
     app.player.position = snapshot.position;
+    app.position_anchor_at = Instant::now();
     let track_changed = identity_changed
         || previous_index != Some(current)
         || app.player.track.title != current_track.title
@@ -339,6 +341,9 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         }
     }
 
+    // Refresh the extrapolation origin on every snapshot, even when the host
+    // position is unchanged (buffering/stall), so lyrics cannot drift ahead.
+    app.position_anchor_at = Instant::now();
     changed
 }
 
@@ -676,7 +681,10 @@ async fn handle_action(
                     app.overlay = Overlay::HelpModal;
                 }
                 6 => {
-                    app.lyrics_settings_selected = app.lyrics_settings_selected.min(2);
+                    app.lyrics_settings_selected = app.lyrics_settings_selected.min(4);
+                    if !app.config.page_lyrics_drag && app.lyrics_settings_selected == 2 {
+                        app.lyrics_settings_selected = 1;
+                    }
                     app.overlay = Overlay::LyricsSettingsModal;
                 }
                 7 => {
@@ -795,12 +803,12 @@ async fn handle_action(
                     app.bar_settings_selected -= 1;
                 }
             } else if app.overlay == Overlay::LyricsSettingsModal {
-                let count = 3;
-                if app.lyrics_settings_selected == 0 {
-                    app.lyrics_settings_selected = count - 1;
-                } else {
-                    app.lyrics_settings_selected -= 1;
-                }
+                app.lyrics_settings_selected =
+                    crate::app::settings_controller::step_lyrics_settings(
+                        app.lyrics_settings_selected,
+                        false,
+                        app.config.page_lyrics_drag,
+                    );
             } else if app.overlay == Overlay::EqModal {
                 let step = 1.0;
                 if app.eq_selected < crate::tmplayer::app::state::EQ_BANDS {
@@ -830,8 +838,12 @@ async fn handle_action(
                 let count = 7;
                 app.bar_settings_selected = (app.bar_settings_selected + 1) % count;
             } else if app.overlay == Overlay::LyricsSettingsModal {
-                let count = 3;
-                app.lyrics_settings_selected = (app.lyrics_settings_selected + 1) % count;
+                app.lyrics_settings_selected =
+                    crate::app::settings_controller::step_lyrics_settings(
+                        app.lyrics_settings_selected,
+                        true,
+                        app.config.page_lyrics_drag,
+                    );
             } else if app.overlay == Overlay::EqModal {
                 let step = 1.0;
                 if app.eq_selected < crate::tmplayer::app::state::EQ_BANDS {
@@ -1087,7 +1099,14 @@ async fn handle_action(
                 Overlay::BarSettingsModal => app.bar_settings_selected = idx,
                 Overlay::LyricsSettingsModal => {
                     // 开关行：左键直接改值（与宿主一致），不走双击。
-                    app.lyrics_settings_selected = idx.min(2);
+                    // 拖动关闭时「边缘吸附」灰置，点击也不选中。
+                    if !crate::app::settings_controller::lyrics_settings_row_enabled(
+                        idx,
+                        app.config.page_lyrics_drag,
+                    ) {
+                        return Ok(());
+                    }
+                    app.lyrics_settings_selected = idx;
                     apply_lyrics_settings_delta(app, host_bridge, 1).await;
                     return Ok(());
                 }
@@ -1362,6 +1381,14 @@ async fn apply_lyrics_settings_delta(
         }
         2 if app.config.page_lyrics_drag => {
             app.config.page_lyrics_snap = !app.config.page_lyrics_snap;
+            save_and_sync_host_config(app, host_bridge).await;
+        }
+        3 => {
+            app.config.word_lyrics = !app.config.word_lyrics;
+            save_and_sync_host_config(app, host_bridge).await;
+        }
+        4 => {
+            app.config.lyric_translation = !app.config.lyric_translation;
             save_and_sync_host_config(app, host_bridge).await;
         }
         _ => {}

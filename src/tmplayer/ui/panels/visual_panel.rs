@@ -1,12 +1,14 @@
 use crate::data::config::VisualizeMode;
-use crate::tmplayer::app::state::{AppState, LyricLine};
+use crate::tmplayer::app::state::AppState;
 use crate::tmplayer::render::{oscilloscope_renderer, spectrum_renderer, vector_renderer};
 use crate::tmplayer::ui::borders::SOLID_BORDER;
+use crate::ui::lyric_view;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
+use std::time::Instant;
 
 pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut AppState) {
     let outer = Rect {
@@ -48,35 +50,23 @@ pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut Ap
         height: inner.height.saturating_sub(lyric_h),
     };
 
-    let (l1, l2) = current_two_lines(app);
-    if lyric_inner.height >= 1 && !l1.is_empty() {
+    let position = app.lyric_position_ms(Instant::now());
+    let options = app.lyric_options();
+    let lyric_rows = app
+        .player
+        .track
+        .lyrics
+        .as_ref()
+        .filter(|lines| !lines.is_empty())
+        .map(|lines| {
+            lyric_view::render_pair(lines, position, lyric_inner.width, &app.theme, options)
+        });
+    if lyric_inner.height >= 1
+        && let Some(rows) = lyric_rows
+    {
         f.render_widget(
-            Paragraph::new(l1)
-                .style(
-                    Style::default()
-                        .fg(app.theme.color_accent2())
-                        .add_modifier(Modifier::BOLD),
-                )
-                .alignment(Alignment::Center),
-            Rect {
-                x: lyric_inner.x,
-                y: lyric_inner.y,
-                width: lyric_inner.width,
-                height: 1,
-            },
-        );
-    }
-    if lyric_inner.height >= 2 && !l2.is_empty() {
-        f.render_widget(
-            Paragraph::new(l2)
-                .style(Style::default().fg(app.theme.color_subtext()))
-                .alignment(Alignment::Center),
-            Rect {
-                x: lyric_inner.x,
-                y: lyric_inner.y + 1,
-                width: lyric_inner.width,
-                height: 1,
-            },
+            Paragraph::new(rows).alignment(Alignment::Center),
+            lyric_inner,
         );
     }
 
@@ -92,51 +82,33 @@ pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut Ap
 }
 
 fn render_full_lyrics(f: &mut Frame, area: Rect, app: &AppState) {
-    let lines = centered_lyric_window(app, area.height as usize);
-    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
-}
+    let rows = area.height as usize;
+    let lyrics = app
+        .player
+        .track
+        .lyrics
+        .as_ref()
+        .filter(|lines| !lines.is_empty());
 
-fn centered_lyric_window(app: &AppState, visible_rows: usize) -> Vec<Line<'static>> {
-    let rows_count = visible_rows.max(1);
-    let current_row = rows_count / 2;
-    let mut rows = vec![Line::from(String::new()); rows_count];
-
-    let Some(lines) = app.player.track.lyrics.as_ref() else {
-        rows[current_row] = Line::from(Span::styled(
-            no_lyrics_label(app),
-            Style::default().fg(app.theme.color_subtext()),
-        ));
-        return rows;
+    let lines = if let Some(lyrics) = lyrics {
+        lyric_view::render_window(
+            lyrics,
+            app.lyric_position_ms(Instant::now()),
+            rows,
+            area.width,
+            &app.theme,
+            app.lyric_options(),
+        )
+    } else {
+        let count = rows.max(1);
+        let mut rows = vec![Line::default(); count];
+        let center = count / 2;
+        rows[center] =
+            Line::from(no_lyrics_label(app)).style(Style::default().fg(app.theme.color_subtext()));
+        rows
     };
 
-    if lines.is_empty() {
-        rows[current_row] = Line::from(Span::styled(
-            no_lyrics_label(app),
-            Style::default().fg(app.theme.color_subtext()),
-        ));
-        return rows;
-    }
-
-    let pos_ms = app.player.position.as_millis() as u64;
-    let current_idx = current_lyric_index(lines, pos_ms);
-
-    for (row, output) in rows.iter_mut().enumerate().take(rows_count) {
-        let lyric_idx = current_idx as isize + row as isize - current_row as isize;
-        if lyric_idx < 0 || lyric_idx >= lines.len() as isize {
-            continue;
-        }
-        let lyric = &lines[lyric_idx as usize];
-        let style = if lyric_idx as usize == current_idx {
-            Style::default()
-                .fg(app.theme.color_accent2())
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(app.theme.color_subtext())
-        };
-        *output = Line::from(Span::styled(lyric.text.clone(), style));
-    }
-
-    rows
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
 }
 
 fn no_lyrics_label(app: &AppState) -> &'static str {
@@ -144,32 +116,4 @@ fn no_lyrics_label(app: &AppState) -> &'static str {
         crate::data::config::Language::Zh => "暂无歌词",
         crate::data::config::Language::En => "No lyrics",
     }
-}
-
-fn current_two_lines(app: &AppState) -> (&str, &str) {
-    let Some(lines) = app.player.track.lyrics.as_ref() else {
-        return ("", "");
-    };
-    if lines.is_empty() {
-        return ("", "");
-    }
-
-    let pos_ms = app.player.position.as_millis() as u64;
-    let idx = current_lyric_index(lines, pos_ms);
-
-    let l1 = lines.get(idx).map(|l| l.text.as_str()).unwrap_or("");
-    let l2 = lines.get(idx + 1).map(|l| l.text.as_str()).unwrap_or("");
-    (l1, l2)
-}
-
-fn current_lyric_index(lines: &[LyricLine], pos_ms: u64) -> usize {
-    let mut idx = 0;
-    for (i, line) in lines.iter().enumerate() {
-        if line.start_ms <= pos_ms {
-            idx = i;
-        } else {
-            break;
-        }
-    }
-    idx
 }

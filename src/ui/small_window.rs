@@ -3,12 +3,12 @@ use crate::app::presentation::FlatPanel;
 use crate::data::config::BarChannels;
 use crate::data::config::Language;
 use crate::tmplayer::render::spectrum_renderer::{compute_bar_layout, smooth_char};
-use crate::ui::{page_lyrics, player_bar};
+use crate::ui::{lyric_view, page_lyrics, player_bar};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph};
 
 pub fn draw_flat(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -159,38 +159,33 @@ fn draw_compact_lyrics(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let (current, next) = app.current_page_lyric_lines();
-    let (line1, line2) = if current.trim().is_empty() {
-        match app.config.language {
-            Language::Zh => ("暂无歌词".to_string(), String::new()),
-            Language::En => ("No lyrics".to_string(), String::new()),
+    let lines = match app
+        .playback
+        .now_playing
+        .as_ref()
+        .and_then(|track| track.lyrics.as_ref())
+        .filter(|lines| !lines.is_empty())
+    {
+        Some(lines) => lyric_view::render_pair(
+            lines,
+            app.lyric_position_ms(),
+            area.width,
+            &app.theme,
+            app.lyric_options(),
+        ),
+        None => {
+            let label = match app.config.language {
+                Language::Zh => "暂无歌词",
+                Language::En => "No lyrics",
+            };
+            vec![Line::from(Span::styled(
+                label,
+                Style::default().fg(app.theme.color_subtext()),
+            ))]
         }
-    } else {
-        (current, next)
     };
 
-    let mut lines: Vec<Line> = Vec::new();
-    if area.height >= 1 {
-        lines.push(Line::from(Span::styled(
-            line1,
-            Style::default()
-                .fg(app.theme.color_accent2())
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
-    if area.height >= 2 && !line2.trim().is_empty() {
-        lines.push(Line::from(Span::styled(
-            line2,
-            Style::default().fg(app.theme.color_subtext()),
-        )));
-    }
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: true }),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
 }
 
 fn clipped_rect_at(area: Rect, x: i32) -> Rect {
