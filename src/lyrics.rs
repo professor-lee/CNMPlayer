@@ -103,11 +103,11 @@ pub fn snapshot(lines: &[LyricLine], position_ms: u64) -> LyricSnapshot {
 /// A divisor of 1 follows the global frame clock; 2 halves the lyric update
 /// rate (60 -> 30 Hz, 30 -> 15 Hz, 144 -> 72 Hz).
 pub fn quantized_position_ms(position_ms: u64, ui_fps: u32, divisor: u32) -> u64 {
-    let fps = u64::from(ui_fps.max(1));
-    let divisor = u64::from(divisor.max(1));
-    let frame = position_ms.saturating_mul(fps) / 1000;
+    let fps = u128::from(ui_fps.max(1));
+    let divisor = u128::from(divisor.max(1));
+    let frame = u128::from(position_ms) * fps / 1000;
     let quantized = (frame / divisor) * divisor;
-    quantized.saturating_mul(1000) / fps
+    u64::try_from(quantized * 1000 / fps).unwrap_or(u64::MAX)
 }
 
 /// Parse the body returned by `/lyric/new` or `/lyric`.
