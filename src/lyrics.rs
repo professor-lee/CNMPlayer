@@ -365,10 +365,13 @@ fn parse_lrc_style_yrc_line(raw: &str) -> Option<LyricLine> {
     if words.is_empty() {
         return None;
     }
-    let end_ms = words
-        .last()
-        .map(|word| word.end_ms)
-        .or_else(|| line_duration.checked_add(line_start));
+    let end_ms = Some(
+        words
+            .last()
+            .map(|word| word.end_ms)
+            .unwrap_or(line_start)
+            .max(line_start.saturating_add(line_duration)),
+    );
     Some(LyricLine {
         start_ms: line_start,
         end_ms,
