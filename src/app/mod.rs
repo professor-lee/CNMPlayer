@@ -425,6 +425,7 @@ impl App {
         self.tick_like_sync();
         self.tick_download();
         self.tick_stderr_log_trim();
+        trim_allocator_periodically();
         self.tick_startup_init().await;
         self.tick_startup_loading();
         #[cfg(feature = "easter-egg")]
@@ -483,6 +484,42 @@ impl App {
         lang_text(self.config.language, zh, en)
     }
 }
+
+/// glibc keeps freed arenas resident after image/JSON bursts. Return the free
+/// pages at a low frequency; this does not reduce the peak, only the plateau.
+#[cfg(all(unix, target_env = "gnu"))]
+fn trim_allocator_periodically() {
+    use std::sync::Mutex;
+
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> libc::c_int;
+    }
+
+    const INTERVAL: Duration = Duration::from_secs(60);
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+
+    let Ok(mut last) = LAST.try_lock() else {
+        return;
+    };
+    let now = Instant::now();
+    match *last {
+        Some(at) if now.duration_since(at) < INTERVAL => return,
+        Some(_) => *last = Some(now),
+        None => {
+            *last = Some(now);
+            return;
+        }
+    }
+    drop(last);
+    // SAFETY: malloc_trim only releases unused allocator pages; it does not
+    // invalidate live Rust allocations.
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(unix, target_env = "gnu")))]
+fn trim_allocator_periodically() {}
 
 #[cfg(test)]
 mod tests;
