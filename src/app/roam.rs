@@ -3,6 +3,7 @@ use super::api::ApiState;
 use super::home::HOME_PRIVATE_ROAM_TILE_ID;
 use super::playback_controller::PlaybackTrack;
 use super::playlist::PlaylistFetch;
+use super::playlist::PlaylistState;
 use super::response::response_code;
 use super::text::lang_text;
 use super::tracks::PlaylistTrack;
@@ -13,6 +14,91 @@ use crate::data::config::Language;
 use crate::data::persistence::PersistenceKey;
 use crate::data::private_roam;
 use serde_json::Value;
+
+const PRIVATE_ROAM_TRACK_LIMIT: usize = 256;
+
+/// Keep the current song and nearest upcoming songs before older history.
+pub(super) fn private_roam_window(
+    len: usize,
+    current: Option<usize>,
+) -> (std::ops::Range<usize>, Option<usize>) {
+    let current = current.filter(|&index| index < len);
+    let start = current
+        .unwrap_or(0)
+        .min(len.saturating_sub(PRIVATE_ROAM_TRACK_LIMIT));
+    let end = start.saturating_add(PRIVATE_ROAM_TRACK_LIMIT).min(len);
+    (start..end, current.map(|index| index - start))
+}
+
+/// Preserve the selected occurrence while invalid entries in its window are removed.
+pub(super) fn private_roam_restored_index<T>(
+    tracks: &[T],
+    current: Option<usize>,
+    window: &std::ops::Range<usize>,
+    is_valid: impl Fn(&T) -> bool,
+) -> Option<usize> {
+    let current = current?;
+    if !window.contains(&current) || !is_valid(tracks.get(current)?) {
+        return None;
+    }
+    Some(
+        tracks[window.start..current]
+            .iter()
+            .filter(|track| is_valid(*track))
+            .count(),
+    )
+}
+
+pub(super) fn bound_private_roam_queue(
+    queue: &mut Vec<PlaybackTrack>,
+    current: &mut Option<usize>,
+    source_id: Option<&str>,
+    page_advance: &mut Option<bool>,
+) {
+    if source_id != Some(HOME_PRIVATE_ROAM_TILE_ID) {
+        return;
+    }
+    let (window, index) = private_roam_window(queue.len(), *current);
+    queue.truncate(window.end);
+    queue.drain(..window.start);
+    *current = index;
+    *page_advance = None;
+}
+
+fn sync_private_roam_playlist(playlist: &mut PlaylistState, tracks: &[PlaylistTrack]) {
+    if playlist.id.as_deref() != Some(HOME_PRIVATE_ROAM_TILE_ID) {
+        return;
+    }
+    let removed_prefix = tracks
+        .first()
+        .and_then(|first| {
+            playlist
+                .tracks
+                .iter()
+                .position(|track| track.id == first.id)
+        })
+        .unwrap_or(0);
+    let remap = |index: usize| {
+        playlist
+            .tracks
+            .get(index)
+            .and_then(|old| tracks.iter().position(|track| track.id == old.id))
+            .unwrap_or_else(|| {
+                index
+                    .saturating_sub(removed_prefix)
+                    .min(tracks.len().saturating_sub(1))
+            })
+    };
+    let focus = remap(playlist.focused_idx);
+    let scroll = remap(playlist.scroll_offset);
+    playlist.tracks = tracks.to_vec();
+    playlist.focused_idx = focus;
+    playlist.scroll_offset = scroll;
+    playlist.ensure_focus_visible();
+    playlist.total_tracks = Some(tracks.len());
+    playlist.pagination = None;
+    playlist.generation = super::next_list_generation();
+}
 
 /// 私人漫游状态：歌曲列表、最后播放位置与展示封面
 #[derive(Debug, Clone, Default)]
@@ -30,6 +116,67 @@ pub(super) struct PrivateRoamState {
 }
 
 impl PrivateRoamState {
+    fn from_record(record: private_roam::PrivateRoamRecord) -> Self {
+        let (window, _) = private_roam_window(record.tracks.len(), record.last_played_index);
+        let last_played_index = private_roam_restored_index(
+            &record.tracks,
+            record.last_played_index,
+            &window,
+            |track| !track.song_id.is_empty(),
+        );
+        let tracks = record
+            .tracks
+            .into_iter()
+            .skip(window.start)
+            .take(window.len())
+            .filter_map(|track| {
+                if track.song_id.is_empty() {
+                    return None;
+                }
+                Some(PlaylistTrack {
+                    kind: PlaylistTrackKind::Song,
+                    id: Some(track.song_id),
+                    title: track.title,
+                    artist: track.artist,
+                    album: track.album,
+                    cover_url: track.cover_url,
+                    duration_ms: track.duration_ms,
+                    duration: format_duration(track.duration_ms),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut state = Self {
+            tracks,
+            last_played_index,
+            last_played_cover_url: record.last_played_cover_url,
+            last_refresh_day: record.last_refresh_day,
+            cover_url: None,
+        };
+        state.refresh_cover();
+        state
+    }
+
+    fn bound_history(&mut self) {
+        let (window, index) = private_roam_window(self.tracks.len(), self.last_played_index);
+        self.tracks.truncate(window.end);
+        self.tracks.drain(..window.start);
+        self.last_played_index = index;
+    }
+
+    fn append_tracks(&mut self, fetched: Vec<PlaylistTrack>) -> Vec<PlaybackTrack> {
+        let mut queue_items = Vec::new();
+        for track in fetched {
+            if !self.tracks.iter().any(|old| old.id == track.id) {
+                if let Some(item) = PlaybackTrack::from_playlist_track(&track) {
+                    queue_items.push(item);
+                }
+                self.tracks.push(track);
+            }
+        }
+        self.bound_history();
+        queue_items
+    }
+
     fn refresh_cover(&mut self) {
         let last_played = self
             .last_played_index
@@ -69,6 +216,9 @@ pub(super) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<Playlist
                 && seen.insert(id.clone())
             {
                 tracks.push(track);
+                if tracks.len() == PRIVATE_ROAM_TRACK_LIMIT {
+                    return tracks;
+                }
             }
         }
     }
@@ -78,9 +228,10 @@ pub(super) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<Playlist
 
 fn private_roam_playlist_fetch(
     language: Language,
-    tracks: Vec<PlaylistTrack>,
+    mut tracks: Vec<PlaylistTrack>,
     cover_url: Option<String>,
 ) -> PlaylistFetch {
+    tracks.truncate(PRIVATE_ROAM_TRACK_LIMIT);
     let total = tracks.len();
     PlaylistFetch {
         id: HOME_PRIVATE_ROAM_TILE_ID.to_string(),
@@ -138,6 +289,9 @@ pub(super) fn merge_private_roam_refresh(
         kept_last_played = true;
     }
     for track in fetched {
+        if new_tracks.len() == PRIVATE_ROAM_TRACK_LIMIT {
+            break;
+        }
         if !new_tracks.iter().any(|t| t.id == track.id) {
             new_tracks.push(track);
         }
@@ -170,6 +324,7 @@ pub(super) fn normalize_fm_song_items(items: &[Value]) -> Vec<Value> {
 
 impl App {
     pub(super) fn load_cached_private_roam_playlist(&mut self) -> bool {
+        self.browse.private_roam.bound_history();
         if self.browse.private_roam.tracks.is_empty() {
             return false;
         }
@@ -189,8 +344,7 @@ impl App {
         if let Some(index) = focus_index
             && index < self.browse.playlist.tracks.len()
         {
-            self.browse.playlist.focused_idx = index;
-            self.browse.playlist.scroll_offset = index;
+            self.browse.playlist.set_focus(index);
         }
         true
     }
@@ -202,6 +356,7 @@ impl App {
         }
 
         self.browse.private_roam.tracks = fetch.tracks.clone();
+        self.browse.private_roam.bound_history();
         self.browse.private_roam.refresh_cover();
         self.sync_home_roam_tile_cover();
         self.persist_private_roam();
@@ -231,6 +386,7 @@ impl App {
         self.browse.private_roam.refresh_cover();
         self.sync_home_roam_tile_cover();
         self.browse.private_roam.last_refresh_day = Some(today);
+        self.sync_private_roam_browse_mirrors();
         self.persist_private_roam();
     }
 
@@ -241,38 +397,27 @@ impl App {
             return;
         }
 
-        let mut added = false;
-        let mut new_queue_items = Vec::new();
-        for track in fetched {
-            if !self
-                .browse
-                .private_roam
-                .tracks
-                .iter()
-                .any(|t| t.id == track.id)
-            {
-                if let Some(item) = PlaybackTrack::from_playlist_track(&track) {
-                    new_queue_items.push(item);
-                }
-                self.browse.private_roam.tracks.push(track);
-                added = true;
-            }
-        }
-        if !added {
-            return;
-        }
+        let new_queue_items = self.browse.private_roam.append_tracks(fetched);
 
-        self.persist_private_roam();
-
-        // 扩展播放队列是播放行为，只看队列来源，不看当前在哪个页面：
-        // 否则重启后（页面停在主页）新歌只进列表不进队列，追加等于白做。
+        // Queue ownership, not the visible page, decides whether playback extends.
         if self.playback_queue_is_roam() {
             self.playback.playback_queue.extend(new_queue_items);
+            bound_private_roam_queue(
+                &mut self.playback.playback_queue,
+                &mut self.playback.playback_index,
+                self.playback.playback_queue_source_id.as_deref(),
+                &mut self.playback.page_advance,
+            );
         }
+        self.sync_private_roam_browse_mirrors();
+        self.persist_private_roam();
+    }
 
-        // 列表页 UI 同步则确实只在该页打开时才需要。
-        if self.browse.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID) {
-            self.browse.playlist.tracks = self.browse.private_roam.tracks.clone();
+    fn sync_private_roam_browse_mirrors(&mut self) {
+        let tracks = &self.browse.private_roam.tracks;
+        sync_private_roam_playlist(&mut self.browse.playlist, tracks);
+        if let Some(snapshot) = self.playlist_section_return_snapshot.as_mut() {
+            sync_private_roam_playlist(snapshot, tracks);
         }
     }
 
@@ -328,11 +473,12 @@ impl App {
     }
 
     fn persist_private_roam(&self) {
+        let (window, last_played_index) = private_roam_window(
+            self.browse.private_roam.tracks.len(),
+            self.browse.private_roam.last_played_index,
+        );
         let record = private_roam::PrivateRoamRecord {
-            tracks: self
-                .browse
-                .private_roam
-                .tracks
+            tracks: self.browse.private_roam.tracks[window]
                 .iter()
                 .map(|track| private_roam::PrivateRoamTrack {
                     song_id: track.id.clone().unwrap_or_default(),
@@ -343,7 +489,7 @@ impl App {
                     cover_url: track.cover_url.clone(),
                 })
                 .collect(),
-            last_played_index: self.browse.private_roam.last_played_index,
+            last_played_index,
             last_played_cover_url: self.browse.private_roam.last_played_cover_url.clone(),
             last_refresh_day: self.browse.private_roam.last_refresh_day,
             updated_at: 0,
@@ -366,29 +512,8 @@ impl App {
             }
         };
 
-        self.browse.private_roam.tracks = record
-            .tracks
-            .into_iter()
-            .filter_map(|track| {
-                if track.song_id.is_empty() {
-                    return None;
-                }
-                Some(PlaylistTrack {
-                    kind: PlaylistTrackKind::Song,
-                    id: Some(track.song_id),
-                    title: track.title,
-                    artist: track.artist,
-                    album: track.album,
-                    cover_url: track.cover_url,
-                    duration_ms: track.duration_ms,
-                    duration: format_duration(track.duration_ms),
-                })
-            })
-            .collect();
-        self.browse.private_roam.last_played_index = record.last_played_index;
-        self.browse.private_roam.last_played_cover_url = record.last_played_cover_url;
-        self.browse.private_roam.last_refresh_day = record.last_refresh_day;
-        self.browse.private_roam.refresh_cover();
+        self.browse.private_roam = PrivateRoamState::from_record(record);
+        self.persist_private_roam();
     }
 
     pub(super) fn sync_home_roam_tile_cover(&mut self) {

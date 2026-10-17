@@ -5,6 +5,9 @@ use super::player::AudioPlayer;
 use super::player::AudioPlayerState;
 use super::player::is_nonempty_file;
 use super::playlist_pagination::PlaylistPagination;
+use super::roam::bound_private_roam_queue;
+use super::roam::private_roam_restored_index;
+use super::roam::private_roam_window;
 use super::search_controller::SearchItem;
 use super::streaming::StreamingReader;
 use super::tracks::PlaylistTrack;
@@ -447,7 +450,10 @@ impl App {
         self.playback.page_advance = None;
 
         // 记录私人漫游播放位置/封面；播放到列表末尾时追加新歌
+        // Appending roam songs may evict a played prefix, including before this target.
+        self.playback.playback_index = Some(index);
         self.track_private_roam_playback(&track).await;
+        let index = self.playback.playback_index.unwrap_or(index);
 
         let mut enriched = track.clone();
         // Switch UI state immediately and avoid blocking network fetches here.
@@ -553,9 +559,17 @@ impl App {
             return;
         }
 
+        let mut queue = queue;
+        let mut target = Some(index.min(queue.len() - 1));
+        bound_private_roam_queue(
+            &mut queue,
+            &mut target,
+            source_id.as_deref(),
+            &mut self.playback.page_advance,
+        );
         self.playback
             .replace_queue(queue, None, source_cover_url, source_id, pagination);
-        let target = index.min(self.playback.playback_queue.len() - 1);
+        let target = target.unwrap_or(0);
         self.play_queue_index(target, true).await;
     }
 
@@ -656,9 +670,18 @@ impl App {
             return;
         }
 
-        let queue = self
-            .playback
-            .playback_queue
+        let (window, current_index) = if self.playback_queue_is_roam() {
+            private_roam_window(
+                self.playback.playback_queue.len(),
+                self.playback.playback_index,
+            )
+        } else {
+            (
+                0..self.playback.playback_queue.len(),
+                self.playback.playback_index,
+            )
+        };
+        let queue = self.playback.playback_queue[window]
             .iter()
             .map(|track| playback_session::PlaybackSessionTrack {
                 song_id: track.song_id.clone(),
@@ -672,7 +695,7 @@ impl App {
 
         let record = playback_session::PlaybackSessionRecord {
             queue,
-            current_index: self.playback.playback_index,
+            current_index,
             repeat_mode: Some(
                 playback_repeat_mode_key(self.playback.playback_repeat_mode).to_string(),
             ),
@@ -712,9 +735,27 @@ impl App {
             }
         };
 
+        let is_roam = record.source_playlist_id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID);
+        let window = if is_roam {
+            private_roam_window(record.queue.len(), record.current_index).0
+        } else {
+            0..record.queue.len()
+        };
+        let restored_index = if is_roam {
+            private_roam_restored_index(
+                &record.queue,
+                record.current_index.or(Some(0)),
+                &window,
+                |track| !track.song_id.trim().is_empty(),
+            )
+        } else {
+            None
+        };
         let queue = record
             .queue
             .into_iter()
+            .skip(window.start)
+            .take(window.len())
             .filter_map(|track| {
                 let song_id = track.song_id.trim().to_string();
                 if song_id.is_empty() {
@@ -732,6 +773,23 @@ impl App {
                 })
             })
             .collect::<Vec<_>>();
+        let mut queue = queue;
+        let mut target = if is_roam {
+            restored_index.or_else(|| (!queue.is_empty()).then_some(0))
+        } else {
+            Some(
+                record
+                    .current_index
+                    .unwrap_or(0)
+                    .min(queue.len().saturating_sub(1)),
+            )
+        };
+        bound_private_roam_queue(
+            &mut queue,
+            &mut target,
+            record.source_playlist_id.as_deref(),
+            &mut self.playback.page_advance,
+        );
 
         if queue.is_empty() {
             return;
@@ -747,6 +805,7 @@ impl App {
 
         let pagination = record
             .source_cursor
+            .filter(|_| !is_roam)
             .filter(|cursor| {
                 Some(cursor.source_id.as_str()) == record.source_playlist_id.as_deref()
             })
@@ -759,12 +818,12 @@ impl App {
             record.source_playlist_id,
             pagination,
         );
-        let target = record
-            .current_index
-            .unwrap_or(0)
-            .min(self.playback.playback_queue.len().saturating_sub(1));
+        let target = target.unwrap_or(0);
         self.play_queue_index(target, false).await;
         self.playback.restoring_memory = false;
+        if is_roam {
+            self.persist_playback_memory();
+        }
         self.set_runtime_status(self.lang_text("已恢复播放记忆", "Playback memory restored"));
     }
 }
