@@ -32,7 +32,7 @@ const LYRICS_SETTINGS_ROWS: [usize; SETTINGS_LYRICS_ITEMS] = [0, 1, 2, 3, 4];
 const LYRICS_SETTINGS_ROWS_NO_DRAG: [usize; SETTINGS_LYRICS_ITEMS - 1] = [0, 1, 3, 4];
 
 /// 歌词子页的可选中行。拖动关闭时「边缘吸附」灰置，导航直接跳过。
-pub(crate) fn lyrics_settings_rows(drag_enabled: bool) -> &'static [usize] {
+fn lyrics_settings_rows(drag_enabled: bool) -> &'static [usize] {
     if drag_enabled {
         &LYRICS_SETTINGS_ROWS
     } else {
@@ -916,22 +916,4 @@ impl SettingsController {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lyrics_navigation_skips_snap_when_drag_is_disabled() {
-        assert_eq!(step_lyrics_settings(1, true, false), 3);
-        assert_eq!(step_lyrics_settings(3, false, false), 1);
-        assert_eq!(step_lyrics_settings(4, true, false), 0);
-        assert_eq!(step_lyrics_settings(0, false, false), 4);
-    }
-
-    #[test]
-    fn lyrics_navigation_keeps_snap_when_drag_is_enabled() {
-        assert_eq!(step_lyrics_settings(1, true, true), 2);
-        assert_eq!(step_lyrics_settings(2, false, true), 1);
-        assert!(lyrics_settings_row_enabled(2, true));
-        assert!(!lyrics_settings_row_enabled(2, false));
-    }
-}
+mod tests;

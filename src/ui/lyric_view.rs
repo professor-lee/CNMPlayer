@@ -204,19 +204,19 @@ fn render_current(
     theme: &Theme,
     options: LyricOptions,
 ) -> Line<'static> {
-    let mut spans = if options.word_lyrics {
-        if line.words.is_empty() {
-            progress_spans(&line.text, line_progress, theme, true)
-        } else {
-            word_spans(theme, line, position_ms)
-        }
-    } else {
+    let mut spans = if line.is_untimed() || !options.word_lyrics {
+        // Untimed plain lyrics have no meaningful progress; keep the current
+        // line in the solid current color instead of freezing at pending.
         vec![Span::styled(
             line.text.clone(),
             Style::default()
                 .fg(current_line_color(theme, line, position_ms))
                 .add_modifier(Modifier::BOLD),
         )]
+    } else if line.words.is_empty() {
+        progress_spans(&line.text, line_progress, theme, true)
+    } else {
+        word_spans(theme, line, position_ms)
     };
 
     let total = spans_width(&spans);
@@ -327,19 +327,20 @@ fn render_translation_current(
         return Line::default();
     }
 
-    let mut spans = if options.word_lyrics {
+    let mut spans = if line.is_untimed() || !options.word_lyrics {
+        // Untimed plain lyrics have no meaningful progress; word mode off also
+        // keeps the translation as a single uniform-color span.
+        vec![Span::styled(
+            text.to_string(),
+            Style::default().fg(current_line_color(theme, line, position_ms)),
+        )]
+    } else {
         let progress = if line.words.is_empty() {
             line_progress
         } else {
             translation_word_progress(line, position_ms)
         };
         progress_spans(text, progress, theme, false)
-    } else {
-        // Word mode is off: the translation is a single uniform color.
-        vec![Span::styled(
-            text.to_string(),
-            Style::default().fg(current_line_color(theme, line, position_ms)),
-        )]
     };
 
     let total = spans_width(&spans);
@@ -485,380 +486,4 @@ fn spans_width(spans: &[Span<'static>]) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lyrics::LyricWord;
-    use crate::ui::theme::{ColorCapability, Theme, ThemePalette};
-
-    fn theme() -> Theme {
-        Theme {
-            name: "test".into(),
-            capability: ColorCapability::TrueColor,
-            palette: ThemePalette {
-                text: (230, 230, 230),
-                subtext: (160, 160, 170),
-                base: (30, 30, 40),
-                surface: (40, 40, 50),
-                buff: (50, 50, 60),
-                accent: (120, 150, 220),
-                accent2: (160, 210, 140),
-                accent3: (230, 120, 120),
-            },
-        }
-    }
-
-    fn line_with_words() -> LyricLine {
-        LyricLine {
-            start_ms: 1_000,
-            end_ms: Some(2_000),
-            text: "你好".into(),
-            words: vec![
-                LyricWord {
-                    text: "你".into(),
-                    start_ms: 1_000,
-                    end_ms: 1_400,
-                },
-                LyricWord {
-                    text: "好".into(),
-                    start_ms: 1_400,
-                    end_ms: 2_000,
-                },
-            ],
-            translation: Some("hello".into()),
-        }
-    }
-
-    #[test]
-    fn current_line_and_translation_share_the_pair() {
-        let lines = vec![
-            line_with_words(),
-            LyricLine {
-                start_ms: 2_000,
-                end_ms: Some(3_000),
-                text: "下一句".into(),
-                words: Vec::new(),
-                translation: None,
-            },
-        ];
-        let rows = render_pair(
-            &lines,
-            1_700,
-            20,
-            &theme(),
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        let current: String = rows[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let second: String = rows[1]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(current, "你好");
-        assert_eq!(second, "hello");
-    }
-
-    #[test]
-    fn pair_shows_translation_before_the_line_starts() {
-        let lines = vec![
-            line_with_words(),
-            LyricLine {
-                start_ms: 2_000,
-                end_ms: Some(3_000),
-                text: "下一句".into(),
-                words: Vec::new(),
-                translation: Some("next".into()),
-            },
-        ];
-        let rows = render_pair(
-            &lines,
-            0,
-            30,
-            &theme(),
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        let first: String = rows[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let second: String = rows[1]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(first, "你好");
-        assert_eq!(second, "hello");
-    }
-
-    #[test]
-    fn display_toggles_do_not_require_refetching_yrc() {
-        let lines = vec![line_with_words()];
-        let _ = render_pair(
-            &lines,
-            1_700,
-            30,
-            &theme(),
-            LyricOptions {
-                word_lyrics: false,
-                translation: false,
-            },
-        );
-        assert_eq!(lines[0].words.len(), 2, "display off keeps YRC data");
-        assert_eq!(
-            lines[0].translation.as_deref(),
-            Some("hello"),
-            "display off keeps translation data"
-        );
-
-        let enabled = render_pair(
-            &lines,
-            1_700,
-            30,
-            &theme(),
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        assert!(enabled[0].spans.len() > 1, "YRC renders after enabling");
-    }
-
-    #[test]
-    fn translation_is_line_level_when_word_lyrics_is_off() {
-        let lines = vec![line_with_words()];
-        let rows = render_pair(
-            &lines,
-            1_700,
-            30,
-            &theme(),
-            LyricOptions {
-                word_lyrics: false,
-                translation: true,
-            },
-        );
-        assert_eq!(
-            rows[1].spans.len(),
-            1,
-            "translation must not sweep per char"
-        );
-        assert_eq!(
-            rows[0].spans.first().map(|span| span.style.fg),
-            rows[1].spans.first().map(|span| span.style.fg),
-            "translation color follows the line-level lyric color"
-        );
-    }
-
-    #[test]
-    fn word_mode_without_yrc_sweeps_by_line_progress() {
-        let lines = vec![LyricLine {
-            start_ms: 1_000,
-            end_ms: Some(2_000),
-            text: "plain line".into(),
-            words: Vec::new(),
-            translation: Some("plain translation".into()),
-        }];
-        let rows = render_pair(
-            &lines,
-            1_700,
-            40,
-            &theme(),
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        assert!(rows[0].spans.len() > 1, "lyric sweeps per char");
-        assert!(rows[1].spans.len() > 1, "translation sweeps per char");
-        let active = Some(theme().color_accent2());
-        assert_eq!(rows[0].spans.first().and_then(|span| span.style.fg), active);
-        assert_eq!(rows[1].spans.first().and_then(|span| span.style.fg), active);
-        assert_ne!(
-            rows[1].spans.first().map(|span| span.style.fg),
-            rows[1].spans.last().map(|span| span.style.fg),
-            "later chars are still pending at 70% line progress"
-        );
-    }
-
-    #[test]
-    fn translation_follows_word_progress() {
-        let lines = vec![line_with_words()];
-        let rows = render_pair(
-            &lines,
-            1_700,
-            30,
-            &theme(),
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        let translation = &rows[1];
-        let first = translation
-            .spans
-            .first()
-            .expect("translation spans")
-            .style
-            .fg;
-        assert!(
-            translation.spans.iter().any(|span| span.style.fg != first),
-            "translation must reveal progressively"
-        );
-        assert_eq!(first, Some(theme().color_accent2()));
-    }
-
-    #[test]
-    fn window_shows_translation_for_every_visible_line() {
-        let lines = vec![
-            LyricLine {
-                start_ms: 0,
-                end_ms: Some(1_000),
-                text: "zero".into(),
-                words: Vec::new(),
-                translation: Some("tr zero".into()),
-            },
-            line_with_words(),
-            LyricLine {
-                start_ms: 2_000,
-                end_ms: Some(3_000),
-                text: "two".into(),
-                words: Vec::new(),
-                translation: Some("tr two".into()),
-            },
-        ];
-        let rows = render_window(
-            &lines,
-            1_700,
-            7,
-            30,
-            &theme(),
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        let texts: Vec<String> = rows
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .collect();
-        assert!(texts.iter().any(|text| text == "tr zero"));
-        assert!(texts.iter().any(|text| text == "hello"));
-        assert!(texts.iter().any(|text| text == "tr two"));
-
-        let color_of = |needle: &str| {
-            rows.iter()
-                .find(|line| {
-                    line.spans
-                        .iter()
-                        .map(|span| span.content.as_ref())
-                        .collect::<String>()
-                        == needle
-                })
-                .and_then(|line| line.spans.first().map(|span| span.style.fg))
-                .expect("row color")
-        };
-        assert_eq!(color_of("tr zero"), color_of("zero"));
-        assert_eq!(color_of("tr two"), color_of("two"));
-    }
-
-    #[test]
-    fn horizontal_scroll_moves_with_playback() {
-        let line = LyricLine {
-            start_ms: 1_000,
-            end_ms: Some(20_000),
-            text: "abcdefghijklmnopqrstuvwxyz".into(),
-            words: Vec::new(),
-            translation: None,
-        };
-        let lines = vec![line];
-        let options = LyricOptions {
-            word_lyrics: false,
-            translation: false,
-        };
-        let start = render_pair(&lines, 1_000, 10, &theme(), options);
-        let later = render_pair(&lines, 4_000, 10, &theme(), options);
-        let start_text: String = start[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let later_text: String = later[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_ne!(start_text, later_text);
-    }
-
-    #[test]
-    fn window_keeps_the_current_row_even_with_translation() {
-        let lines = vec![
-            LyricLine {
-                start_ms: 0,
-                end_ms: Some(1_000),
-                text: "previous".into(),
-                words: Vec::new(),
-                translation: None,
-            },
-            line_with_words(),
-        ];
-        let rows = render_window(
-            &lines,
-            1_700,
-            5,
-            20,
-            &theme(),
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        let texts: Vec<String> = rows
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .collect();
-        assert_eq!(texts[2], "你好");
-        assert_eq!(texts[3], "hello");
-    }
-
-    #[test]
-    fn no_color_theme_still_returns_visible_text() {
-        let mut theme = theme();
-        theme.capability = ColorCapability::NoColor;
-        let rows = render_pair(
-            &[line_with_words()],
-            1_700,
-            20,
-            &theme,
-            LyricOptions {
-                word_lyrics: true,
-                translation: true,
-            },
-        );
-        let text: String = rows[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        assert_eq!(text, "你好");
-    }
-}
+mod tests;

@@ -8,10 +8,10 @@ use serde_json::Value;
 
 /// A word (or short phrase) with its own timing inside a lyric line.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LyricWord {
-    pub text: String,
-    pub start_ms: u64,
-    pub end_ms: u64,
+pub(crate) struct LyricWord {
+    pub(crate) text: String,
+    pub(crate) start_ms: u64,
+    pub(crate) end_ms: u64,
 }
 
 /// One displayable lyric line.
@@ -20,44 +20,45 @@ pub struct LyricWord {
 /// LRC and YRC. `end_ms` is inferred from the next line when the source has no
 /// explicit duration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LyricLine {
-    pub start_ms: u64,
-    pub end_ms: Option<u64>,
-    pub text: String,
-    pub words: Vec<LyricWord>,
-    pub translation: Option<String>,
+pub(crate) struct LyricLine {
+    pub(crate) start_ms: u64,
+    pub(crate) end_ms: Option<u64>,
+    pub(crate) text: String,
+    pub(crate) words: Vec<LyricWord>,
+    pub(crate) translation: Option<String>,
 }
 
 /// The playback state needed to render a lyric frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LyricSnapshot {
+pub(crate) struct LyricSnapshot {
     /// `None` before the first line starts.
-    pub current: Option<usize>,
+    pub(crate) current: Option<usize>,
     /// 0..=1 through the current line.
-    pub line_progress: f32,
-    /// Active word index, if the playhead is inside a word.
-    pub word: Option<usize>,
-    /// 0..=1 through the active word.
-    pub word_progress: f32,
+    pub(crate) line_progress: f32,
 }
 
 impl LyricLine {
     /// End used for line-progress interpolation when the source omitted one.
-    pub fn effective_end_ms(&self, next_start_ms: Option<u64>) -> u64 {
+    fn effective_end_ms(&self, next_start_ms: Option<u64>) -> u64 {
         self.end_ms
             .filter(|end| *end > self.start_ms)
             .or_else(|| next_start_ms.filter(|end| *end > self.start_ms))
             .unwrap_or_else(|| self.start_ms.saturating_add(5_000))
     }
+
+    /// Plain, unsynchronized lyrics use `u64::MAX` sentinels: the first line
+    /// ends at `MAX`, the optional second line starts at `MAX`. They have no
+    /// meaningful playback progress and must render as static text.
+    pub(crate) fn is_untimed(&self) -> bool {
+        self.start_ms == u64::MAX || self.end_ms == Some(u64::MAX)
+    }
 }
 
-/// Compute the active line/word for a playback position.
-pub fn snapshot(lines: &[LyricLine], position_ms: u64) -> LyricSnapshot {
+/// Compute the active line for a playback position.
+pub(crate) fn snapshot(lines: &[LyricLine], position_ms: u64) -> LyricSnapshot {
     let mut result = LyricSnapshot {
         current: None,
         line_progress: 0.0,
-        word: None,
-        word_progress: 0.0,
     };
     if lines.is_empty() {
         return result;
@@ -80,20 +81,6 @@ pub fn snapshot(lines: &[LyricLine], position_ms: u64) -> LyricSnapshot {
 
     result.current = Some(index);
     result.line_progress = progress;
-
-    if let Some((word_index, word)) = line.words.iter().enumerate().find(|(_, word)| {
-        position_ms >= word.start_ms && (word.end_ms <= word.start_ms || position_ms < word.end_ms)
-    }) {
-        result.word = Some(word_index);
-        result.word_progress = if word.end_ms > word.start_ms {
-            (position_ms.saturating_sub(word.start_ms) as f32
-                / (word.end_ms - word.start_ms) as f32)
-                .clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-    }
-
     result
 }
 
@@ -102,7 +89,7 @@ pub fn snapshot(lines: &[LyricLine], position_ms: u64) -> LyricSnapshot {
 /// The lyric layer never owns a timer: `ui_fps` is the only frame-rate source.
 /// A divisor of 1 follows the global frame clock; 2 halves the lyric update
 /// rate (60 -> 30 Hz, 30 -> 15 Hz, 144 -> 72 Hz).
-pub fn quantized_position_ms(position_ms: u64, ui_fps: u32, divisor: u32) -> u64 {
+pub(crate) fn quantized_position_ms(position_ms: u64, ui_fps: u32, divisor: u32) -> u64 {
     let fps = u128::from(ui_fps.max(1));
     let divisor = u128::from(divisor.max(1));
     let frame = u128::from(position_ms) * fps / 1000;
@@ -116,7 +103,7 @@ pub fn quantized_position_ms(position_ms: u64, ui_fps: u32, divisor: u32) -> u64
 /// aligned by timestamp from `ytlrc` (preferred) or `tlyric`. Display settings
 /// (`word_lyrics`, `lyric_translation`) are not inputs here: word timings and
 /// translations are always retained so toggling them never requires a refetch.
-pub fn parse_lyric_response(body: &Value) -> Option<Vec<LyricLine>> {
+pub(crate) fn parse_lyric_response(body: &Value) -> Option<Vec<LyricLine>> {
     let yrc = body_text(body, "/yrc/lyric").or_else(|| body_text(body, "/yrc"));
     let lrc = body_text(body, "/lrc/lyric").or_else(|| body_text(body, "/lrc"));
 
@@ -161,7 +148,7 @@ fn body_text<'a>(body: &'a Value, path: &str) -> Option<&'a str> {
 }
 
 /// Parse ordinary LRC text (`[mm:ss.xx]line`).
-pub fn parse_lrc(content: &str) -> Option<Vec<LyricLine>> {
+fn parse_lrc(content: &str) -> Option<Vec<LyricLine>> {
     let timed = parse_timed_lrc(content);
     if timed.is_empty() {
         return None;
@@ -182,7 +169,7 @@ pub fn parse_lrc(content: &str) -> Option<Vec<LyricLine>> {
 }
 
 /// Fallback for plain, unsynchronized lyrics.
-pub fn parse_plain_lyrics(content: &str) -> Option<Vec<LyricLine>> {
+fn parse_plain_lyrics(content: &str) -> Option<Vec<LyricLine>> {
     let mut non_empty = content
         .lines()
         .map(str::trim)
@@ -192,7 +179,7 @@ pub fn parse_plain_lyrics(content: &str) -> Option<Vec<LyricLine>> {
 
     let mut lines = vec![LyricLine {
         start_ms: 0,
-        end_ms: second.as_ref().map(|_| u64::MAX),
+        end_ms: Some(u64::MAX),
         text: first,
         words: Vec::new(),
         translation: None,
@@ -243,7 +230,7 @@ fn parse_timed_lrc(content: &str) -> Vec<(u64, String)> {
 /// Parse both YRC encodings:
 /// - one JSON object per line (`{"t":...,"c":[{"tx":...,"tr":[offset,duration]}]}`)
 /// - LRC style (`[start,duration](start,duration,0)word...`)
-pub fn parse_yrc(content: &str) -> Option<Vec<LyricLine>> {
+fn parse_yrc(content: &str) -> Option<Vec<LyricLine>> {
     let mut lines = Vec::new();
     for raw in content.lines() {
         let raw = raw.trim();
@@ -497,123 +484,4 @@ fn parse_lrc_time_tag(tag: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn parses_lrc_with_multiple_timestamps() {
-        let lines = parse_lrc("[00:01.00][00:03.50]hello\n[00:02.00]world").unwrap();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0].start_ms, 1_000);
-        assert_eq!(lines[1].start_ms, 2_000);
-        assert_eq!(lines[2].start_ms, 3_500);
-        assert_eq!(lines[0].text, "hello");
-        assert_eq!(lines[0].end_ms, Some(2_000));
-    }
-
-    #[test]
-    fn parses_json_yrc_words() {
-        let raw = r#"{"t":1000,"c":[{"tx":"你","tr":[0,400]},{"tx":"好","tr":[400,600]}]}"#;
-        let lines = parse_yrc(raw).unwrap();
-        assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0].start_ms, 1_000);
-        assert_eq!(lines[0].text, "你好");
-        assert_eq!(lines[0].words[1].start_ms, 1_400);
-        assert_eq!(lines[0].words[1].end_ms, 2_000);
-        assert_eq!(lines[0].end_ms, Some(2_000));
-    }
-
-    #[test]
-    fn parses_lrc_style_yrc_words() {
-        let raw = "[1000,1200](1000,400,0)你(1400,600,0)好";
-        let lines = parse_yrc(raw).unwrap();
-        assert_eq!(lines[0].words.len(), 2);
-        assert_eq!(lines[0].words[0].start_ms, 1_000);
-        assert_eq!(lines[0].words[1].end_ms, 2_000);
-    }
-
-    #[test]
-    fn merges_translation_by_nearest_timestamp() {
-        let body = json!({
-            "lrc": {"lyric": "[00:01.00]hello\n[00:03.00]world"},
-            "tlyric": {"lyric": "[00:01.05]你好\n[00:03.10]世界"}
-        });
-        let lines = parse_lyric_response(&body).unwrap();
-        assert_eq!(lines[0].translation.as_deref(), Some("你好"));
-        assert_eq!(lines[1].translation.as_deref(), Some("世界"));
-    }
-
-    #[test]
-    fn yrc_wins_over_lrc_and_keeps_translation() {
-        let body = json!({
-            "yrc": {"lyric": "{\"t\":1000,\"c\":[{\"tx\":\"你\",\"tr\":[0,400]},{\"tx\":\"好\",\"tr\":[400,600]}]}"},
-            "lrc": {"lyric": "[00:01.00]你好"},
-            "ytlrc": {"lyric": "[00:01.00]hello"}
-        });
-        let lines = parse_lyric_response(&body).unwrap();
-        assert_eq!(lines[0].words.len(), 2);
-        assert_eq!(lines[0].translation.as_deref(), Some("hello"));
-    }
-
-    #[test]
-    fn snapshot_tracks_line_and_word_progress() {
-        let lines = vec![LyricLine {
-            start_ms: 1_000,
-            end_ms: Some(3_000),
-            text: "你好".into(),
-            words: vec![
-                LyricWord {
-                    text: "你".into(),
-                    start_ms: 1_000,
-                    end_ms: 1_400,
-                },
-                LyricWord {
-                    text: "好".into(),
-                    start_ms: 1_400,
-                    end_ms: 2_000,
-                },
-            ],
-            translation: None,
-        }];
-
-        let before = snapshot(&lines, 900);
-        assert_eq!(before.current, None);
-
-        let mid = snapshot(&lines, 1_700);
-        assert_eq!(mid.current, Some(0));
-        assert_eq!(mid.word, Some(1));
-        assert!((mid.word_progress - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn snapshot_stays_on_completed_line_after_its_end() {
-        let lines = vec![
-            LyricLine {
-                start_ms: 1_000,
-                end_ms: Some(2_000),
-                text: "a".into(),
-                words: Vec::new(),
-                translation: None,
-            },
-            LyricLine {
-                start_ms: 3_000,
-                end_ms: Some(4_000),
-                text: "b".into(),
-                words: Vec::new(),
-                translation: None,
-            },
-        ];
-        let state = snapshot(&lines, 2_500);
-        assert_eq!(state.current, Some(0));
-        assert_eq!(state.line_progress, 1.0);
-    }
-
-    #[test]
-    fn quantized_position_follows_global_fps() {
-        assert_eq!(quantized_position_ms(1_010, 60, 2), 1_000);
-        assert_eq!(quantized_position_ms(1_000, 60, 1), 1_000);
-        assert_eq!(quantized_position_ms(1_000, 30, 2), 1_000);
-        assert!(quantized_position_ms(1_050, 30, 2) <= 1_050);
-    }
-}
+mod tests;

@@ -294,7 +294,6 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
     let playback = map_host_state(runtime.state);
     if app.player.playback != playback {
         app.player.playback = playback;
-        app.position_anchor_at = Instant::now();
         changed = true;
     }
 
@@ -311,7 +310,6 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
 
     if app.player.seeking != runtime.seeking {
         app.player.seeking = runtime.seeking;
-        app.position_anchor_at = Instant::now();
         changed = true;
     }
 
@@ -322,7 +320,6 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
 
     if app.player.position != runtime.position {
         app.player.position = runtime.position;
-        app.position_anchor_at = Instant::now();
         changed = true;
     }
 
@@ -344,6 +341,9 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         }
     }
 
+    // Refresh the extrapolation origin on every snapshot, even when the host
+    // position is unchanged (buffering/stall), so lyrics cannot drift ahead.
+    app.position_anchor_at = Instant::now();
     changed
 }
 
