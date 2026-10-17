@@ -808,3 +808,24 @@ fn pick_artist_id_matches_the_name_then_the_position() {
     );
     assert_eq!(pick_artist_id(&[], "A", 0), None, "没有作者表");
 }
+
+/// 回归：先为 24 张候选卡片发起封面请求、再截断到 3 个，会让 21 个请求白跑。
+#[test]
+fn home_covers_are_not_loaded_before_tile_truncation() {
+    let tiles = (0..24)
+        .map(|index| {
+            super::home::HomeTile::from_recommendation(
+                None,
+                format!("tile-{index}"),
+                String::new(),
+                Some(format!("https://p1.music.126.net/{index}.jpg")),
+            )
+        })
+        .collect();
+    let tiles = super::home::prioritize_home_tiles(tiles, false);
+    assert_eq!(tiles.len(), 3);
+    assert!(
+        tiles.iter().all(|tile| tile.cover.url.is_none()),
+        "候选封面必须在最终列表确定后再加载"
+    );
+}

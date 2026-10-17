@@ -25,6 +25,9 @@ pub(crate) struct HomeTile {
     pub(crate) title: String,
     pub(crate) subtitle: String,
     pub(crate) cover: CoverFetchState,
+    /// Loaded only after the final tile list is known. Loading while building
+    /// the 24-card candidate list wasted work on tiles that were then dropped.
+    cover_url: Option<String>,
 }
 
 impl HomeTile {
@@ -34,25 +37,30 @@ impl HomeTile {
             title: "每日推荐".to_string(),
             subtitle: String::new(),
             cover: CoverFetchState::default(),
+            cover_url: None,
         }
     }
 
-    fn from_recommendation(
-        api: &ApiState,
+    pub(super) fn from_recommendation(
         id: Option<String>,
         title: String,
         subtitle: String,
         cover_url: Option<String>,
     ) -> Self {
-        let mut cover = CoverFetchState::default();
-        if let Some(x) = cover_url {
-            cover.load(api.clone(), x)
-        }
         Self {
             id,
             title,
             subtitle,
-            cover,
+            cover: CoverFetchState::default(),
+            cover_url,
+        }
+    }
+}
+
+fn load_home_tile_covers(api: &ApiState, tiles: &mut [HomeTile]) {
+    for tile in tiles {
+        if let Some(url) = tile.cover_url.take() {
+            tile.cover.load(api.clone(), url);
         }
     }
 }
@@ -341,7 +349,7 @@ pub(super) async fn fetch_home_tiles(api: &mut ApiState, show_more: bool) -> Vec
             .iter()
             .find_map(|item| first_non_empty(item, &["/al/picUrl", "/album/picUrl"]))
     {
-        daily_tile.cover.load(api.clone(), cover_url);
+        daily_tile.cover_url = Some(cover_url);
     }
 
     let mut cards = Vec::new();
@@ -366,13 +374,13 @@ pub(super) async fn fetch_home_tiles(api: &mut ApiState, show_more: bool) -> Vec
         }
 
         let mut tile =
-            HomeTile::from_recommendation(api, card.id, card.title, card.subtitle, card.cover_url);
+            HomeTile::from_recommendation(card.id, card.title, card.subtitle, card.cover_url);
 
         if pinned_title == Some("私人雷达")
             && let Some(playlist_id) = tile.id.clone()
             && let Some(cover_url) = fetch_playlist_cover_url(api, &playlist_id).await
         {
-            tile.cover.load(api.clone(), cover_url);
+            tile.cover_url = Some(cover_url);
         }
 
         if pinned_title == Some("私人漫游") {
@@ -382,14 +390,12 @@ pub(super) async fn fetch_home_tiles(api: &mut ApiState, show_more: bool) -> Vec
         tiles.push(tile);
     }
 
-    prioritize_home_tiles(api, tiles, show_more)
+    let mut tiles = prioritize_home_tiles(tiles, show_more);
+    load_home_tile_covers(api, &mut tiles);
+    tiles
 }
 
-fn prioritize_home_tiles(
-    api: &ApiState,
-    mut tiles: Vec<HomeTile>,
-    show_more: bool,
-) -> Vec<HomeTile> {
+pub(super) fn prioritize_home_tiles(mut tiles: Vec<HomeTile>, show_more: bool) -> Vec<HomeTile> {
     let mut pinned = Vec::with_capacity(HOME_PINNED_TITLES.len());
 
     for target in HOME_PINNED_TITLES {
@@ -413,7 +419,6 @@ fn prioritize_home_tiles(
                 None
             };
             pinned.push(HomeTile::from_recommendation(
-                api,
                 tile_id,
                 target.to_string(),
                 String::new(),
