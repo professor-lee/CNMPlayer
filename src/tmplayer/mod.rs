@@ -32,7 +32,7 @@ pub struct FullscreenTrackSeed {
     pub album: String,
     pub duration: Duration,
     pub liked: bool,
-    pub cover: Option<Vec<u8>>,
+    pub cover: Option<Arc<[u8]>>,
     pub lyrics: Option<Vec<app::state::LyricLine>>,
 }
 
@@ -41,7 +41,7 @@ pub struct FullscreenBootstrap {
     pub playlist: Vec<FullscreenPlaylistItemSeed>,
     pub current_index: Option<usize>,
     pub current_track: Option<FullscreenTrackSeed>,
-    pub playlist_cover: Option<Vec<u8>>,
+    pub playlist_cover: Option<Arc<[u8]>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +76,7 @@ pub enum HostRepeatMode {
 pub struct HostPlaybackSnapshot {
     pub playlist: Vec<FullscreenPlaylistItemSeed>,
     pub current_index: Option<usize>,
-    pub playlist_cover: Option<Vec<u8>>,
+    pub playlist_cover: Option<Arc<[u8]>>,
     pub current_track: Option<FullscreenTrackSeed>,
     pub current_liked: bool,
     pub state: HostPlaybackState,

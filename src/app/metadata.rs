@@ -38,7 +38,7 @@ pub(super) struct CoverFetchResult {
     pub(super) song_id: String,
     pub(super) url: String,
     pub(super) generation: u64,
-    pub(super) bytes: Option<Vec<u8>>,
+    pub(super) bytes: Option<Arc<[u8]>>,
 }
 
 fn cover_cache_path_for_dir(cache_dir: &Path, url: &str) -> Option<PathBuf> {
@@ -54,13 +54,11 @@ fn cover_cache_path_for_dir(cache_dir: &Path, url: &str) -> Option<PathBuf> {
     Some(cache_dir.join(format!("{:016x}.img", hasher.finish())))
 }
 
-pub(super) fn validate_cached_cover(bytes: Vec<u8>) -> Option<Vec<u8>> {
+pub(super) fn validate_cached_cover(bytes: &[u8]) -> bool {
     if bytes.is_empty() {
-        return None;
+        return false;
     }
-    super::api::validate_cover_bytes(&bytes).ok()?;
-    image::load_from_memory(&bytes).ok()?;
-    Some(bytes)
+    super::api::validate_cover_bytes(bytes).is_ok() && image::load_from_memory(bytes).is_ok()
 }
 
 /// Only validated API bytes enter this path. Keep the buffer shared with the
@@ -68,9 +66,8 @@ pub(super) fn validate_cached_cover(bytes: Vec<u8>) -> Option<Vec<u8>> {
 async fn persist_fetched_cover(
     persistence: &PersistenceHandle,
     path: PathBuf,
-    bytes: Vec<u8>,
-) -> Vec<u8> {
-    let bytes = Arc::new(bytes);
+    bytes: Arc<[u8]>,
+) -> Arc<[u8]> {
     let job_bytes = bytes.clone();
     let (done_tx, done_rx) = futures::channel::oneshot::channel();
     let queued = persistence.enqueue(move || {
@@ -84,7 +81,7 @@ async fn persist_fetched_cover(
     } else if let Err(error) = queued {
         log::warn!("cover persistence queue unavailable: {error:#}");
     }
-    Arc::unwrap_or_clone(bytes)
+    bytes
 }
 
 #[derive(Debug, Clone)]
@@ -118,7 +115,8 @@ pub(super) async fn loop_cover_fetch(
         }
         if let Some(path) = cover_cache_path_for_dir(&cache_dir, &req.url) {
             let cached = compio::runtime::spawn_blocking(move || {
-                std::fs::read(path).ok().and_then(validate_cached_cover)
+                let bytes = std::fs::read(path).ok()?;
+                validate_cached_cover(&bytes).then(|| Arc::<[u8]>::from(bytes))
             })
             .await
             .ok()
@@ -129,7 +127,7 @@ pub(super) async fn loop_cover_fetch(
         }
         let bytes = api.fetch_display_cover_bytes(&req.url).await.ok()?;
         let path = cover_cache_path_for_dir(&cache_dir, &req.url)?;
-        Some(persist_fetched_cover(&persistence, path, bytes).await)
+        Some(persist_fetched_cover(&persistence, path, Arc::from(bytes)).await)
     };
     latest_fetch::run_latest(
         rx,
@@ -184,30 +182,34 @@ impl App {
         cover_cache_path_for_dir(&self.cover_cache_dir, url)
     }
 
-    async fn load_cover_from_disk_cache(&self, url: &str) -> Option<Vec<u8>> {
+    async fn load_cover_from_disk_cache(&self, url: &str) -> Option<Arc<[u8]>> {
         let path = self.cover_cache_path_for_url(url)?;
         compio::runtime::spawn_blocking(move || {
-            std::fs::read(path).ok().and_then(validate_cached_cover)
+            let bytes = std::fs::read(path).ok()?;
+            validate_cached_cover(&bytes).then(|| Arc::<[u8]>::from(bytes))
         })
         .await
         .ok()
         .flatten()
     }
 
-    async fn persist_cover_to_disk_cache(&self, url: &str, bytes: Vec<u8>) -> Vec<u8> {
+    async fn persist_cover_to_disk_cache(&self, url: &str, bytes: Arc<[u8]>) -> Arc<[u8]> {
         let Some(path) = self.cover_cache_path_for_url(url) else {
             return bytes;
         };
         persist_fetched_cover(&self.persistence.handle(), path, bytes).await
     }
 
-    async fn fetch_cover_with_disk_cache(&self, url: &str) -> Option<Vec<u8>> {
+    async fn fetch_cover_with_disk_cache(&self, url: &str) -> Option<Arc<[u8]>> {
         if let Some(bytes) = self.load_cover_from_disk_cache(url).await {
             return Some(bytes);
         }
 
         let bytes = self.api.fetch_display_cover_bytes(url).await.ok()?;
-        Some(self.persist_cover_to_disk_cache(url, bytes).await)
+        Some(
+            self.persist_cover_to_disk_cache(url, Arc::from(bytes))
+                .await,
+        )
     }
 
     fn apply_cover_fetch_result(&mut self, result: CoverFetchResult) {
@@ -443,7 +445,7 @@ impl App {
             if let (Some(bytes), Some(url)) = (track.cover.take(), track.cover_url.as_deref())
                 && let Some(path) = cover_cache_path_for_dir(cover_cache_dir, url)
                 && let Err(error) = persistence.enqueue(move || {
-                    if let Some(bytes) = validate_cached_cover(bytes) {
+                    if validate_cached_cover(&bytes) {
                         write_atomic(&path, &bytes)?;
                     }
                     Ok(())

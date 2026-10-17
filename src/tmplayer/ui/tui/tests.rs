@@ -34,7 +34,7 @@ fn fullscreen_drawer_translates_content_and_keeps_cover_geometry() {
     app.language = crate::data::config::Language::En;
     app.player.track.title = "Drawer song".into();
     app.player.track.artist = "Drawer artist".into();
-    app.player.track.cover = Some(encoded_cover());
+    app.player.track.cover = Some(encoded_cover().into());
     app.player.track.cover_hash = Some(700);
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     let mut covers = CoverPipeline::new(WakeSignal::default());
@@ -470,7 +470,7 @@ fn halfblocks_loading_missing_and_transition_never_emit_ascii_art() {
     };
     assert_blank(terminal.backend().buffer());
     let from = CoverSnapshot::from(&app.player.track);
-    app.player.track.cover = Some(encoded_cover());
+    app.player.track.cover = Some(encoded_cover().into());
     app.player.track.cover_hash = Some(42);
     app.start_cover_anim(
         from,
@@ -512,7 +512,7 @@ fn sidebar_slides_preserve_exposed_song_chafa_cells() {
     image::DynamicImage::ImageRgb8(image)
         .write_to(&mut encoded, image::ImageFormat::Png)
         .unwrap();
-    app.player.track.cover = Some(encoded.into_inner());
+    app.player.track.cover = Some(encoded.into_inner().into());
     app.player.track.cover_hash = Some(42);
     let mut halfblocks = CoverPipeline::new(WakeSignal::default());
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -598,7 +598,7 @@ fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
     image::DynamicImage::ImageRgb8(image)
         .write_to(&mut encoded, image::ImageFormat::Png)
         .unwrap();
-    app.playlist_cover = Some(encoded.into_inner());
+    app.playlist_cover = Some(encoded.into_inner().into());
     app.playlist_cover_hash = Some(91);
     app.playlist_view.items = (0..12)
         .map(|i| PlaylistItem {
@@ -694,7 +694,7 @@ fn drawer_failed_cover_is_blank_without_ascii_or_retry_loop() {
     use ratatui::backend::TestBackend;
     let mut app = state(Overlay::Playlist);
     app.config.graphics_protocol = GraphicsProtocol::Halfblocks;
-    app.playlist_cover = Some(b"invalid image".to_vec());
+    app.playlist_cover = Some(b"invalid image".to_vec().into());
     app.playlist_cover_hash = Some(19);
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     let mut covers = CoverPipeline::new(WakeSignal::default());

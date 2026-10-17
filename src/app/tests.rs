@@ -179,18 +179,15 @@ fn cached_cover_requires_decodable_image_and_terminal_marker() {
             .write_to(&mut encoded, format)
             .unwrap();
         let complete = encoded.into_inner();
-        assert_eq!(
-            validate_cached_cover(complete.clone()),
-            Some(complete.clone())
-        );
+        assert!(validate_cached_cover(&complete));
 
         let mut incomplete = complete;
         incomplete.pop();
-        assert!(validate_cached_cover(incomplete).is_none());
+        assert!(!validate_cached_cover(&incomplete));
     }
 
-    assert!(validate_cached_cover(Vec::new()).is_none());
-    assert!(validate_cached_cover(b"not an image\xff\xd9".to_vec()).is_none());
+    assert!(!validate_cached_cover(&[]));
+    assert!(!validate_cached_cover(b"not an image\xff\xd9"));
 }
 
 /// 无后缀默认走混合搜索；后缀命中时只搜该类型（`@artist` 与 `@author` 同义）。

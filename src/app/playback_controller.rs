@@ -57,7 +57,7 @@ pub(crate) struct PlaybackTrack {
     pub(crate) album: String,
     pub(crate) duration_ms: i64,
     pub(crate) cover_url: Option<String>,
-    pub(crate) cover: Option<Vec<u8>>,
+    pub(crate) cover: Option<Arc<[u8]>>,
     pub(crate) lyrics: Option<Vec<LyricLine>>,
 }
 
@@ -838,7 +838,7 @@ pub(crate) struct PlaybackController {
     pub(super) like_machine: LikeMachine,
     pub(super) playback_queue: Vec<PlaybackTrack>,
     pub(super) playback_queue_cover_url: Option<String>,
-    pub(super) playback_queue_cover: Option<Vec<u8>>,
+    pub(super) playback_queue_cover: Option<Arc<[u8]>>,
     pub(super) playback_queue_source_id: Option<String>,
     pub(super) playback_index: Option<usize>,
     pub(crate) playback_repeat_mode: PlaybackRepeatMode,
@@ -870,18 +870,18 @@ impl PlaybackController {
     }
 
     /// 全屏入口与后续快照共用：来源封面未就绪时使用歌曲封面，不保留旧队列的图。
-    pub(super) fn fullscreen_playlist_cover(&self) -> Option<&[u8]> {
+    pub(super) fn fullscreen_playlist_cover(&self) -> Option<Arc<[u8]>> {
         self.playback_queue_cover
-            .as_deref()
+            .clone()
             .or_else(|| {
                 self.playback_queue
                     .first()
-                    .and_then(|track| track.cover.as_deref())
+                    .and_then(|track| track.cover.clone())
             })
             .or_else(|| {
                 self.now_playing
                     .as_ref()
-                    .and_then(|track| track.cover.as_deref())
+                    .and_then(|track| track.cover.clone())
             })
     }
 

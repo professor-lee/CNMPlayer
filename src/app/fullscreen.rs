@@ -24,7 +24,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub(crate) struct FullscreenPlaybackSnapshot {
     pub(crate) queue: Vec<PlaybackTrack>,
-    pub(crate) playlist_cover: Option<Vec<u8>>,
+    pub(crate) playlist_cover: Option<std::sync::Arc<[u8]>>,
     pub(crate) current_index: Option<usize>,
     pub(crate) now_playing: Option<PlaybackTrack>,
     pub(crate) now_playing_liked: bool,
@@ -65,10 +65,7 @@ impl App {
             current_index: self.playback.playback_index,
             now_playing: self.playback.now_playing.clone(),
             now_playing_liked: self.playback.now_playing_liked,
-            playlist_cover: self
-                .playback
-                .fullscreen_playlist_cover()
-                .map(|cover| cover.to_vec()),
+            playlist_cover: self.playback.fullscreen_playlist_cover(),
             state: self.playback.playback_state,
             repeat_mode: self.playback.playback_repeat_mode,
             position: self.playback.audio_player.display_position(),
@@ -94,7 +91,7 @@ impl App {
         self.playback
             .playback_queue_cover
             .as_ref()
-            .map(Vec::len)
+            .map(|cover| cover.len())
             .unwrap_or(0)
             .hash(&mut hasher);
 
@@ -382,10 +379,7 @@ impl App {
             .unwrap_or(0)
             .min(bootstrap.playlist.len().saturating_sub(1));
         bootstrap.current_index = Some(active_idx);
-        bootstrap.playlist_cover = self
-            .playback
-            .fullscreen_playlist_cover()
-            .map(|cover| cover.to_vec());
+        bootstrap.playlist_cover = self.playback.fullscreen_playlist_cover();
         bootstrap.current_track = Some(crate::tmplayer::FullscreenTrackSeed {
             playlist_index: Some(active_idx),
             title: now.title.clone(),

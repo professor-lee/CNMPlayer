@@ -72,7 +72,7 @@ pub struct TrackMetadata {
     pub artist: String,
     pub album: String,
     pub duration: Duration,
-    pub cover: Option<Vec<u8>>,
+    pub cover: Option<Arc<[u8]>>,
     pub cover_hash: Option<u64>,
     pub lyrics: Option<Vec<LyricLine>>,
 }
@@ -82,7 +82,7 @@ pub struct CoverSnapshot {
     pub title: String,
     pub artist: String,
     pub album: String,
-    pub cover: Option<Vec<u8>>,
+    pub cover: Option<Arc<[u8]>>,
     pub cover_hash: Option<u64>,
 }
 
@@ -246,7 +246,7 @@ pub struct AppState {
     pub eq_selected: usize,
 
     // Host-provided playlist cover shown in the playlist overlay.
-    pub playlist_cover: Option<Vec<u8>>,
+    pub playlist_cover: Option<Arc<[u8]>>,
     pub playlist_cover_hash: Option<u64>,
 
     pub cover_anim: Option<CoverAnim>,
@@ -283,7 +283,7 @@ pub struct AppState {
 #[derive(Debug)]
 struct CoverRenderRequest {
     key: CoverKey,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     placeholder: char,
 }
 
@@ -404,7 +404,7 @@ impl AppState {
             crate::app::download::resolve_download_root(self.config.download_path.as_deref());
     }
 
-    pub fn queue_cover_ascii_render(&self, key: CoverKey, bytes: &[u8], placeholder: char) {
+    pub fn queue_cover_ascii_render(&self, key: CoverKey, bytes: &Arc<[u8]>, placeholder: char) {
         if self.cover_cache.borrow().contains(key) {
             return;
         }
@@ -414,7 +414,7 @@ impl AppState {
         self.cover_render_inflight.borrow_mut().insert(key);
         let _ = self.cover_render_tx.send(CoverRenderRequest {
             key,
-            bytes: bytes.to_vec(),
+            bytes: bytes.clone(),
             placeholder,
         });
     }

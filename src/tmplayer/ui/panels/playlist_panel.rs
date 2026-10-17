@@ -113,7 +113,7 @@ fn render_album_cover(buf: &mut Buffer, area: Rect, app: &mut AppState) {
         return;
     }
     let cover = cover_rect_in_area(area);
-    let Some(bytes) = app.playlist_cover.as_deref() else {
+    let Some(bytes) = app.playlist_cover.as_ref() else {
         return;
     };
     let hash = app.playlist_cover_hash.unwrap_or_else(|| hash_bytes(bytes));

@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Clone, Copy)]
@@ -18,7 +19,7 @@ struct CoverRef<'a> {
     title: &'a str,
     artist: &'a str,
     album: &'a str,
-    cover: Option<&'a [u8]>,
+    cover: Option<&'a Arc<[u8]>>,
     cover_hash: Option<u64>,
 }
 
@@ -28,7 +29,7 @@ impl<'a> From<&'a TrackMetadata> for CoverRef<'a> {
             title: &track.title,
             artist: &track.artist,
             album: &track.album,
-            cover: track.cover.as_deref(),
+            cover: track.cover.as_ref(),
             cover_hash: track.cover_hash,
         }
     }
@@ -40,7 +41,7 @@ impl<'a> From<&'a CoverSnapshot> for CoverRef<'a> {
             title: &snapshot.title,
             artist: &snapshot.artist,
             album: &snapshot.album,
-            cover: snapshot.cover.as_deref(),
+            cover: snapshot.cover.as_ref(),
             cover_hash: snapshot.cover_hash,
         }
     }
