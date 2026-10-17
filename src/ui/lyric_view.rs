@@ -36,14 +36,28 @@ pub(crate) fn render_pair(
     }
 
     rows[0] = if state.current.is_some() {
-        render_current(&lines[current], position_ms, width, theme, options)
+        render_current(
+            &lines[current],
+            position_ms,
+            state.line_progress,
+            width,
+            theme,
+            options,
+        )
     } else {
         render_static(&lines[current], future_color(theme, 0), width)
     };
 
     if let Some(translation) = translation_text(&lines[current], options) {
         rows[1] = if state.current.is_some() {
-            render_translation_current(&lines[current], position_ms, width, theme, options)
+            render_translation_current(
+                &lines[current],
+                position_ms,
+                state.line_progress,
+                width,
+                theme,
+                options,
+            )
         } else {
             render_translation_static(translation, future_color(theme, 0), width)
         };
@@ -119,7 +133,14 @@ pub(crate) fn render_window(
     }
 
     if state.current.is_some() {
-        output[center] = render_current(&lines[current], position_ms, width, theme, options);
+        output[center] = render_current(
+            &lines[current],
+            position_ms,
+            state.line_progress,
+            width,
+            theme,
+            options,
+        );
     } else {
         output[center] = render_static(&lines[current], future_color(theme, 0), width);
     }
@@ -127,7 +148,14 @@ pub(crate) fn render_window(
     let mut after = Vec::new();
     if let Some(translation) = translation_text(&lines[current], options) {
         after.push(if state.current.is_some() {
-            render_translation_current(&lines[current], position_ms, width, theme, options)
+            render_translation_current(
+                &lines[current],
+                position_ms,
+                state.line_progress,
+                width,
+                theme,
+                options,
+            )
         } else {
             render_translation_static(translation, future_color(theme, 0), width)
         });
@@ -171,12 +199,17 @@ fn translation_text(line: &LyricLine, options: LyricOptions) -> Option<&str> {
 fn render_current(
     line: &LyricLine,
     position_ms: u64,
+    line_progress: f32,
     width: u16,
     theme: &Theme,
     options: LyricOptions,
 ) -> Line<'static> {
-    let mut spans = if options.word_lyrics && !line.words.is_empty() {
-        word_spans(theme, line, position_ms)
+    let mut spans = if options.word_lyrics {
+        if line.words.is_empty() {
+            progress_spans(&line.text, line_progress, theme, true)
+        } else {
+            word_spans(theme, line, position_ms)
+        }
     } else {
         vec![Span::styled(
             line.text.clone(),
@@ -192,6 +225,27 @@ fn render_current(
         spans = clip_spans(&spans, offset, usize::from(width));
     }
     Line::from(spans)
+}
+
+fn progress_spans(text: &str, progress: f32, theme: &Theme, bold: bool) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let count = chars.len().max(1) as f32;
+    let progress = progress.clamp(0.0, 1.0);
+    let mut spans = Vec::with_capacity(chars.len());
+    for (index, ch) in chars.iter().enumerate() {
+        let char_progress = (progress * count - index as f32).clamp(0.0, 1.0);
+        let color = theme.mix(
+            theme.palette.subtext,
+            theme.palette.accent2,
+            0.38 + 0.62 * ease_in_out(char_progress),
+        );
+        let mut style = Style::default().fg(color);
+        if bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        spans.push(Span::styled(ch.to_string(), style));
+    }
+    spans
 }
 
 fn current_line_color(theme: &Theme, line: &LyricLine, position_ms: u64) -> ratatui::style::Color {
@@ -261,6 +315,7 @@ fn render_translation_static(
 fn render_translation_current(
     line: &LyricLine,
     position_ms: u64,
+    line_progress: f32,
     width: u16,
     theme: &Theme,
     options: LyricOptions,
@@ -272,26 +327,15 @@ fn render_translation_current(
         return Line::default();
     }
 
-    let word_rendering = options.word_lyrics && !line.words.is_empty();
-    let mut spans = if word_rendering {
-        let progress = translation_word_progress(line, position_ms);
-        let chars: Vec<char> = text.chars().collect();
-        let count = chars.len().max(1) as f32;
-        let mut spans = Vec::with_capacity(chars.len());
-        for (index, ch) in chars.iter().enumerate() {
-            let char_progress = (progress * count - index as f32).clamp(0.0, 1.0);
-            // Same pending -> active palette ramp as the lyric line itself.
-            let color = theme.mix(
-                theme.palette.subtext,
-                theme.palette.accent2,
-                0.38 + 0.62 * ease_in_out(char_progress),
-            );
-            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-        }
-        spans
+    let mut spans = if options.word_lyrics {
+        let progress = if line.words.is_empty() {
+            line_progress
+        } else {
+            translation_word_progress(line, position_ms)
+        };
+        progress_spans(text, progress, theme, false)
     } else {
-        // No YRC on this line: the lyric itself is line-level, so the
-        // translation must be a single uniform color, not a character sweep.
+        // Word mode is off: the translation is a single uniform color.
         vec![Span::styled(
             text.to_string(),
             Style::default().fg(current_line_color(theme, line, position_ms)),
@@ -582,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn translation_is_line_level_when_yrc_is_missing() {
+    fn word_mode_without_yrc_sweeps_by_line_progress() {
         let lines = vec![LyricLine {
             start_ms: 1_000,
             end_ms: Some(2_000),
@@ -593,22 +637,22 @@ mod tests {
         let rows = render_pair(
             &lines,
             1_700,
-            30,
+            40,
             &theme(),
             LyricOptions {
                 word_lyrics: true,
                 translation: true,
             },
         );
-        assert_eq!(
-            rows[1].spans.len(),
-            1,
-            "translation must not sweep per char"
-        );
-        assert_eq!(
-            rows[0].spans.first().map(|span| span.style.fg),
+        assert!(rows[0].spans.len() > 1, "lyric sweeps per char");
+        assert!(rows[1].spans.len() > 1, "translation sweeps per char");
+        let active = Some(theme().color_accent2());
+        assert_eq!(rows[0].spans.first().and_then(|span| span.style.fg), active);
+        assert_eq!(rows[1].spans.first().and_then(|span| span.style.fg), active);
+        assert_ne!(
             rows[1].spans.first().map(|span| span.style.fg),
-            "missing YRC keeps both lyric and translation line-level"
+            rows[1].spans.last().map(|span| span.style.fg),
+            "later chars are still pending at 70% line progress"
         );
     }
 
