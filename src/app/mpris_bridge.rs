@@ -28,6 +28,8 @@ mod imp {
     use super::MprisSyncPayload;
     use crate::data::config::CacheConfig;
     use crate::launch;
+
+    const MPRIS_IDENTITY: &str = "CNMPlayer";
     use crate::render::wake::WakeSignal;
     use mpris_server::Metadata;
     use mpris_server::PlaybackStatus;
@@ -72,6 +74,7 @@ mod imp {
                     log::warn!("mpris cache initialization task panicked");
                 }
                 let player = match Player::builder("cnmplayer")
+                    .identity(MPRIS_IDENTITY)
                     .can_play(true)
                     .can_pause(true)
                     .can_seek(true)
