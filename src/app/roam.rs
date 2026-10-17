@@ -49,6 +49,32 @@ pub(super) fn private_roam_restored_index<T>(
     )
 }
 
+/// Index of the first song after the current queue track in authoritative history.
+///
+/// Queue and history windows can have the same length but different offsets, so a
+/// length comparison cannot prove that history has a continuation. Prefer the
+/// recorded occurrence when it still identifies the current song; otherwise fall
+/// back to the first matching song id.
+pub(super) fn private_roam_continuation_start(
+    tracks: &[PlaylistTrack],
+    current: &PlaybackTrack,
+    last_played_index: Option<usize>,
+) -> Option<usize> {
+    let song_id = current.song_id.as_str();
+    let current_index = last_played_index
+        .filter(|&index| {
+            tracks
+                .get(index)
+                .is_some_and(|track| track.id.as_deref() == Some(song_id))
+        })
+        .or_else(|| {
+            tracks
+                .iter()
+                .position(|track| track.id.as_deref() == Some(song_id))
+        })?;
+    (current_index + 1 < tracks.len()).then_some(current_index + 1)
+}
+
 pub(super) fn bound_private_roam_queue(
     queue: &mut Vec<PlaybackTrack>,
     current: &mut Option<usize>,

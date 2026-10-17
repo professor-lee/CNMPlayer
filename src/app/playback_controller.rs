@@ -6,6 +6,7 @@ use super::player::AudioPlayerState;
 use super::player::is_nonempty_file;
 use super::playlist_pagination::PlaylistPagination;
 use super::roam::bound_private_roam_queue;
+use super::roam::private_roam_continuation_start;
 use super::roam::private_roam_restored_index;
 use super::roam::private_roam_window;
 use super::search_controller::SearchItem;
@@ -378,30 +379,32 @@ impl App {
             return;
         }
 
-        // 私人漫游：队列（快照）播完后，若列表已追加新歌则从列表继续顺序播放
+        // 私人漫游：队列（快照）播完后，从权威列表中当前歌曲之后继续顺序播放。
+        // 队列与历史窗口可以同为 256 首但起点不同，不能用长度比较判断是否还有后续。
         if self.playback.playback_repeat_mode == PlaybackRepeatMode::Sequence
             && self.playback_queue_is_roam()
             && current + 1 >= self.playback.playback_queue.len()
-            && self.browse.private_roam.tracks.len() > self.playback.playback_queue.len()
+            && let Some(start) = private_roam_continuation_start(
+                &self.browse.private_roam.tracks,
+                &self.playback.playback_queue[current],
+                self.browse.private_roam.last_played_index,
+            )
         {
-            let start = self.browse.private_roam.last_played_index.unwrap_or(0) + 1;
-            if start < self.browse.private_roam.tracks.len() {
-                let queue: Vec<PlaybackTrack> = self.browse.private_roam.tracks[start..]
-                    .iter()
-                    .filter_map(PlaybackTrack::from_playlist_track)
-                    .collect();
-                // 来源仍是漫游本身，封面沿用漫游当前封面（跟随播放歌曲）。
-                let source_cover = self.browse.private_roam.cover_url.clone();
-                self.replace_queue_and_play(
-                    queue,
-                    0,
-                    source_cover,
-                    Some(HOME_PRIVATE_ROAM_TILE_ID.to_string()),
-                    None,
-                )
-                .await;
-                return;
-            }
+            let queue: Vec<PlaybackTrack> = self.browse.private_roam.tracks[start..]
+                .iter()
+                .filter_map(PlaybackTrack::from_playlist_track)
+                .collect();
+            // 来源仍是漫游本身，封面沿用漫游当前封面（跟随播放歌曲）。
+            let source_cover = self.browse.private_roam.cover_url.clone();
+            self.replace_queue_and_play(
+                queue,
+                0,
+                source_cover,
+                Some(HOME_PRIVATE_ROAM_TILE_ID.to_string()),
+                None,
+            )
+            .await;
+            return;
         }
 
         let target = match self.playback.playback_repeat_mode {

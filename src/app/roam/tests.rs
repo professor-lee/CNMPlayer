@@ -386,6 +386,51 @@ fn roam_append_preserves_current_with_different_state_and_queue_offsets() {
 }
 
 #[test]
+fn roam_continuation_uses_current_occurrence_when_windows_differ() {
+    // Equal-length history/queue windows can start at different offsets after a
+    // restore; continuation must not depend on history being longer.
+    let tracks = numbered_tracks(9, 265);
+    let current = PlaybackTrack::from_playlist_track(&tracks[246]).unwrap();
+    assert_eq!(current.song_id, "255");
+    assert_eq!(
+        super::private_roam_continuation_start(&tracks, &current, Some(246)),
+        Some(247)
+    );
+    assert_eq!(
+        super::private_roam_continuation_start(&tracks, &current, Some(0)),
+        Some(247),
+        "a stale index falls back to the current song"
+    );
+
+    let last = PlaybackTrack::from_playlist_track(&tracks[255]).unwrap();
+    assert_eq!(
+        super::private_roam_continuation_start(&tracks, &last, Some(255)),
+        None
+    );
+
+    let absent = PlaybackTrack::from_playlist_track(&track("absent", None)).unwrap();
+    assert_eq!(
+        super::private_roam_continuation_start(&tracks, &absent, None),
+        None
+    );
+}
+
+#[test]
+fn roam_continuation_preserves_recorded_duplicate_occurrence() {
+    let tracks = vec![
+        track("A", None),
+        track("B", None),
+        track("A", None),
+        track("C", None),
+    ];
+    let current = PlaybackTrack::from_playlist_track(&tracks[2]).unwrap();
+    assert_eq!(
+        super::private_roam_continuation_start(&tracks, &current, Some(2)),
+        Some(3)
+    );
+}
+
+#[test]
 fn roam_memory_restore_preserves_duplicate_occurrence_after_empty_id_filtering() {
     for (ids, current, expected_index) in [
         (vec!["A", "B", "A", "C"], 2, 2),
