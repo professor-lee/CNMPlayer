@@ -234,9 +234,9 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `page_lyrics_snap` | `true` | Snap to the nearest edge (left/right/top/bottom, the other axis stays free; only editable while dragging is on) |
 | `page_lyrics_pos_x` | `1.0` | Normalized horizontal position of the overlay's top-left (0=left, 1=right) |
 | `page_lyrics_pos_y` | `1.0` | Normalized vertical position of the overlay's top-left (0=top, 1=bottom) |
-| `word_lyrics` | `true` | Per-word coloring when YRC is available |
+| `word_lyrics` | `true` | Per-character coloring: YRC word timings when available, otherwise line progress |
 | `lyric_translation` | `false` | Show lyric translations |
-| `lyric_frame_divisor` | `2` | Lyric refresh divisor on top of `ui_fps` (1–8) |
+| `lyric_frame_divisor` | `2` | Lyric animation sampling divisor on top of `ui_fps` (1–8); does not change the redraw rate |
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
@@ -324,7 +324,7 @@ Search, playlist and artist pages:
 Settings modal:
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` move, `Left` / `Right` / `Enter` change a value, `Esc` steps back
-- Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the lyrics subpage, where a single click flips the switch
+- Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the Lyrics Settings subpage, where a single click flips the switch
 - Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding.
 
 Fullscreen page:
