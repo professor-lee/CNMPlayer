@@ -103,6 +103,8 @@ pub(crate) fn quantized_position_ms(position_ms: u64, ui_fps: u32, divisor: u32)
 /// aligned by timestamp from `ytlrc` (preferred) or `tlyric`. Display settings
 /// (`word_lyrics`, `lyric_translation`) are not inputs here: word timings and
 /// translations are always retained so toggling them never requires a refetch.
+/// Explicit empty LRC timestamps remain on the timeline to clear the current
+/// lyric during pauses; a document with no lyric or translation text is absent.
 pub(crate) fn parse_lyric_response(body: &Value) -> Option<Vec<LyricLine>> {
     let yrc = body_text(body, "/yrc/lyric").or_else(|| body_text(body, "/yrc"));
     let lrc = body_text(body, "/lrc/lyric").or_else(|| body_text(body, "/lrc"));
@@ -129,7 +131,7 @@ pub(crate) fn parse_lyric_response(body: &Value) -> Option<Vec<LyricLine>> {
         align_translation(&mut lines, translation);
     }
 
-    lines.retain(|line| {
+    let has_lyrics = lines.iter().any(|line| {
         !line.text.trim().is_empty()
             || line
                 .translation
@@ -138,7 +140,7 @@ pub(crate) fn parse_lyric_response(body: &Value) -> Option<Vec<LyricLine>> {
     });
     fill_line_end_times(&mut lines);
 
-    (!lines.is_empty()).then_some(lines)
+    has_lyrics.then_some(lines)
 }
 
 fn body_text<'a>(body: &'a Value, path: &str) -> Option<&'a str> {
@@ -230,6 +232,8 @@ fn parse_timed_lrc(content: &str) -> Vec<(u64, String)> {
 /// Parse both YRC encodings:
 /// - one JSON object per line (`{"t":...,"c":[{"tx":...,"tr":[offset,duration]}]}`)
 /// - LRC style (`[start,duration](start,duration,0)word...`)
+///
+/// Parentheses in lyric text are preserved unless they form a complete word-time tag.
 fn parse_yrc(content: &str) -> Option<Vec<LyricLine>> {
     let mut lines = Vec::new();
     for raw in content.lines() {
@@ -322,32 +326,33 @@ fn parse_lrc_style_yrc_line(raw: &str) -> Option<LyricLine> {
     let content = &raw[close + 1..];
     let mut words = Vec::new();
     let mut text = String::new();
-    let mut rest = content;
+    // Only complete word-time tags delimit text; ordinary parentheses belong
+    // to the preceding word, including numeric text such as `(2026)`.
+    let mut tags = content
+        .match_indices('(')
+        .filter_map(|(open, _)| {
+            let close = open + 1 + content[open + 1..].find(')')?;
+            let mut fields = content[open + 1..close].split(',');
+            let start = fields.next()?.trim().parse::<u64>().ok()?;
+            let duration = fields.next()?.trim().parse::<u64>().ok()?;
+            fields.next()?.trim().parse::<u64>().ok()?;
+            if fields.next().is_some() {
+                return None;
+            }
+            Some((open, close + 1, start, duration))
+        })
+        .peekable();
 
-    while let Some(open) = rest.find('(') {
-        rest = &rest[open + 1..];
-        let Some(close) = rest.find(')') else {
-            break;
-        };
-        let timing = &rest[..close];
-        rest = &rest[close + 1..];
-
-        let Some((word_start, word_duration)) = parse_lrc_style_pair(timing) else {
-            continue;
-        };
-        let word_text = rest.split('(').next().unwrap_or("").to_string();
+    while let Some((_, text_start, word_start, word_duration)) = tags.next() {
+        let text_end = tags.peek().map_or(content.len(), |tag| tag.0);
+        let word_text = &content[text_start..text_end];
         if !word_text.is_empty() {
-            text.push_str(&word_text);
+            text.push_str(word_text);
             words.push(LyricWord {
-                text: word_text,
+                text: word_text.to_string(),
                 start_ms: word_start,
                 end_ms: word_start.saturating_add(word_duration),
             });
-        }
-        if let Some(next) = rest.find('(') {
-            rest = &rest[next..];
-        } else {
-            break;
         }
     }
 

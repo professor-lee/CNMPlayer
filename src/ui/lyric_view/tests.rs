@@ -41,6 +41,36 @@ fn line_with_words() -> LyricLine {
 }
 
 #[test]
+fn timed_empty_lrc_clears_pair_and_window_current_rows() {
+    let body = serde_json::json!({
+        "lrc": {"lyric": "[00:01.00]verse\n[00:03.00]\n[00:10.00]next"}
+    });
+    let lines = crate::lyrics::parse_lyric_response(&body).unwrap();
+    for word_lyrics in [false, true] {
+        let options = LyricOptions {
+            word_lyrics,
+            translation: true,
+        };
+        let pair = render_pair(&lines, 5_000, 30, &theme(), options);
+        let window = render_window(&lines, 5_000, 7, 30, &theme(), options);
+        for current in [&pair[0], &window[3]] {
+            let text: String = current
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert_eq!(text, "", "word_lyrics={word_lyrics}");
+        }
+        let next: String = pair[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(next, "next");
+    }
+}
+
+#[test]
 fn current_line_and_translation_share_the_pair() {
     let lines = vec![
         line_with_words(),

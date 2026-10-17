@@ -13,6 +13,33 @@ fn parses_lrc_with_multiple_timestamps() {
 }
 
 #[test]
+fn lrc_empty_timestamps_clear_the_current_line() {
+    let body = json!({
+        "lrc": {"lyric": "[00:00.00]\n[00:01.00]verse\n[00:03.00]\n[00:10.00]next\n[00:12.00]"}
+    });
+    let lines = parse_lyric_response(&body).unwrap();
+    for (position, expected) in [
+        (0, ""),
+        (1_000, "verse"),
+        (2_999, "verse"),
+        (3_000, ""),
+        (5_000, ""),
+        (9_999, ""),
+        (10_000, "next"),
+        (12_000, ""),
+    ] {
+        let current = snapshot(&lines, position).current.unwrap();
+        assert_eq!(lines[current].text, expected, "position={position}");
+    }
+}
+
+#[test]
+fn timestamp_only_lrc_is_not_a_lyric_document() {
+    let body = json!({"lrc": {"lyric": "[00:01.00]\n[00:03.00]   "}});
+    assert!(parse_lyric_response(&body).is_none());
+}
+
+#[test]
 fn parses_json_yrc_words() {
     let raw = r#"{"t":1000,"c":[{"tx":"你","tr":[0,400]},{"tx":"好","tr":[400,600]}]}"#;
     let lines = parse_yrc(raw).unwrap();
@@ -31,6 +58,40 @@ fn parses_lrc_style_yrc_words() {
     assert_eq!(lines[0].words.len(), 2);
     assert_eq!(lines[0].words[0].start_ms, 1_000);
     assert_eq!(lines[0].words[1].end_ms, 2_000);
+}
+
+#[test]
+fn yrc_preserves_parenthesized_word_text() {
+    for first_word in [
+        "Hello (friend)",
+        "Hello ((friend))",
+        "Hello (friend",
+        "Hello (2026)",
+        "Hello (1,2)",
+        "Hello (friend) (again)",
+    ] {
+        let body = json!({
+            "yrc": {"lyric": format!("[1000,2000](1000,1000,0){first_word}(2000,1000,0)!")},
+            "lrc": {"lyric": format!("[00:01.00]{first_word}!")}
+        });
+        let lines = parse_lyric_response(&body).unwrap();
+        assert_eq!(lines[0].text, format!("{first_word}!"));
+        assert_eq!(
+            lines[0].words,
+            vec![
+                LyricWord {
+                    text: first_word.into(),
+                    start_ms: 1_000,
+                    end_ms: 2_000,
+                },
+                LyricWord {
+                    text: "!".into(),
+                    start_ms: 2_000,
+                    end_ms: 3_000,
+                },
+            ]
+        );
+    }
 }
 
 #[test]
