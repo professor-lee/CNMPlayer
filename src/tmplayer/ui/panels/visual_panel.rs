@@ -59,13 +59,7 @@ pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut Ap
         .as_ref()
         .filter(|lines| !lines.is_empty())
         .map(|lines| {
-            lyric_view::render_pair(
-                lines,
-                position,
-                lyric_inner.width,
-                &app.theme,
-                options,
-            )
+            lyric_view::render_pair(lines, position, lyric_inner.width, &app.theme, options)
         });
     if lyric_inner.height >= 1
         && let Some(rows) = lyric_rows
@@ -109,8 +103,8 @@ fn render_full_lyrics(f: &mut Frame, area: Rect, app: &AppState) {
         let count = rows.max(1);
         let mut rows = vec![Line::default(); count];
         let center = count / 2;
-        rows[center] = Line::from(no_lyrics_label(app))
-            .style(Style::default().fg(app.theme.color_subtext()));
+        rows[center] =
+            Line::from(no_lyrics_label(app)).style(Style::default().fg(app.theme.color_subtext()));
         rows
     };
 

@@ -74,16 +74,10 @@ impl Theme {
     /// `map_color`，因此真彩/256 色/无彩色终端行为一致。
     pub fn mix(&self, from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> Color {
         let amount = amount.clamp(0.0, 1.0);
-        let mix = |a: u8, b: u8| {
-            (a as f32 + (b as f32 - a as f32) * amount).round() as u8
-        };
+        let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
         map_color(
             self.capability,
-            (
-                mix(from.0, to.0),
-                mix(from.1, to.1),
-                mix(from.2, to.2),
-            ),
+            (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2)),
         )
     }
 }

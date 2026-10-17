@@ -72,8 +72,7 @@ pub fn snapshot(lines: &[LyricLine], position_ms: u64) -> LyricSnapshot {
     let line = &lines[index];
     let end = line.effective_end_ms(lines.get(index + 1).map(|next| next.start_ms));
     let progress = if end > line.start_ms {
-        (position_ms.saturating_sub(line.start_ms) as f32
-            / (end - line.start_ms) as f32)
+        (position_ms.saturating_sub(line.start_ms) as f32 / (end - line.start_ms) as f32)
             .clamp(0.0, 1.0)
     } else {
         1.0
@@ -83,8 +82,7 @@ pub fn snapshot(lines: &[LyricLine], position_ms: u64) -> LyricSnapshot {
     result.line_progress = progress;
 
     if let Some((word_index, word)) = line.words.iter().enumerate().find(|(_, word)| {
-        position_ms >= word.start_ms
-            && (word.end_ms <= word.start_ms || position_ms < word.end_ms)
+        position_ms >= word.start_ms && (word.end_ms <= word.start_ms || position_ms < word.end_ms)
     }) {
         result.word = Some(word_index);
         result.word_progress = if word.end_ms > word.start_ms {
@@ -183,7 +181,10 @@ pub fn parse_lrc(content: &str) -> Option<Vec<LyricLine>> {
 
 /// Fallback for plain, unsynchronized lyrics.
 pub fn parse_plain_lyrics(content: &str) -> Option<Vec<LyricLine>> {
-    let mut non_empty = content.lines().map(str::trim).filter(|line| !line.is_empty());
+    let mut non_empty = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
     let first = non_empty.next()?.to_string();
     let second = non_empty.next().map(str::to_string);
 
@@ -391,9 +392,7 @@ fn align_translation(lines: &mut [LyricLine], content: &str) {
 
     let mut cursor = 0;
     for line in lines {
-        while cursor + 1 < translations.len()
-            && translations[cursor + 1].0 <= line.start_ms
-        {
+        while cursor + 1 < translations.len() && translations[cursor + 1].0 <= line.start_ms {
             cursor += 1;
         }
 

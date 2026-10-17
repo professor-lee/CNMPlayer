@@ -130,11 +130,7 @@ pub(crate) fn render_window(
 
     let mut index = current + 1;
     while slot < rows && index < lines.len() {
-        output[slot] = render_static(
-            &lines[index],
-            future_color(theme, index - current),
-            width,
-        );
+        output[slot] = render_static(&lines[index], future_color(theme, index - current), width);
         slot += 1;
         index += 1;
     }
@@ -150,21 +146,15 @@ fn render_current(
     theme: &Theme,
     options: LyricOptions,
 ) -> Line<'static> {
-    let pending = pending_color(theme);
-
     let mut spans = if options.word_lyrics && !line.words.is_empty() {
         word_spans(theme, line, position_ms)
     } else {
-        let progress = ease_in_out(line_progress);
-        let color = if position_ms <= line.start_ms {
-            pending
+        let amount = if position_ms <= line.start_ms {
+            0.38
         } else {
-            theme.mix(
-                blend_tuple(theme.palette.subtext, theme.palette.accent2, 0.38),
-                theme.palette.accent2,
-                progress,
-            )
+            0.38 + 0.62 * ease_in_out(line_progress)
         };
+        let color = theme.mix(theme.palette.subtext, theme.palette.accent2, amount);
         vec![Span::styled(
             line.text.clone(),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -204,9 +194,7 @@ fn word_spans(theme: &Theme, line: &LyricLine, position_ms: u64) -> Vec<Span<'st
             );
             spans.push(Span::styled(
                 ch.to_string(),
-                Style::default()
-                    .fg(color)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ));
         }
     }
@@ -231,10 +219,6 @@ fn render_translation(text: &str, width: u16, theme: &Theme) -> Line<'static> {
     ))
 }
 
-fn pending_color(theme: &Theme) -> ratatui::style::Color {
-    theme.mix(theme.palette.subtext, theme.palette.accent2, 0.38)
-}
-
 fn past_color(theme: &Theme, distance: usize) -> ratatui::style::Color {
     let amount = (0.45 + 0.10 * distance.saturating_sub(1) as f32).min(0.75);
     theme.mix(theme.palette.accent2, theme.palette.subtext, amount)
@@ -251,22 +235,6 @@ fn future_color(theme: &Theme, distance: usize) -> ratatui::style::Color {
 
 fn translation_color(theme: &Theme) -> ratatui::style::Color {
     theme.mix(theme.palette.subtext, theme.palette.base, 0.20)
-}
-
-fn blend_tuple(
-    from: (u8, u8, u8),
-    to: (u8, u8, u8),
-    amount: f32,
-) -> (u8, u8, u8) {
-    let amount = amount.clamp(0.0, 1.0);
-    let mix = |a: u8, b: u8| {
-        (a as f32 + (b as f32 - a as f32) * amount).round() as u8
-    };
-    (
-        mix(from.0, to.0),
-        mix(from.1, to.1),
-        mix(from.2, to.2),
-    )
 }
 
 fn ease_in_out(t: f32) -> f32 {
@@ -320,6 +288,11 @@ fn clip_spans(spans: &[Span<'static>], offset: usize, width: usize) -> Vec<Span<
                 continue;
             }
             if start < offset {
+                // A wide glyph is cut by the left edge. Keep its visible
+                // cells as blanks so the remaining glyphs stay aligned.
+                for _ in start.max(offset)..column.min(end) {
+                    text.push(' ');
+                }
                 continue;
             }
             if column > end {
@@ -363,10 +336,7 @@ fn truncate_columns(text: &str, width: usize) -> String {
 }
 
 fn spans_width(spans: &[Span<'static>]) -> usize {
-    spans
-        .iter()
-        .map(|span| span.content.width())
-        .sum()
+    spans.iter().map(|span| span.content.width()).sum()
 }
 
 #[cfg(test)]
@@ -415,13 +385,16 @@ mod tests {
 
     #[test]
     fn current_line_and_translation_share_the_pair() {
-        let lines = vec![line_with_words(), LyricLine {
-            start_ms: 2_000,
-            end_ms: Some(3_000),
-            text: "下一句".into(),
-            words: Vec::new(),
-            translation: None,
-        }];
+        let lines = vec![
+            line_with_words(),
+            LyricLine {
+                start_ms: 2_000,
+                end_ms: Some(3_000),
+                text: "下一句".into(),
+                words: Vec::new(),
+                translation: None,
+            },
+        ];
         let rows = render_pair(
             &lines,
             1_700,
@@ -432,8 +405,16 @@ mod tests {
                 translation: true,
             },
         );
-        let current: String = rows[0].spans.iter().map(|span| span.content.as_ref()).collect();
-        let second: String = rows[1].spans.iter().map(|span| span.content.as_ref()).collect();
+        let current: String = rows[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let second: String = rows[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert_eq!(current, "你好");
         assert_eq!(second, "hello");
     }
@@ -454,8 +435,16 @@ mod tests {
         };
         let start = render_pair(&lines, 1_000, 10, &theme(), options);
         let later = render_pair(&lines, 4_000, 10, &theme(), options);
-        let start_text: String = start[0].spans.iter().map(|span| span.content.as_ref()).collect();
-        let later_text: String = later[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        let start_text: String = start[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let later_text: String = later[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert_ne!(start_text, later_text);
     }
 
@@ -484,7 +473,12 @@ mod tests {
         );
         let texts: Vec<String> = rows
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
             .collect();
         assert_eq!(texts[2], "你好");
         assert_eq!(texts[3], "hello");
@@ -504,7 +498,11 @@ mod tests {
                 translation: true,
             },
         );
-        let text: String = rows[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        let text: String = rows[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
         assert_eq!(text, "你好");
     }
 }

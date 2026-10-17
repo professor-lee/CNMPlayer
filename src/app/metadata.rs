@@ -145,10 +145,7 @@ pub(super) async fn loop_cover_fetch(
     .await;
 }
 
-pub(super) async fn fetch_lyrics(
-    api: &mut ApiState,
-    song_id: &str,
-) -> Option<Vec<LyricLine>> {
+pub(super) async fn fetch_lyrics(api: &mut ApiState, song_id: &str) -> Option<Vec<LyricLine>> {
     if let Ok(response) = api.lyric_new(song_id).await
         && let Some(lines) = parse_lyric_response(&response.body)
     {

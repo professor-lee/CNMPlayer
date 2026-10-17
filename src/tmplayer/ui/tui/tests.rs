@@ -1259,6 +1259,85 @@ fn render_to_buffer_sized(
 /// 歌词浮窗弹窗：命中行必须落在真正画着该条目的那一行上
 /// （否则就是"看得见点不动"或"点到的不是看到的"）。
 #[test]
+fn fullscreen_lyrics_use_word_colors_and_translation() {
+    use crate::data::config::VisualizeMode;
+    use crate::lyrics::{LyricLine, LyricWord};
+    use crate::tmplayer::app::state::PlaybackState;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    let mut app = state(Overlay::None);
+    app.config.show_hints = false;
+    app.config.small_window_display = false;
+    app.config.visualize = VisualizeMode::Lyrics;
+    app.config.word_lyrics = true;
+    app.config.lyric_translation = true;
+    app.language = crate::data::config::Language::En;
+    app.player.playback = PlaybackState::Playing;
+    app.player.position = Duration::from_millis(1_700);
+    app.position_anchor_at = Instant::now();
+    app.player.track.lyrics = Some(vec![
+        LyricLine {
+            start_ms: 1_000,
+            end_ms: Some(2_000),
+            text: "你好".into(),
+            words: vec![
+                LyricWord {
+                    text: "你".into(),
+                    start_ms: 1_000,
+                    end_ms: 1_400,
+                },
+                LyricWord {
+                    text: "好".into(),
+                    start_ms: 1_400,
+                    end_ms: 2_000,
+                },
+            ],
+            translation: Some("hello".into()),
+        },
+        LyricLine {
+            start_ms: 3_000,
+            end_ms: Some(4_000),
+            text: "下一句".into(),
+            words: Vec::new(),
+            translation: None,
+        },
+    ]);
+
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    let mut covers = CoverPipeline::new(WakeSignal::default());
+    let mut drawer = PlaylistDrawer::default();
+    draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    let cell = |symbol: &str| {
+        (0..24)
+            .find_map(|y| {
+                (0..80).find_map(|x| (buffer[(x, y)].symbol() == symbol).then_some((x, y)))
+            })
+            .unwrap_or_else(|| panic!("{symbol:?} not drawn"))
+    };
+
+    let current = cell("你");
+    let future = cell("下");
+    assert_ne!(
+        buffer[current].fg,
+        ratatui::style::Color::Rgb(128, 128, 128),
+        "current word must not use the inactive color"
+    );
+    assert_eq!(
+        buffer[future].fg,
+        ratatui::style::Color::Rgb(128, 128, 128),
+        "future line uses subtext"
+    );
+    let translation = cell("h");
+    assert!(
+        buffer[translation].fg != ratatui::style::Color::Reset,
+        "translation row is painted"
+    );
+}
+
+#[test]
 fn lyrics_modal_hit_rows_sit_on_the_drawn_rows() {
     let mut app = state(Overlay::LyricsSettingsModal);
     let (rows, buf) = render_to_buffer(&mut app, |f, app, rows| {
