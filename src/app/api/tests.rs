@@ -203,3 +203,44 @@ async fn cover_download_caps_body_without_content_length() {
     assert!(error.to_string().contains("byte limit"));
     server.await.unwrap();
 }
+
+#[test]
+fn display_cover_url_requests_one_target_size_and_keeps_other_params() {
+    use super::super::api::cover_url_for_display;
+
+    assert_eq!(
+        cover_url_for_display("https://p1.music.126.net/a.jpg"),
+        "https://p1.music.126.net/a.jpg?param=500y500"
+    );
+    assert_eq!(
+        cover_url_for_display("https://p1.music.126.net/a.jpg?param=3000y3000"),
+        "https://p1.music.126.net/a.jpg?param=500y500"
+    );
+    assert_eq!(
+        cover_url_for_display("https://p1.music.126.net/a.jpg?x=1&param=2y2&y=3#frag"),
+        "https://p1.music.126.net/a.jpg?x=1&y=3&param=500y500#frag"
+    );
+    assert_eq!(cover_url_for_display(""), "");
+    assert_eq!(
+        cover_url_for_display("data:image/png;base64,abc"),
+        "data:image/png;base64,abc"
+    );
+}
+
+#[test]
+fn download_cover_url_strips_size_param_but_keeps_everything_else() {
+    use super::super::api::cover_url_for_download;
+
+    assert_eq!(
+        cover_url_for_download("https://p1.music.126.net/a.jpg"),
+        "https://p1.music.126.net/a.jpg"
+    );
+    assert_eq!(
+        cover_url_for_download("https://p1.music.126.net/a.jpg?param=500y500"),
+        "https://p1.music.126.net/a.jpg"
+    );
+    assert_eq!(
+        cover_url_for_download("https://p1.music.126.net/a.jpg?x=1&param=2y2&y=3#frag"),
+        "https://p1.music.126.net/a.jpg?x=1&y=3#frag"
+    );
+}

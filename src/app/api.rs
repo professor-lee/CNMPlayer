@@ -16,7 +16,70 @@ use std::time::Duration;
 const MAX_COVER_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const COVER_NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_COVER_VALIDATIONS: usize = 2;
+const COVER_SIZE_QUERY_KEY: &str = "param";
+const DISPLAY_COVER_EDGE: u32 = 500;
 static COVER_VALIDATION_GATE: CoverValidationGate = CoverValidationGate::new();
+
+/// Playback/UI covers are small on screen. Ask the CDN for that size instead of
+/// downloading the original and relying on a post-decode resize.
+pub(super) fn cover_url_for_display(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() || !url.starts_with("http") {
+        return url.to_string();
+    }
+    set_url_query_param(
+        url,
+        COVER_SIZE_QUERY_KEY,
+        &format!("{DISPLAY_COVER_EDGE}y{DISPLAY_COVER_EDGE}"),
+    )
+}
+
+/// Song downloads embed the original artwork; size params on API URLs would
+/// silently replace it with a thumbnail.
+pub(super) fn cover_url_for_download(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return url.to_string();
+    }
+    remove_url_query_param(url, COVER_SIZE_QUERY_KEY)
+}
+
+fn set_url_query_param(url: &str, key: &str, value: &str) -> String {
+    let (base, query, fragment) = split_url_query(url);
+    let mut pairs = query_pairs_without_key(query, key);
+    pairs.push(format!("{key}={value}"));
+    format!("{base}?{}{fragment}", pairs.join("&"))
+}
+
+fn remove_url_query_param(url: &str, key: &str) -> String {
+    let (base, query, fragment) = split_url_query(url);
+    let pairs = query_pairs_without_key(query, key);
+    if pairs.is_empty() {
+        format!("{base}{fragment}")
+    } else {
+        format!("{base}?{}{fragment}", pairs.join("&"))
+    }
+}
+
+fn split_url_query(url: &str) -> (&str, &str, &str) {
+    let (body, fragment) = match url.find('#') {
+        Some(index) => (&url[..index], &url[index..]),
+        None => (url, ""),
+    };
+    match body.find('?') {
+        Some(index) => (&body[..index], &body[index + 1..], fragment),
+        None => (body, "", fragment),
+    }
+}
+
+fn query_pairs_without_key(query: &str, key: &str) -> Vec<String> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter(|pair| pair.split('=').next() != Some(key))
+        .map(str::to_string)
+        .collect()
+}
 
 #[derive(Debug)]
 struct CoverValidationGate {
@@ -489,12 +552,19 @@ impl ApiState {
             .await
     }
 
+    /// Playback cover path: request the CDN's display-sized artwork.
+    pub(super) async fn fetch_display_cover_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        self.fetch_cover_bytes_with_timeout(&cover_url_for_display(url), COVER_NETWORK_TIMEOUT)
+            .await
+    }
+
     /// UI consumers keep the one validated decode, reduced off the reactor.
     pub(super) async fn fetch_cover_image(
         &self,
         url: &str,
     ) -> Result<std::sync::Arc<image::DynamicImage>> {
-        self.fetch_cover_with_timeout(url, COVER_NETWORK_TIMEOUT, true)
+        let url = cover_url_for_display(url);
+        self.fetch_cover_with_timeout(&url, COVER_NETWORK_TIMEOUT, true)
             .await?
             .1
             .ok_or_else(|| anyhow!("cover image URL was empty"))

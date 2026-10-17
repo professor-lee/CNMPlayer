@@ -42,7 +42,9 @@ pub(super) struct CoverFetchResult {
 }
 
 fn cover_cache_path_for_dir(cache_dir: &Path, url: &str) -> Option<PathBuf> {
-    let key = url.trim();
+    // The cache key carries the requested target size, so a display cover and
+    // an eventual original cover cannot alias each other.
+    let key = super::api::cover_url_for_display(url);
     if key.is_empty() {
         return None;
     }
@@ -135,7 +137,7 @@ pub(super) async fn loop_cover_fetch(
                 return cached;
             }
         }
-        let bytes = api.fetch_cover_bytes(&req.url).await.ok()?;
+        let bytes = api.fetch_display_cover_bytes(&req.url).await.ok()?;
         let path = cover_cache_path_for_dir(&cache_dir, &req.url)?;
         Some(persist_fetched_cover(&persistence, path, bytes).await)
     };
@@ -214,7 +216,7 @@ impl App {
             return Some(bytes);
         }
 
-        let bytes = self.api.fetch_cover_bytes(url).await.ok()?;
+        let bytes = self.api.fetch_display_cover_bytes(url).await.ok()?;
         Some(self.persist_cover_to_disk_cache(url, bytes).await)
     }
 
