@@ -99,14 +99,11 @@ pub(crate) fn render_window(
         let line = &lines[index];
         let distance = current - index;
         let transition = if distance == 1 { line_transition } else { 1.0 };
+        let line_color = past_color(theme, distance, transition);
         let mut pair = Vec::with_capacity(2);
-        pair.push(render_static(
-            line,
-            past_color(theme, distance, transition),
-            width,
-        ));
+        pair.push(render_static(line, line_color, width));
         if let Some(translation) = translation_text(line, options) {
-            pair.push(render_translation_static(translation, width, theme));
+            pair.push(render_translation_static(translation, line_color, width));
         }
         if previous_rows + pair.len() > center {
             break;
@@ -142,7 +139,7 @@ pub(crate) fn render_window(
                 options,
             )
         } else {
-            render_translation_static(translation, width, theme)
+            render_translation_static(translation, future_color(theme, 0), width)
         });
     }
 
@@ -153,14 +150,11 @@ pub(crate) fn render_window(
             break;
         }
         let line = &lines[index];
+        let line_color = future_color(theme, index - current);
         let mut pair = Vec::with_capacity(2);
-        pair.push(render_static(
-            line,
-            future_color(theme, index - current),
-            width,
-        ));
+        pair.push(render_static(line, line_color, width));
         if let Some(translation) = translation_text(line, options) {
-            pair.push(render_translation_static(translation, width, theme));
+            pair.push(render_translation_static(translation, line_color, width));
         }
         if pair.len() > remaining {
             break;
@@ -252,13 +246,17 @@ fn render_static(line: &LyricLine, color: ratatui::style::Color, width: u16) -> 
     Line::from(Span::styled(text, Style::default().fg(color)))
 }
 
-fn render_translation_static(text: &str, width: u16, theme: &Theme) -> Line<'static> {
+fn render_translation_static(
+    text: &str,
+    color: ratatui::style::Color,
+    width: u16,
+) -> Line<'static> {
     if width == 0 {
         return Line::default();
     }
     Line::from(Span::styled(
         truncate_columns(text, usize::from(width)),
-        Style::default().fg(translation_color(theme)),
+        Style::default().fg(color),
     ))
 }
 
@@ -278,17 +276,18 @@ fn render_translation_current(
     }
 
     let progress = translation_progress(line, position_ms, line_progress, options);
-    let base = blend_tuple(theme.palette.subtext, theme.palette.base, 0.20);
-    let active = blend_tuple(theme.palette.subtext, theme.palette.text, 0.55);
     let chars: Vec<char> = text.chars().collect();
     let count = chars.len().max(1) as f32;
     let mut spans = Vec::with_capacity(chars.len());
     for (index, ch) in chars.iter().enumerate() {
         let char_progress = (progress * count - index as f32).clamp(0.0, 1.0);
-        spans.push(Span::styled(
-            ch.to_string(),
-            Style::default().fg(theme.mix(base, active, ease_in_out(char_progress))),
-        ));
+        // Same pending -> active palette ramp as the lyric line itself.
+        let color = theme.mix(
+            theme.palette.subtext,
+            theme.palette.accent2,
+            0.38 + 0.62 * ease_in_out(char_progress),
+        );
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
     }
 
     let total = spans_width(&spans);
@@ -325,12 +324,6 @@ fn translation_progress(
     (completed / total).clamp(0.0, 1.0)
 }
 
-fn blend_tuple(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
-    let amount = amount.clamp(0.0, 1.0);
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
-    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
-}
-
 fn past_color(theme: &Theme, distance: usize, transition: f32) -> ratatui::style::Color {
     let amount =
         (0.45 + 0.10 * distance.saturating_sub(1) as f32).min(0.75) * ease_in_out(transition);
@@ -344,10 +337,6 @@ fn future_color(theme: &Theme, distance: usize) -> ratatui::style::Color {
         let amount = (0.18 * (distance - 1) as f32).min(0.55);
         theme.mix(theme.palette.subtext, theme.palette.base, amount)
     }
-}
-
-fn translation_color(theme: &Theme) -> ratatui::style::Color {
-    theme.mix(theme.palette.subtext, theme.palette.base, 0.20)
 }
 
 fn ease_in_out(t: f32) -> f32 {
@@ -556,6 +545,7 @@ mod tests {
             translation.spans.iter().any(|span| span.style.fg != first),
             "translation must reveal progressively"
         );
+        assert_eq!(first, Some(theme().color_accent2()));
     }
 
     #[test]
@@ -600,6 +590,21 @@ mod tests {
         assert!(texts.iter().any(|text| text == "tr zero"));
         assert!(texts.iter().any(|text| text == "hello"));
         assert!(texts.iter().any(|text| text == "tr two"));
+
+        let color_of = |needle: &str| {
+            rows.iter()
+                .find(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                        == needle
+                })
+                .and_then(|line| line.spans.first().map(|span| span.style.fg))
+                .expect("row color")
+        };
+        assert_eq!(color_of("tr zero"), color_of("zero"));
+        assert_eq!(color_of("tr two"), color_of("two"));
     }
 
     #[test]
