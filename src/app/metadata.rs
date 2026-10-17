@@ -145,6 +145,9 @@ pub(super) async fn loop_cover_fetch(
     .await;
 }
 
+/// Fetch the complete lyric document, including YRC word timings and
+/// translations, regardless of `word_lyrics` / `lyric_translation`. Those
+/// settings are display-only and must never gate this path.
 pub(super) async fn fetch_lyrics(api: &mut ApiState, song_id: &str) -> Option<Vec<LyricLine>> {
     if let Ok(response) = api.lyric_new(song_id).await
         && let Some(lines) = parse_lyric_response(&response.body)

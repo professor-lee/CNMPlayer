@@ -71,9 +71,9 @@ pub struct Config {
     /// 歌词浮窗左上角在内容区内的归一化位置（0..=1）。
     pub page_lyrics_pos_x: f32,
     pub page_lyrics_pos_y: f32,
-    /// 有 YRC 数据时使用逐字着色。
+    /// 有 YRC 数据时使用逐字着色。仅影响显示；歌词读取始终包含 YRC。
     pub word_lyrics: bool,
-    /// 有翻译时显示翻译行。
+    /// 有翻译时显示翻译行。仅影响显示；歌词读取始终包含翻译。
     pub lyric_translation: bool,
     /// 歌词刷新间隔 = 全局帧间隔 × 该倍率（1 = 跟随 `ui_fps`）。
     pub lyric_frame_divisor: u32,

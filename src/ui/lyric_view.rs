@@ -601,6 +601,39 @@ mod tests {
     }
 
     #[test]
+    fn display_toggles_do_not_require_refetching_yrc() {
+        let lines = vec![line_with_words()];
+        let _ = render_pair(
+            &lines,
+            1_700,
+            30,
+            &theme(),
+            LyricOptions {
+                word_lyrics: false,
+                translation: false,
+            },
+        );
+        assert_eq!(lines[0].words.len(), 2, "display off keeps YRC data");
+        assert_eq!(
+            lines[0].translation.as_deref(),
+            Some("hello"),
+            "display off keeps translation data"
+        );
+
+        let enabled = render_pair(
+            &lines,
+            1_700,
+            30,
+            &theme(),
+            LyricOptions {
+                word_lyrics: true,
+                translation: true,
+            },
+        );
+        assert!(enabled[0].spans.len() > 1, "YRC renders after enabling");
+    }
+
+    #[test]
     fn translation_is_line_level_when_word_lyrics_is_off() {
         let lines = vec![line_with_words()];
         let rows = render_pair(

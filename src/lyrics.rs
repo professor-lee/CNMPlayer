@@ -113,7 +113,9 @@ pub fn quantized_position_ms(position_ms: u64, ui_fps: u32, divisor: u32) -> u64
 /// Parse the body returned by `/lyric/new` or `/lyric`.
 ///
 /// YRC wins when present; otherwise the regular LRC is used. Translation is
-/// aligned by timestamp from `ytlrc` (preferred) or `tlyric`.
+/// aligned by timestamp from `ytlrc` (preferred) or `tlyric`. Display settings
+/// (`word_lyrics`, `lyric_translation`) are not inputs here: word timings and
+/// translations are always retained so toggling them never requires a refetch.
 pub fn parse_lyric_response(body: &Value) -> Option<Vec<LyricLine>> {
     let yrc = body_text(body, "/yrc/lyric").or_else(|| body_text(body, "/yrc"));
     let lrc = body_text(body, "/lrc/lyric").or_else(|| body_text(body, "/lrc"));

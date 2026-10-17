@@ -17,9 +17,9 @@ page_lyrics_drag = true
 page_lyrics_snap = true
 page_lyrics_pos_x = 1.0
 page_lyrics_pos_y = 1.0
-# 有逐字歌词（YRC）时按词着色。
+# 有逐字歌词（YRC）时按词着色。仅影响显示；读取歌词时始终包含 YRC。
 word_lyrics = true
-# 有翻译歌词时显示翻译行。
+# 有翻译歌词时显示翻译行。仅影响显示；读取歌词时始终包含翻译。
 lyric_translation = false
 # 歌词刷新间隔 = 全局帧间隔 × 该倍率（1 = 跟随 ui_fps）。
 lyric_frame_divisor = 2
