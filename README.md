@@ -234,9 +234,9 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `page_lyrics_snap` | `true` | Snap to the nearest edge (left/right/top/bottom, the other axis stays free; only editable while dragging is on) |
 | `page_lyrics_pos_x` | `1.0` | Normalized horizontal position of the overlay's top-left (0=left, 1=right) |
 | `page_lyrics_pos_y` | `1.0` | Normalized vertical position of the overlay's top-left (0=top, 1=bottom) |
-| `word_lyrics` | `true` | Per-word coloring when `/lyric/new` provides YRC timing; display-only, YRC is always fetched |
-| `lyric_translation` | `false` | Show translations; the fullscreen Lyrics mode translates every visible line, other surfaces show the current line's translation; display-only, translations are always fetched |
-| `lyric_frame_divisor` | `2` | Lyric refresh interval = global frame interval × this value (1 follows `ui_fps`; clamped to 1–8) |
+| `word_lyrics` | `true` | Per-word coloring when YRC is available |
+| `lyric_translation` | `false` | Show lyric translations |
+| `lyric_frame_divisor` | `2` | Lyric refresh divisor on top of `ui_fps` (1–8) |
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |

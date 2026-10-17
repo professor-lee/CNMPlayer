@@ -234,9 +234,9 @@ sudo apt install -y build-essential cmake pkg-config \
 | `page_lyrics_snap` | `true` | 拖动结束后吸附到最近的边（左/右/上/下，另一轴保持自由；仅拖动开启时可改） |
 | `page_lyrics_pos_x` | `1.0` | 歌词浮窗左上角的归一化横坐标（0=左，1=右） |
 | `page_lyrics_pos_y` | `1.0` | 歌词浮窗左上角的归一化纵坐标（0=上，1=下） |
-| `word_lyrics` | `true` | `/lyric/new` 提供 YRC 时按词着色；仅影响显示，读取歌词时始终包含 YRC |
-| `lyric_translation` | `false` | 显示翻译；仅歌词模式下每行都显示，其它表面显示当前行翻译；仅影响显示，读取歌词时始终包含翻译 |
-| `lyric_frame_divisor` | `2` | 歌词刷新间隔 = 全局帧间隔 × 该倍率（1 表示跟随 `ui_fps`；读取时钳在 1–8） |
+| `word_lyrics` | `true` | 有 YRC 时逐字着色 |
+| `lyric_translation` | `false` | 显示歌词翻译 |
+| `lyric_frame_divisor` | `2` | 歌词刷新相对 `ui_fps` 的倍率（1–8） |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
