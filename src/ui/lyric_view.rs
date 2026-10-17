@@ -41,14 +41,15 @@ pub(crate) fn render_pair(
         render_static(&lines[current], future_color(theme, 0), width)
     };
 
-    if options.translation
-        && state.current.is_some()
-        && let Some(translation) = lines[current]
-            .translation
-            .as_deref()
-            .filter(|text| !text.trim().is_empty())
-    {
-        rows[1] = render_translation(translation, width, theme);
+    if state.current.is_some() && translation_text(&lines[current], options).is_some() {
+        rows[1] = render_translation_current(
+            &lines[current],
+            position_ms,
+            state.line_progress,
+            width,
+            theme,
+            options,
+        );
     } else if let Some(next) = lines.get(current + 1) {
         rows[1] = render_static(next, future_color(theme, 1), width);
     }
@@ -82,26 +83,45 @@ pub(crate) fn render_window(
     }
 
     let center = rows / 2;
-    let previous_start = current.saturating_sub(center);
-    let previous_count = current - previous_start;
-    let previous_slot = center - previous_count;
-
     let line_transition = if state.current.is_some() {
         (position_ms.saturating_sub(lines[current].start_ms) as f32 / 220.0).clamp(0.0, 1.0)
     } else {
         1.0
     };
-    for (offset, index) in (previous_start..current).enumerate() {
-        if previous_slot + offset >= center {
-            break;
-        }
+
+    // Previous lines are built closest-to-current first, in line/translation
+    // pairs. Keep the pairs that fit above the fixed current row.
+    let mut previous_pairs: Vec<Vec<Line<'static>>> = Vec::new();
+    let mut previous_rows = 0;
+    let mut index = current;
+    while index > 0 {
+        index -= 1;
+        let line = &lines[index];
         let distance = current - index;
         let transition = if distance == 1 { line_transition } else { 1.0 };
-        output[previous_slot + offset] = render_static(
-            &lines[index],
+        let mut pair = Vec::with_capacity(2);
+        pair.push(render_static(
+            line,
             past_color(theme, distance, transition),
             width,
-        );
+        ));
+        if let Some(translation) = translation_text(line, options) {
+            pair.push(render_translation_static(translation, width, theme));
+        }
+        if previous_rows + pair.len() > center {
+            break;
+        }
+        previous_rows += pair.len();
+        previous_pairs.push(pair);
+    }
+    previous_pairs.reverse();
+
+    let mut slot = center - previous_rows;
+    for pair in previous_pairs {
+        for line in pair {
+            output[slot] = line;
+            slot += 1;
+        }
     }
 
     if state.current.is_some() {
@@ -110,27 +130,58 @@ pub(crate) fn render_window(
         output[center] = render_static(&lines[current], future_color(theme, 0), width);
     }
 
-    let mut slot = center + 1;
-    if state.current.is_some()
-        && options.translation
-        && let Some(translation) = lines[current]
-            .translation
-            .as_deref()
-            .filter(|text| !text.trim().is_empty())
-        && slot < rows
-    {
-        output[slot] = render_translation(translation, width, theme);
-        slot += 1;
+    let mut after = Vec::new();
+    if let Some(translation) = translation_text(&lines[current], options) {
+        after.push(if state.current.is_some() {
+            render_translation_current(
+                &lines[current],
+                position_ms,
+                state.line_progress,
+                width,
+                theme,
+                options,
+            )
+        } else {
+            render_translation_static(translation, width, theme)
+        });
     }
 
     let mut index = current + 1;
-    while slot < rows && index < lines.len() {
-        output[slot] = render_static(&lines[index], future_color(theme, index - current), width);
-        slot += 1;
+    while index < lines.len() {
+        let remaining = rows.saturating_sub(center + 1 + after.len());
+        if remaining == 0 {
+            break;
+        }
+        let line = &lines[index];
+        let mut pair = Vec::with_capacity(2);
+        pair.push(render_static(
+            line,
+            future_color(theme, index - current),
+            width,
+        ));
+        if let Some(translation) = translation_text(line, options) {
+            pair.push(render_translation_static(translation, width, theme));
+        }
+        if pair.len() > remaining {
+            break;
+        }
+        after.extend(pair);
         index += 1;
     }
 
+    for (offset, line) in after.into_iter().enumerate() {
+        output[center + 1 + offset] = line;
+    }
     output
+}
+
+fn translation_text(line: &LyricLine, options: LyricOptions) -> Option<&str> {
+    if !options.translation {
+        return None;
+    }
+    line.translation
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
 }
 
 fn render_current(
@@ -201,7 +252,7 @@ fn render_static(line: &LyricLine, color: ratatui::style::Color, width: u16) -> 
     Line::from(Span::styled(text, Style::default().fg(color)))
 }
 
-fn render_translation(text: &str, width: u16, theme: &Theme) -> Line<'static> {
+fn render_translation_static(text: &str, width: u16, theme: &Theme) -> Line<'static> {
     if width == 0 {
         return Line::default();
     }
@@ -209,6 +260,75 @@ fn render_translation(text: &str, width: u16, theme: &Theme) -> Line<'static> {
         truncate_columns(text, usize::from(width)),
         Style::default().fg(translation_color(theme)),
     ))
+}
+
+fn render_translation_current(
+    line: &LyricLine,
+    position_ms: u64,
+    line_progress: f32,
+    width: u16,
+    theme: &Theme,
+    options: LyricOptions,
+) -> Line<'static> {
+    let Some(text) = translation_text(line, options) else {
+        return Line::default();
+    };
+    if width == 0 {
+        return Line::default();
+    }
+
+    let progress = translation_progress(line, position_ms, line_progress, options);
+    let base = blend_tuple(theme.palette.subtext, theme.palette.base, 0.20);
+    let active = blend_tuple(theme.palette.subtext, theme.palette.text, 0.55);
+    let chars: Vec<char> = text.chars().collect();
+    let count = chars.len().max(1) as f32;
+    let mut spans = Vec::with_capacity(chars.len());
+    for (index, ch) in chars.iter().enumerate() {
+        let char_progress = (progress * count - index as f32).clamp(0.0, 1.0);
+        spans.push(Span::styled(
+            ch.to_string(),
+            Style::default().fg(theme.mix(base, active, ease_in_out(char_progress))),
+        ));
+    }
+
+    let total = spans_width(&spans);
+    if total > usize::from(width) {
+        let offset = scroll_offset(total, usize::from(width), line.start_ms, position_ms);
+        spans = clip_spans(&spans, offset, usize::from(width));
+    }
+    Line::from(spans)
+}
+
+fn translation_progress(
+    line: &LyricLine,
+    position_ms: u64,
+    line_progress: f32,
+    options: LyricOptions,
+) -> f32 {
+    if !options.word_lyrics || line.words.is_empty() {
+        return line_progress.clamp(0.0, 1.0);
+    }
+
+    let total = line.words.len() as f32;
+    let mut completed = 0.0;
+    for word in &line.words {
+        if position_ms >= word.end_ms {
+            completed += 1.0;
+        } else if position_ms > word.start_ms && word.end_ms > word.start_ms {
+            completed +=
+                (position_ms - word.start_ms) as f32 / (word.end_ms - word.start_ms) as f32;
+            break;
+        } else {
+            break;
+        }
+    }
+    (completed / total).clamp(0.0, 1.0)
+}
+
+fn blend_tuple(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
+    let amount = amount.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
+    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
 }
 
 fn past_color(theme: &Theme, distance: usize, transition: f32) -> ratatui::style::Color {
@@ -410,6 +530,76 @@ mod tests {
             .collect();
         assert_eq!(current, "你好");
         assert_eq!(second, "hello");
+    }
+
+    #[test]
+    fn translation_follows_word_progress() {
+        let lines = vec![line_with_words()];
+        let rows = render_pair(
+            &lines,
+            1_700,
+            30,
+            &theme(),
+            LyricOptions {
+                word_lyrics: true,
+                translation: true,
+            },
+        );
+        let translation = &rows[1];
+        let first = translation
+            .spans
+            .first()
+            .expect("translation spans")
+            .style
+            .fg;
+        assert!(
+            translation.spans.iter().any(|span| span.style.fg != first),
+            "translation must reveal progressively"
+        );
+    }
+
+    #[test]
+    fn window_shows_translation_for_every_visible_line() {
+        let lines = vec![
+            LyricLine {
+                start_ms: 0,
+                end_ms: Some(1_000),
+                text: "zero".into(),
+                words: Vec::new(),
+                translation: Some("tr zero".into()),
+            },
+            line_with_words(),
+            LyricLine {
+                start_ms: 2_000,
+                end_ms: Some(3_000),
+                text: "two".into(),
+                words: Vec::new(),
+                translation: Some("tr two".into()),
+            },
+        ];
+        let rows = render_window(
+            &lines,
+            1_700,
+            7,
+            30,
+            &theme(),
+            LyricOptions {
+                word_lyrics: true,
+                translation: true,
+            },
+        );
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert!(texts.iter().any(|text| text == "tr zero"));
+        assert!(texts.iter().any(|text| text == "hello"));
+        assert!(texts.iter().any(|text| text == "tr two"));
     }
 
     #[test]

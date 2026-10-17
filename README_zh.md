@@ -235,7 +235,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `page_lyrics_pos_x` | `1.0` | 歌词浮窗左上角的归一化横坐标（0=左，1=右） |
 | `page_lyrics_pos_y` | `1.0` | 歌词浮窗左上角的归一化纵坐标（0=上，1=下） |
 | `word_lyrics` | `true` | `/lyric/new` 提供 YRC 时按词着色 |
-| `lyric_translation` | `false` | 歌词响应带翻译时显示翻译行 |
+| `lyric_translation` | `false` | 显示翻译；仅歌词模式下每行都显示，其它表面显示当前行翻译 |
 | `lyric_frame_divisor` | `2` | 歌词刷新间隔 = 全局帧间隔 × 该倍率（1 表示跟随 `ui_fps`；读取时钳在 1–8） |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |

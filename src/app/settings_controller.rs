@@ -28,6 +28,35 @@ const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 
 const SETTINGS_LYRICS_ITEMS: usize = 5;
 
+const LYRICS_SETTINGS_ROWS: [usize; SETTINGS_LYRICS_ITEMS] = [0, 1, 2, 3, 4];
+const LYRICS_SETTINGS_ROWS_NO_DRAG: [usize; SETTINGS_LYRICS_ITEMS - 1] = [0, 1, 3, 4];
+
+/// 歌词子页的可选中行。拖动关闭时「边缘吸附」灰置，导航直接跳过。
+pub(crate) fn lyrics_settings_rows(drag_enabled: bool) -> &'static [usize] {
+    if drag_enabled {
+        &LYRICS_SETTINGS_ROWS
+    } else {
+        &LYRICS_SETTINGS_ROWS_NO_DRAG
+    }
+}
+
+pub(crate) fn lyrics_settings_row_enabled(row: usize, drag_enabled: bool) -> bool {
+    row < SETTINGS_LYRICS_ITEMS && (row != 2 || drag_enabled)
+}
+
+pub(crate) fn step_lyrics_settings(current: usize, forward: bool, drag_enabled: bool) -> usize {
+    let rows = lyrics_settings_rows(drag_enabled);
+    let position = rows.iter().position(|row| *row == current).unwrap_or(0);
+    let next = if forward {
+        (position + 1) % rows.len()
+    } else if position == 0 {
+        rows.len() - 1
+    } else {
+        position - 1
+    };
+    rows[next]
+}
+
 pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 
 pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 22;
@@ -107,7 +136,10 @@ impl App {
                 }
             }
             Overlay::SettingsLyrics => {
-                // 这三行都是开关：左键直接改值（不用双击）。
+                // 开关行左键直接改值；灰置的吸附行不可选中。
+                if !lyrics_settings_row_enabled(index, self.config.page_lyrics_drag) {
+                    return;
+                }
                 self.settings.lyrics_selected = index;
                 self.apply_settings_lyrics_delta(1);
             }
@@ -154,7 +186,11 @@ impl App {
                 SETTINGS_PLAYBACK_ITEMS,
             ),
             Some(Overlay::SettingsLyrics) => {
-                step(&mut self.settings.lyrics_selected, SETTINGS_LYRICS_ITEMS)
+                self.settings.lyrics_selected = step_lyrics_settings(
+                    self.settings.lyrics_selected,
+                    forward,
+                    self.config.page_lyrics_drag,
+                );
             }
             Some(Overlay::SettingsKeybinds) => {
                 step(&mut self.settings.keybind_selected, SETTINGS_KEYBIND_ITEMS)
@@ -263,15 +299,18 @@ impl App {
             KeyCode::Left => self.apply_settings_lyrics_delta(-1),
             KeyCode::Right | KeyCode::Enter => self.apply_settings_lyrics_delta(1),
             KeyCode::Up | KeyCode::BackTab => {
-                if self.settings.lyrics_selected == 0 {
-                    self.settings.lyrics_selected = SETTINGS_LYRICS_ITEMS - 1;
-                } else {
-                    self.settings.lyrics_selected -= 1;
-                }
+                self.settings.lyrics_selected = step_lyrics_settings(
+                    self.settings.lyrics_selected,
+                    false,
+                    self.config.page_lyrics_drag,
+                );
             }
             KeyCode::Down | KeyCode::Tab => {
-                self.settings.lyrics_selected =
-                    (self.settings.lyrics_selected + 1) % SETTINGS_LYRICS_ITEMS;
+                self.settings.lyrics_selected = step_lyrics_settings(
+                    self.settings.lyrics_selected,
+                    true,
+                    self.config.page_lyrics_drag,
+                );
             }
             _ => {}
         }
@@ -873,5 +912,26 @@ impl SettingsController {
     pub(super) fn cancel_download_path_edit(&mut self) {
         self.download_path_edit = None;
         self.download_reset_armed = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lyrics_navigation_skips_snap_when_drag_is_disabled() {
+        assert_eq!(step_lyrics_settings(1, true, false), 3);
+        assert_eq!(step_lyrics_settings(3, false, false), 1);
+        assert_eq!(step_lyrics_settings(4, true, false), 0);
+        assert_eq!(step_lyrics_settings(0, false, false), 4);
+    }
+
+    #[test]
+    fn lyrics_navigation_keeps_snap_when_drag_is_enabled() {
+        assert_eq!(step_lyrics_settings(1, true, true), 2);
+        assert_eq!(step_lyrics_settings(2, false, true), 1);
+        assert!(lyrics_settings_row_enabled(2, true));
+        assert!(!lyrics_settings_row_enabled(2, false));
     }
 }
