@@ -255,10 +255,11 @@ pub fn parse_yrc(content: &str) -> Option<Vec<LyricLine>> {
         } else {
             None
         };
-        if let Some(line) = parsed {
-            if !line.text.trim().is_empty() && !is_metadata_line(&line.text) {
-                lines.push(line);
-            }
+        if let Some(line) = parsed
+            && !line.text.trim().is_empty()
+            && !is_metadata_line(&line.text)
+        {
+            lines.push(line);
         }
     }
 
@@ -413,7 +414,7 @@ fn align_translation(lines: &mut [LyricLine], content: &str) {
     }
 }
 
-fn sort_and_fill(lines: &mut Vec<LyricLine>) {
+fn sort_and_fill(lines: &mut [LyricLine]) {
     lines.sort_by_key(|line| line.start_ms);
     fill_line_end_times(lines);
 }
@@ -429,7 +430,7 @@ fn fill_line_end_times(lines: &mut [LyricLine]) {
 
 fn is_metadata_line(text: &str) -> bool {
     let text = text.trim();
-    let Some(colon) = text.find(|c| c == ':' || c == '：') else {
+    let Some(colon) = text.find([':', '：']) else {
         return false;
     };
     let prefix = text[..colon].trim();

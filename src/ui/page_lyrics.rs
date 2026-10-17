@@ -129,7 +129,7 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(app.theme.color_accent()))
+            .border_style(Style::default().fg(app.theme.color_subtext()))
             .style(base_bg_style(app)),
         area,
     );

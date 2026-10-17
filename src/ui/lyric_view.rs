@@ -36,14 +36,7 @@ pub(crate) fn render_pair(
     }
 
     rows[0] = if state.current.is_some() {
-        render_current(
-            &lines[current],
-            position_ms,
-            state.line_progress,
-            width,
-            theme,
-            options,
-        )
+        render_current(&lines[current], position_ms, width, theme, options)
     } else {
         render_static(&lines[current], future_color(theme, 0), width)
     };
@@ -93,24 +86,26 @@ pub(crate) fn render_window(
     let previous_count = current - previous_start;
     let previous_slot = center - previous_count;
 
+    let line_transition = if state.current.is_some() {
+        (position_ms.saturating_sub(lines[current].start_ms) as f32 / 220.0).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
     for (offset, index) in (previous_start..current).enumerate() {
         if previous_slot + offset >= center {
             break;
         }
         let distance = current - index;
-        output[previous_slot + offset] =
-            render_static(&lines[index], past_color(theme, distance), width);
+        let transition = if distance == 1 { line_transition } else { 1.0 };
+        output[previous_slot + offset] = render_static(
+            &lines[index],
+            past_color(theme, distance, transition),
+            width,
+        );
     }
 
     if state.current.is_some() {
-        output[center] = render_current(
-            &lines[current],
-            position_ms,
-            state.line_progress,
-            width,
-            theme,
-            options,
-        );
+        output[center] = render_current(&lines[current], position_ms, width, theme, options);
     } else {
         output[center] = render_static(&lines[current], future_color(theme, 0), width);
     }
@@ -141,7 +136,6 @@ pub(crate) fn render_window(
 fn render_current(
     line: &LyricLine,
     position_ms: u64,
-    line_progress: f32,
     width: u16,
     theme: &Theme,
     options: LyricOptions,
@@ -149,11 +143,9 @@ fn render_current(
     let mut spans = if options.word_lyrics && !line.words.is_empty() {
         word_spans(theme, line, position_ms)
     } else {
-        let amount = if position_ms <= line.start_ms {
-            0.38
-        } else {
-            0.38 + 0.62 * ease_in_out(line_progress)
-        };
+        let elapsed = position_ms.saturating_sub(line.start_ms) as f32;
+        let entry = ease_in_out((elapsed / 220.0).clamp(0.0, 1.0));
+        let amount = 0.38 + 0.62 * entry;
         let color = theme.mix(theme.palette.subtext, theme.palette.accent2, amount);
         vec![Span::styled(
             line.text.clone(),
@@ -219,8 +211,9 @@ fn render_translation(text: &str, width: u16, theme: &Theme) -> Line<'static> {
     ))
 }
 
-fn past_color(theme: &Theme, distance: usize) -> ratatui::style::Color {
-    let amount = (0.45 + 0.10 * distance.saturating_sub(1) as f32).min(0.75);
+fn past_color(theme: &Theme, distance: usize, transition: f32) -> ratatui::style::Color {
+    let amount =
+        (0.45 + 0.10 * distance.saturating_sub(1) as f32).min(0.75) * ease_in_out(transition);
     theme.mix(theme.palette.accent2, theme.palette.subtext, amount)
 }
 
