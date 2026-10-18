@@ -250,8 +250,7 @@ fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         rows[1],
     );
     frame.render_widget(
-        Paragraph::new(l(app, "  @play=当前曲名", "  @play=Current Track"))
-            .style(Style::default().fg(app.theme.color_subtext()).bg(surface)),
+        Paragraph::new("").style(Style::default().fg(app.theme.color_subtext()).bg(surface)),
         rows[2],
     );
     for (idx, offset) in visible_rows {

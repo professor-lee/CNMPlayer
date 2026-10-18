@@ -165,9 +165,8 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
         "  {}: ",
         lang_text(app, "MPRIS服务名称", "MPRIS Service Name")
     );
-    let hint = lang_text(app, "@play=当前曲名", "@play=Current Track Title");
     f.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(app.theme.color_subtext())),
+        Paragraph::new("").style(Style::default().fg(app.theme.color_subtext())),
         rows[2],
     );
 
