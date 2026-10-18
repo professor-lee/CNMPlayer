@@ -49,7 +49,7 @@ fn timed_empty_lrc_clears_pair_and_window_current_rows() {
     for word_lyrics in [false, true] {
         let options = LyricOptions {
             word_lyrics,
-            translation: true,
+            translation: false,
         };
         let pair = render_pair(&lines, 5_000, 30, &theme(), options);
         let window = render_window(&lines, 5_000, 7, 30, &theme(), options);
@@ -140,6 +140,205 @@ fn pair_shows_translation_before_the_line_starts() {
         .collect();
     assert_eq!(first, "你好");
     assert_eq!(second, "hello");
+}
+
+fn bilingual_gap_lyrics() -> Vec<LyricLine> {
+    crate::lyrics::parse_lyric_response(&serde_json::json!({
+        "lrc": {"lyric": "[00:00.00]\n[00:01.00]verse\n[00:03.00]\n[00:05.00]\n[00:10.00]next\n[00:12.00]"},
+        "tlyric": {"lyric": "[00:01.00]verse translation\n[00:10.00]next translation"}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn translated_pair_previews_original_and_translation_together_during_gaps() {
+    let lines = bilingual_gap_lyrics();
+    let theme = theme();
+    for word_lyrics in [false, true] {
+        let mut cache = LyricRenderCache::default();
+        let options = LyricOptions {
+            word_lyrics,
+            translation: true,
+        };
+        for (position, expected) in [
+            (0, ["verse", "verse translation"]),
+            (1_500, ["verse", "verse translation"]),
+            (3_000, ["next", "next translation"]),
+            (9_999, ["next", "next translation"]),
+            (10_000, ["next", "next translation"]),
+            (12_000, ["", ""]),
+            (5_000, ["next", "next translation"]),
+        ] {
+            let text = cache.pair(
+                LyricSurface::Compact,
+                &lines,
+                position,
+                false,
+                40,
+                &theme,
+                options,
+            );
+            let actual: Vec<String> = text
+                .lines
+                .iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "position={position}, word_lyrics={word_lyrics}"
+            );
+            if matches!(position, 0 | 3_000 | 9_999 | 5_000) {
+                for row in &text.lines {
+                    assert_eq!(row.spans[0].style.fg, Some(theme.color_subtext()));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn translation_toggle_restores_original_current_and_next_line_layout() {
+    let lines = bilingual_gap_lyrics();
+    let theme = theme();
+    for word_lyrics in [false, true] {
+        let mut cache = LyricRenderCache::default();
+        for (position, translation, expected) in [
+            (0, false, ["", "verse"]),
+            (1_500, false, ["verse", ""]),
+            (3_000, false, ["", ""]),
+            (5_000, false, ["", "next"]),
+            (5_000, true, ["next", "next translation"]),
+            (5_000, false, ["", "next"]),
+            (10_000, false, ["next", ""]),
+            (12_000, false, ["", ""]),
+        ] {
+            let text = cache.pair(
+                LyricSurface::Compact,
+                &lines,
+                position,
+                false,
+                40,
+                &theme,
+                LyricOptions {
+                    word_lyrics,
+                    translation,
+                },
+            );
+            let actual: Vec<String> = text
+                .lines
+                .iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "position={position}, translation={translation}"
+            );
+        }
+    }
+}
+
+#[test]
+fn translated_pair_does_not_mix_an_untranslated_line_with_the_next_original() {
+    let mut lines = bilingual_gap_lyrics();
+    lines.retain(|line| !line.text.is_empty());
+    lines[0].translation = None;
+    let rows = render_pair(
+        &lines,
+        1_500,
+        40,
+        &theme(),
+        LyricOptions {
+            word_lyrics: true,
+            translation: true,
+        },
+    );
+    let actual: Vec<String> = rows
+        .iter()
+        .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+        .collect();
+    assert_eq!(actual, ["verse", ""]);
+}
+
+#[test]
+fn translated_window_keeps_pairs_intact_at_viewport_edges() {
+    let lines = bilingual_gap_lyrics();
+    let theme = theme();
+    let mut cache = LyricRenderCache::default();
+    let options = LyricOptions {
+        word_lyrics: true,
+        translation: true,
+    };
+    for rows in 1..=9 {
+        for position in [0, 1_500, 5_000, 10_000, 12_000] {
+            let text = cache.window(&lines, position, false, rows, 40, &theme, options);
+            let actual: Vec<String> = text
+                .lines
+                .iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
+            if position == 1_500 {
+                if rows == 1 {
+                    assert_eq!(actual, [""]);
+                } else {
+                    let current = (rows / 2).min(rows - 2);
+                    assert_eq!(actual[current], "verse");
+                    assert_eq!(actual[current + 1], "verse translation");
+                }
+            }
+            for (index, row) in actual.iter().enumerate() {
+                match row.as_str() {
+                    "verse" => assert_eq!(
+                        actual.get(index + 1).map(String::as_str),
+                        Some("verse translation")
+                    ),
+                    "next" => assert_eq!(
+                        actual.get(index + 1).map(String::as_str),
+                        Some("next translation")
+                    ),
+                    "verse translation" => assert_eq!(
+                        index.checked_sub(1).map(|i| actual[i].as_str()),
+                        Some("verse")
+                    ),
+                    "next translation" => assert_eq!(
+                        index.checked_sub(1).map(|i| actual[i].as_str()),
+                        Some("next")
+                    ),
+                    "" => {}
+                    other => panic!("unexpected lyric row: {other}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn untranslated_window_preserves_current_row_and_independent_next_lines() {
+    let lines = bilingual_gap_lyrics();
+    let theme = theme();
+    let mut cache = LyricRenderCache::default();
+    for (position, expected) in [
+        (1_500, ["", "", "", "verse", "", "", "next"]),
+        (5_000, ["", "verse", "", "", "next", "", ""]),
+    ] {
+        let text = cache.window(
+            &lines,
+            position,
+            false,
+            7,
+            40,
+            &theme,
+            LyricOptions {
+                word_lyrics: true,
+                translation: false,
+            },
+        );
+        let actual: Vec<String> = text
+            .lines
+            .iter()
+            .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert_eq!(actual, expected, "position={position}");
+    }
 }
 
 #[test]
@@ -707,7 +906,7 @@ fn cache_preserves_untimed_document_and_bounds_surface_entries() {
     let mut cache = LyricRenderCache::default();
     let options = LyricOptions {
         word_lyrics: true,
-        translation: true,
+        translation: false,
     };
     let mut changed_theme = theme();
     for (position, width, rows) in [(2_000, 20, 7), (9_000, 20, 9), (9_000, 3, 5)] {

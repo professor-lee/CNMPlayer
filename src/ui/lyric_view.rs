@@ -173,6 +173,9 @@ fn own_line(line: Line<'_>) -> Line<'static> {
 }
 
 /// Current + next line (or current + translation) for two-row surfaces.
+/// Translation mode reserves both rows for one lyric: gaps preview the next
+/// nonblank original and its translation together, without active highlighting.
+/// Without translation, retain the current + immediate-next timeline layout.
 fn render_pair<'a>(
     lines: &'a [LyricLine],
     position_ms: u64,
@@ -191,7 +194,20 @@ fn render_pair<'a>(
         return rows;
     }
 
-    rows[0] = if state.current.is_some() {
+    let current = if options.translation {
+        let Some(offset) = lines[current..]
+            .iter()
+            .position(|line| !line.text.trim().is_empty())
+        else {
+            return rows;
+        };
+        current + offset
+    } else {
+        current
+    };
+    let is_current = state.current == Some(current);
+
+    rows[0] = if is_current {
         render_current(
             &lines[current],
             position_ms,
@@ -205,7 +221,7 @@ fn render_pair<'a>(
     };
 
     if let Some(translation) = translation_text(&lines[current], options) {
-        rows[1] = if state.current.is_some() {
+        rows[1] = if is_current {
             render_translation_current(
                 &lines[current],
                 position_ms,
@@ -217,7 +233,9 @@ fn render_pair<'a>(
         } else {
             render_translation_static(translation, future_color(theme, 0), width)
         };
-    } else if let Some(next) = lines.get(current + 1) {
+    } else if !options.translation
+        && let Some(next) = lines.get(current + 1)
+    {
         rows[1] = render_static(next, future_color(theme, 1), width);
     }
 
@@ -226,9 +244,10 @@ fn render_pair<'a>(
 
 /// Centered lyric window for the fullscreen lyric page.
 ///
-/// The current line keeps the row it had before (`rows / 2`); an optional
-/// translation consumes the row directly below it. The total number of rows is
-/// unchanged, so the surrounding layout does not move.
+/// The current line stays at `rows / 2` unless its translation needs the last
+/// row. A one-row viewport cannot show a bilingual pair, so it stays blank.
+/// Past and future bilingual pairs are also included only when both rows fit.
+/// The total height and the untranslated layout remain unchanged.
 fn render_window<'a>(
     lines: &'a [LyricLine],
     position_ms: u64,
@@ -249,7 +268,15 @@ fn render_window<'a>(
         return output;
     }
 
-    let center = rows / 2;
+    let translation = translation_text(&lines[current], options);
+    let center = if translation.is_some() {
+        if rows < 2 {
+            return output;
+        }
+        (rows / 2).min(rows - 2)
+    } else {
+        rows / 2
+    };
     let line_transition = if state.current.is_some() {
         (position_ms.saturating_sub(lines[current].start_ms) as f32 / 220.0).clamp(0.0, 1.0)
     } else {
@@ -302,7 +329,7 @@ fn render_window<'a>(
     }
 
     let mut after = Vec::new();
-    if let Some(translation) = translation_text(&lines[current], options) {
+    if let Some(translation) = translation {
         after.push(if state.current.is_some() {
             render_translation_current(
                 &lines[current],
