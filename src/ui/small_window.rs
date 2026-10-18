@@ -159,6 +159,8 @@ fn draw_compact_lyrics(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let mut cache = app.lyric_render_cache.borrow_mut();
+    let fallback;
     let lines = match app
         .playback
         .now_playing
@@ -166,9 +168,11 @@ fn draw_compact_lyrics(frame: &mut Frame, app: &App, area: Rect) {
         .and_then(|track| track.lyrics.as_ref())
         .filter(|lines| !lines.is_empty())
     {
-        Some(lines) => lyric_view::render_pair(
+        Some(lines) => cache.pair(
+            lyric_view::LyricSurface::SmallWindow,
             lines,
             app.lyric_position_ms(),
+            app.is_seeking(),
             area.width,
             &app.theme,
             app.lyric_options(),
@@ -178,14 +182,16 @@ fn draw_compact_lyrics(frame: &mut Frame, app: &App, area: Rect) {
                 Language::Zh => "暂无歌词",
                 Language::En => "No lyrics",
             };
-            vec![Line::from(Span::styled(
+            fallback = ratatui::text::Text::from(Line::from(Span::styled(
                 label,
                 Style::default().fg(app.theme.color_subtext()),
-            ))]
+            )))
+            .alignment(Alignment::Center);
+            &fallback
         }
     };
 
-    frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+    frame.render_widget(lines, area);
 }
 
 fn clipped_rect_at(area: Rect, x: i32) -> Rect {

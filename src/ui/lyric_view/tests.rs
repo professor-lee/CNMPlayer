@@ -420,8 +420,9 @@ fn window_keeps_the_current_row_even_with_translation() {
 fn no_color_theme_still_returns_visible_text() {
     let mut theme = theme();
     theme.capability = ColorCapability::NoColor;
+    let lines = [line_with_words()];
     let rows = render_pair(
-        &[line_with_words()],
+        &lines,
         1_700,
         20,
         &theme,
@@ -436,4 +437,399 @@ fn no_color_theme_still_returns_visible_text() {
         .map(|span| span.content.as_ref())
         .collect();
     assert_eq!(text, "你好");
+}
+
+#[test]
+fn cache_invalidates_equal_length_replacement_and_reuses_hits() {
+    let mut cache = LyricRenderCache::default();
+    let options = LyricOptions {
+        word_lyrics: false,
+        translation: false,
+    };
+    let first = vec![LyricLine {
+        start_ms: 0,
+        end_ms: Some(10_000),
+        text: "first".into(),
+        words: Vec::new(),
+        translation: None,
+    }];
+    let second = vec![LyricLine {
+        start_ms: 0,
+        end_ms: Some(10_000),
+        text: "other".into(),
+        words: Vec::new(),
+        translation: None,
+    }];
+    let one = cache.pair(
+        LyricSurface::Overlay,
+        &first,
+        1_000,
+        false,
+        20,
+        &theme(),
+        options,
+    );
+    let one_ptr = one as *const _;
+    assert_eq!(one.lines[0].spans[0].content.as_ref(), "first");
+    let hit = cache.pair(
+        LyricSurface::Overlay,
+        &first,
+        1_000,
+        false,
+        20,
+        &theme(),
+        options,
+    );
+    assert_eq!(hit as *const _, one_ptr);
+    let replaced = cache.pair(
+        LyricSurface::Overlay,
+        &second,
+        1_000,
+        false,
+        20,
+        &theme(),
+        options,
+    );
+    assert_eq!(replaced.lines[0].spans[0].content.as_ref(), "other");
+}
+
+#[test]
+fn cache_key_includes_palette_capability_and_seek_state() {
+    let lines = vec![line_with_words()];
+    let options = LyricOptions {
+        word_lyrics: true,
+        translation: true,
+    };
+    let mut cache = LyricRenderCache::default();
+    let mut changed = theme();
+    let a = cache.pair(
+        LyricSurface::Overlay,
+        &lines,
+        1_700,
+        false,
+        20,
+        &changed,
+        options,
+    );
+    let color_a = a.lines[0].spans[0].style.fg;
+    changed.palette.accent2 = (1, 2, 3);
+    let b = cache.pair(
+        LyricSurface::Overlay,
+        &lines,
+        1_700,
+        false,
+        20,
+        &changed,
+        options,
+    );
+    assert_ne!(b.lines[0].spans[0].style.fg, color_a);
+    changed.capability = ColorCapability::NoColor;
+    let c = cache.pair(
+        LyricSurface::Overlay,
+        &lines,
+        1_700,
+        true,
+        20,
+        &changed,
+        options,
+    );
+    assert_eq!(
+        c.lines[0].spans[0].style.fg,
+        Some(ratatui::style::Color::Reset)
+    );
+}
+
+#[test]
+fn cache_preserves_cjk_and_pre_first_output() {
+    let lines = vec![line_with_words()];
+    let mut cache = LyricRenderCache::default();
+    let options = LyricOptions {
+        word_lyrics: true,
+        translation: true,
+    };
+    let pre = cache.pair(
+        LyricSurface::SmallWindow,
+        &lines,
+        0,
+        false,
+        20,
+        &theme(),
+        options,
+    );
+    assert_eq!(
+        pre.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>(),
+        "你好"
+    );
+    let window = cache.window(&lines, 1_700, false, 5, 20, &theme(), options);
+    assert_eq!(
+        window.lines[2]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>(),
+        "你好"
+    );
+}
+
+#[test]
+fn cache_invalidates_in_place_text_translation_and_word_timing() {
+    let mut cache = LyricRenderCache::default();
+    let mut lines = vec![line_with_words()];
+    let options = LyricOptions {
+        word_lyrics: true,
+        translation: true,
+    };
+    let initial = cache
+        .pair(
+            LyricSurface::Overlay,
+            &lines,
+            1_700,
+            false,
+            20,
+            &theme(),
+            options,
+        )
+        .clone();
+    // Mutate the existing allocation, so pointer+length identity would be stale.
+    lines[0].words[0].text.replace_range(.., "您");
+    lines[0].text.replace_range(.., "您好");
+    lines[0]
+        .translation
+        .as_mut()
+        .unwrap()
+        .replace_range(.., "world");
+    let edited = cache
+        .pair(
+            LyricSurface::Overlay,
+            &lines,
+            1_700,
+            false,
+            20,
+            &theme(),
+            options,
+        )
+        .clone();
+    assert_eq!(
+        edited.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>(),
+        "您好"
+    );
+    assert_eq!(
+        edited.lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>(),
+        "world"
+    );
+    assert_ne!(initial, edited);
+    lines[0].words[0].end_ms = 3_000;
+    let retimed = cache.pair(
+        LyricSurface::Overlay,
+        &lines,
+        1_700,
+        false,
+        20,
+        &theme(),
+        options,
+    );
+    assert_ne!(retimed, &edited);
+}
+
+#[test]
+fn cache_preserves_clipping_scroll_dwell_and_seek_output() {
+    let lines = vec![LyricLine {
+        start_ms: 1_000,
+        end_ms: Some(20_000),
+        text: "你好世界AB".into(),
+        words: Vec::new(),
+        translation: Some("translation".into()),
+    }];
+    let options = LyricOptions {
+        word_lyrics: false,
+        translation: true,
+    };
+    let mut cache = LyricRenderCache::default();
+    for (position, seeking, width) in [
+        (0, false, 5),
+        (1_000, false, 5),
+        (1_599, false, 5),
+        (1_800, false, 5),
+        (3_000, false, 5),
+        (1_000, true, 3),
+    ] {
+        let expected = render_pair(&lines, position, width, &theme(), options);
+        let actual = cache.pair(
+            LyricSurface::SmallWindow,
+            &lines,
+            position,
+            seeking,
+            width,
+            &theme(),
+            options,
+        );
+        assert_eq!(actual.lines, expected);
+        if position == 1_800 {
+            assert_eq!(
+                actual.lines[0]
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>(),
+                " 好世"
+            );
+        }
+    }
+    assert!(cache.frames.last().unwrap().key.seeking);
+    assert!(cache.frames.len() <= 2);
+}
+
+#[test]
+fn cache_preserves_untimed_document_and_bounds_surface_entries() {
+    let lines: Vec<_> = ["first", "second", "third", "fourth"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| LyricLine {
+            start_ms: if index == 0 { 0 } else { u64::MAX },
+            end_ms: Some(u64::MAX),
+            text: text.into(),
+            words: Vec::new(),
+            translation: None,
+        })
+        .collect();
+    let mut cache = LyricRenderCache::default();
+    let options = LyricOptions {
+        word_lyrics: true,
+        translation: true,
+    };
+    let mut changed_theme = theme();
+    for (position, width, rows) in [(2_000, 20, 7), (9_000, 20, 9), (9_000, 3, 5)] {
+        let expected = render_window(&lines, position, rows, width, &changed_theme, options);
+        let actual = cache.window(
+            &lines,
+            position,
+            false,
+            rows,
+            width,
+            &changed_theme,
+            options,
+        );
+        assert_eq!(actual.lines, expected);
+    }
+    let narrow = cache.pair(
+        LyricSurface::Overlay,
+        &lines,
+        9_000,
+        false,
+        3,
+        &changed_theme,
+        options,
+    );
+    assert_eq!(narrow.lines[1].spans[0].content.as_ref(), "se…");
+    changed_theme.palette.surface = (1, 2, 3);
+    cache.pair(
+        LyricSurface::Compact,
+        &lines,
+        9_000,
+        false,
+        20,
+        &changed_theme,
+        options,
+    );
+    assert_eq!(cache.frames.last().unwrap().key.palette[3], (1, 2, 3));
+    assert_eq!(cache.frames.len(), 2);
+}
+
+#[test]
+fn styled_glyph_runs_are_borrowed_and_coalesced_before_caching() {
+    let text = "你好世界AB";
+    let spans = progress_spans(text, 0.0, &theme(), true);
+    assert_eq!(
+        spans.len(),
+        1,
+        "pending glyphs share one style and allocation"
+    );
+    assert!(matches!(spans[0].content, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(spans[0].content.as_ref(), text);
+}
+
+#[test]
+fn cache_borrowed_widget_matches_paragraph_output_and_toggle_invalidation() {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::{Alignment, Rect};
+    use ratatui::widgets::{Paragraph, Widget};
+    let lines = vec![line_with_words()];
+    let mut cache = LyricRenderCache::default();
+    let area = Rect::new(0, 0, 9, 2);
+    for options in [
+        LyricOptions {
+            word_lyrics: true,
+            translation: true,
+        },
+        LyricOptions {
+            word_lyrics: false,
+            translation: true,
+        },
+        LyricOptions {
+            word_lyrics: false,
+            translation: false,
+        },
+    ] {
+        let expected = render_pair(&lines, 1_700, area.width, &theme(), options);
+        let mut old = Buffer::empty(area);
+        Paragraph::new(expected)
+            .alignment(Alignment::Center)
+            .render(area, &mut old);
+        let mut new = Buffer::empty(area);
+        cache
+            .pair(
+                LyricSurface::Overlay,
+                &lines,
+                1_700,
+                false,
+                area.width,
+                &theme(),
+                options,
+            )
+            .render(area, &mut new);
+        assert_eq!(new, old);
+        if !options.word_lyrics {
+            assert_eq!(cache.frames.last().unwrap().text.lines[0].spans.len(), 1);
+        }
+        if !options.translation {
+            assert!(cache.frames.last().unwrap().text.lines[1].spans.is_empty());
+        }
+    }
+}
+
+#[test]
+fn cached_completed_words_share_one_owned_style_run() {
+    let lines = vec![line_with_words()];
+    let options = LyricOptions {
+        word_lyrics: true,
+        translation: true,
+    };
+    let mut cache = LyricRenderCache::default();
+    let rows = cache.pair(
+        LyricSurface::Compact,
+        &lines,
+        2_000,
+        false,
+        20,
+        &theme(),
+        options,
+    );
+    assert_eq!(rows.lines[0].spans.len(), 1);
+    assert_eq!(rows.lines[0].spans[0].content.as_ref(), "你好");
+    assert_eq!(
+        rows.lines[0].spans[0].style.fg,
+        Some(theme().color_accent2())
+    );
 }
