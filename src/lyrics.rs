@@ -16,9 +16,9 @@ pub(crate) struct LyricWord {
 
 /// One displayable lyric line.
 ///
-/// `words` is empty for ordinary LRC lines; `translation` is optional for both
-/// LRC and YRC. `end_ms` is inferred from the next line when the source has no
-/// explicit duration.
+/// `words` is empty for ordinary LRC and plain text; enhanced LRC and YRC can
+/// carry word timings. `translation` is optional for every format. `end_ms`
+/// is inferred from the next line when the source has no explicit duration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LyricLine {
     pub(crate) start_ms: u64,
@@ -47,8 +47,8 @@ impl LyricLine {
     }
 
     /// Plain, unsynchronized lyrics use `u64::MAX` sentinels: the first line
-    /// ends at `MAX`, the optional second line starts at `MAX`. They have no
-    /// meaningful playback progress and must render as static text.
+    /// ends at `MAX`, and every subsequent line starts and ends at `MAX`.
+    /// They have no playback progress and must render as static text.
     pub(crate) fn is_untimed(&self) -> bool {
         self.start_ms == u64::MAX || self.end_ms == Some(u64::MAX)
     }
@@ -105,6 +105,10 @@ pub(crate) fn quantized_position_ms(position_ms: u64, ui_fps: u32, divisor: u32)
 /// translations are always retained so toggling them never requires a refetch.
 /// Explicit empty LRC timestamps remain on the timeline to clear the current
 /// lyric during pauses; a document with no lyric or translation text is absent.
+/// JSON records in either source use the same parser and never render as raw
+/// JSON. Enhanced LRC consumes only valid `<mm:ss.xx>` tags, retains all lyric
+/// text, and bounds its last word by a real trailing tag or following line.
+/// Plain fallback retains all non-metadata lines as unsynchronized text.
 pub(crate) fn parse_lyric_response(body: &Value) -> Option<Vec<LyricLine>> {
     let yrc = body_text(body, "/yrc/lyric").or_else(|| body_text(body, "/yrc"));
     let lrc = body_text(body, "/lrc/lyric").or_else(|| body_text(body, "/lrc"));
@@ -149,84 +153,160 @@ fn body_text<'a>(body: &'a Value, path: &str) -> Option<&'a str> {
         .filter(|text| !text.trim().is_empty())
 }
 
-/// Parse ordinary LRC text (`[mm:ss.xx]line`).
+/// Normalize LRC and per-line JSON through the same document path. Only valid
+/// leading square-bracket timestamps are consumed; bracketed lyric text stays.
 fn parse_lrc(content: &str) -> Option<Vec<LyricLine>> {
-    let timed = parse_timed_lrc(content);
-    if timed.is_empty() {
+    let mut parsed = Vec::new();
+    for raw in content.lines().map(str::trim) {
+        if raw.starts_with('{') {
+            if let Some(line) = parse_json_yrc_line(raw)
+                && !is_metadata_line(&line.text)
+            {
+                parsed.push((line, false));
+            }
+            continue;
+        }
+        let (times, text) = leading_lrc_timestamps(raw);
+        if is_metadata_line(text) {
+            continue;
+        }
+        for start_ms in times {
+            parsed.push(parse_enhanced_lrc_line(text, start_ms));
+        }
+    }
+    if parsed.is_empty() {
         return None;
     }
+    parsed.sort_by_key(|(line, _)| line.start_ms);
+    // An open final word ends at the next real line, or is instantaneous when
+    // no such bound exists. Never invent a duration for enhanced LRC words.
+    for index in 0..parsed.len() {
+        let next = parsed.get(index + 1).map(|(line, _)| line.start_ms);
+        let (line, open_word) = &mut parsed[index];
+        if line.end_ms.is_none() {
+            line.end_ms = next.filter(|end| *end > line.start_ms);
+        }
+        if *open_word
+            && let Some(word) = line.words.last_mut()
+        {
+            word.end_ms = line.end_ms.unwrap_or(word.start_ms).max(word.start_ms);
+        }
+    }
+    Some(parsed.into_iter().map(|(line, _)| line).collect())
+}
 
-    let mut lines: Vec<LyricLine> = timed
-        .into_iter()
-        .map(|(start_ms, text)| LyricLine {
+fn leading_lrc_timestamps(mut text: &str) -> (Vec<u64>, &str) {
+    let mut times = Vec::new();
+    while let Some(rest) = text.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            break;
+        };
+        let Some(ms) = parse_lrc_time_tag(&rest[..end]) else {
+            break;
+        };
+        times.push(ms);
+        text = &rest[end + 1..];
+    }
+    (times, text.trim())
+}
+
+/// Return whether the final word still needs the following line's bound.
+fn parse_enhanced_lrc_line(content: &str, start_ms: u64) -> (LyricLine, bool) {
+    let mut text = String::new();
+    let mut words = Vec::new();
+    let mut cursor = 0;
+    let mut word_start = start_ms;
+    let mut last_tag = None;
+    for (open, _) in content.match_indices('<') {
+        let Some(close) = content[open + 1..].find('>').map(|end| open + 1 + end) else {
+            continue;
+        };
+        let Some(time) = parse_lrc_time_tag(&content[open + 1..close]) else {
+            continue;
+        };
+        let time = time.max(word_start);
+        let part = &content[cursor..open];
+        text.push_str(part);
+        if !part.is_empty() {
+            words.push(LyricWord {
+                text: part.to_string(),
+                start_ms: word_start,
+                end_ms: time,
+            });
+        }
+        word_start = time;
+        last_tag = Some(time);
+        cursor = close + 1;
+    }
+    let tail = &content[cursor..];
+    text.push_str(tail);
+    let open_word = last_tag.is_some() && !tail.is_empty();
+    if open_word {
+        words.push(LyricWord {
+            text: tail.to_string(),
+            start_ms: word_start,
+            end_ms: word_start,
+        });
+    }
+    let end_ms = last_tag.filter(|_| tail.is_empty());
+    (
+        LyricLine {
             start_ms,
-            end_ms: None,
+            end_ms,
             text,
+            words,
+            translation: None,
+        },
+        open_word,
+    )
+}
+
+/// Plain fallback retains the complete document without assigning fake times.
+fn parse_plain_lyrics(content: &str) -> Option<Vec<LyricLine>> {
+    let lines: Vec<_> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| is_plain_lyric_text(line))
+        .enumerate()
+        .map(|(index, text)| LyricLine {
+            start_ms: if index == 0 { 0 } else { u64::MAX },
+            end_ms: Some(u64::MAX),
+            text: text.to_string(),
             words: Vec::new(),
             translation: None,
         })
         .collect();
-    sort_and_fill(&mut lines);
-    Some(lines)
+    (!lines.is_empty()).then_some(lines)
 }
 
-/// Fallback for plain, unsynchronized lyrics.
-fn parse_plain_lyrics(content: &str) -> Option<Vec<LyricLine>> {
-    let mut non_empty = content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
-    let first = non_empty.next()?.to_string();
-    let second = non_empty.next().map(str::to_string);
-
-    let mut lines = vec![LyricLine {
-        start_ms: 0,
-        end_ms: Some(u64::MAX),
-        text: first,
-        words: Vec::new(),
-        translation: None,
-    }];
-    if let Some(second) = second {
-        lines.push(LyricLine {
-            start_ms: u64::MAX,
-            end_ms: None,
-            text: second,
-            words: Vec::new(),
-            translation: None,
-        });
+fn is_plain_lyric_text(line: &str) -> bool {
+    if line.is_empty() || line.starts_with('{') || is_metadata_line(line) {
+        return false;
     }
-    Some(lines)
+    if let Some(rest) = line.strip_prefix('[') {
+        // JSON and recognized LRC headers are structural, but arbitrary
+        // square/angle brackets (including unclosed ordinary text) are lyric.
+        if serde_json::from_str::<Value>(line).is_ok() || rest.starts_with('{') {
+            return false;
+        }
+        if let Some((prefix, _)) = rest.split_once(':') {
+            let prefix = prefix.trim();
+            if matches!(prefix, "ar" | "ti" | "al" | "by" | "re" | "ve" | "length" | "offset")
+                || (!prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit()))
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn parse_timed_lrc(content: &str) -> Vec<(u64, String)> {
-    let mut out = Vec::new();
-    for raw in content.lines() {
-        let mut text = raw.trim();
-        if text.is_empty() {
-            continue;
-        }
-
-        let mut times = Vec::new();
-        while let Some(rest) = text.strip_prefix('[') {
-            let Some(end) = rest.find(']') else {
-                break;
-            };
-            if let Some(ms) = parse_lrc_time_tag(&rest[..end]) {
-                times.push(ms);
-            }
-            text = &rest[end + 1..];
-        }
-        if times.is_empty() {
-            continue;
-        }
-
-        let line = text.trim().to_string();
-        for start in times {
-            out.push((start, line.clone()));
-        }
-    }
-    out.sort_by_key(|(start, _)| *start);
-    out
+    parse_lrc(content)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|line| (line.start_ms, line.text))
+        .collect()
 }
 
 /// Parse both YRC encodings:
@@ -265,8 +345,7 @@ fn parse_yrc(content: &str) -> Option<Vec<LyricLine>> {
 
 #[derive(Debug, Deserialize)]
 struct JsonYrcLine {
-    #[serde(default)]
-    t: i64,
+    t: u64,
     #[serde(default)]
     c: Vec<JsonYrcWord>,
 }
@@ -276,27 +355,29 @@ struct JsonYrcWord {
     #[serde(default)]
     tx: String,
     #[serde(default)]
-    tr: Vec<i64>,
+    tr: Vec<u64>,
 }
 
 fn parse_json_yrc_line(raw: &str) -> Option<LyricLine> {
     let parsed: JsonYrcLine = serde_json::from_str(raw).ok()?;
-    let line_start = u64::try_from(parsed.t).ok()?;
+    let line_start = parsed.t;
     let mut words = Vec::with_capacity(parsed.c.len());
     let mut text = String::new();
     let mut cursor = line_start;
+    let mut timed_end = None;
 
     for item in parsed.c {
         if item.tx.is_empty() {
             continue;
         }
         let (start, end) = if item.tr.len() >= 2 {
-            let offset = item.tr[0].max(0) as u64;
-            let duration = item.tr[1].max(0) as u64;
-            let start = line_start.saturating_add(offset);
-            (start, start.saturating_add(duration))
+            let start = line_start.checked_add(item.tr[0])?;
+            let end = start.checked_add(item.tr[1])?;
+            timed_end = Some(timed_end.map_or(end, |previous: u64| previous.max(end)));
+            (start, end)
         } else {
-            (cursor, cursor.saturating_add(500))
+            // Missing timings are not a license to manufacture 500ms words.
+            (cursor, cursor)
         };
         cursor = end;
         text.push_str(&item.tx);
@@ -307,13 +388,15 @@ fn parse_json_yrc_line(raw: &str) -> Option<LyricLine> {
         });
     }
 
-    if words.is_empty() {
+    if text.trim().is_empty() {
         return None;
     }
-    let end_ms = words.last().map(|word| word.end_ms);
+    if timed_end.is_none() {
+        words.clear();
+    }
     Some(LyricLine {
         start_ms: line_start,
-        end_ms,
+        end_ms: timed_end,
         text,
         words,
         translation: None,
@@ -378,7 +461,10 @@ fn parse_lrc_style_yrc_line(raw: &str) -> Option<LyricLine> {
 fn parse_lrc_style_pair(text: &str) -> Option<(u64, u64)> {
     let mut parts = text.split(',');
     let start = parts.next()?.trim().parse().ok()?;
-    let duration = parts.next().unwrap_or("0").trim().parse().ok()?;
+    let duration = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
     Some((start, duration))
 }
 
@@ -457,35 +543,36 @@ fn is_metadata_line(text: &str) -> bool {
 
 fn parse_lrc_time_tag(tag: &str) -> Option<u64> {
     let (minutes, rest) = tag.split_once(':')?;
-    let minutes: u64 = minutes.trim().parse().ok()?;
-    let rest = rest.trim();
-    let (seconds, fraction) = match rest.split_once('.') {
-        Some((seconds, fraction)) => (seconds, Some(fraction)),
-        None => (rest, None),
+    let minutes = minutes.trim();
+    let (seconds, fraction) = match rest.trim().split_once('.') {
+        Some((seconds, fraction)) => (seconds.trim(), Some(fraction.trim())),
+        None => (rest.trim(), None),
     };
-    let seconds: u64 = seconds.trim().parse().ok()?;
+    if minutes.is_empty()
+        || seconds.is_empty()
+        || !minutes.bytes().all(|byte| byte.is_ascii_digit())
+        || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let minutes: u64 = minutes.parse().ok()?;
+    let seconds: u64 = seconds.parse().ok()?;
     if seconds >= 60 {
         return None;
     }
-
-    let mut millis = 0;
-    if let Some(fraction) = fraction {
-        let digits: String = fraction
-            .trim()
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .take(3)
-            .collect();
-        if !digits.is_empty() {
-            millis = match digits.len() {
-                1 => digits.parse::<u64>().ok()? * 100,
-                2 => digits.parse::<u64>().ok()? * 10,
-                _ => digits.parse::<u64>().ok()?,
-            };
+    let millis = if let Some(fraction) = fraction {
+        if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
         }
-    }
-
-    Some(minutes * 60_000 + seconds * 1_000 + millis)
+        let digits = &fraction[..fraction.len().min(3)];
+        digits.parse::<u64>().ok()? * [0, 100, 10, 1][digits.len()]
+    } else {
+        0
+    };
+    minutes
+        .checked_mul(60_000)?
+        .checked_add(seconds * 1_000)?
+        .checked_add(millis)
 }
 
 #[cfg(test)]
