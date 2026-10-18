@@ -240,8 +240,7 @@ async fn fullscreen_page_transition_keeps_animation_frame_pacing() {
         crate::ui::theme::Theme::default(),
         crate::data::config::Language::En,
     );
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
     let wake = crate::render::wake::WakeSignal::default();
     let mut tui = Tui::new(&mut terminal, wake.clone());
     let mut host = TransitionHost { wake };
@@ -286,6 +285,36 @@ fn fullscreen_lyrics_do_not_force_continuous_redraw() {
     assert!(
         app.should_continuous_redraw(),
         "the spectrum still animates continuously while playing"
+    );
+}
+
+#[test]
+fn continuous_animation_end_marks_one_final_frame() {
+    let start = Instant::now();
+    let mut clock = FrameClock::new(60, start);
+    let mut was_continuous = false;
+
+    let continuous = true;
+    mark_animation_end_frame(&mut clock, was_continuous, continuous);
+    clock.set_continuous(continuous);
+    was_continuous = continuous;
+    clock.presented(start);
+
+    let continuous = false;
+    mark_animation_end_frame(&mut clock, was_continuous, continuous);
+    clock.set_continuous(continuous);
+    was_continuous = continuous;
+    assert!(
+        clock.due(start + Duration::from_millis(1)),
+        "the animation's final frame must be submitted immediately"
+    );
+    clock.presented(start + Duration::from_millis(1));
+
+    mark_animation_end_frame(&mut clock, was_continuous, continuous);
+    clock.set_continuous(continuous);
+    assert!(
+        !clock.due(start + Duration::from_millis(2)),
+        "staying idle must not keep the clock dirty"
     );
 }
 
