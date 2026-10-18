@@ -17,6 +17,7 @@ use rodio::MixerDeviceSink;
 use rodio::Player;
 use rodio::Source;
 use rodio::cpal::Error;
+use rodio::cpal::ErrorKind;
 use rodio::source::SeekError;
 use see::sync::Receiver;
 use std::fs;
@@ -195,6 +196,11 @@ type MaybeError = Arc<Mutex<Option<Error>>>;
 
 fn error_cb(error: MaybeError) -> impl Fn(Error) {
     move |e| {
+        // CPAL has already rerouted this active stream; stopping would discard
+        // the current source and position. Leave any pending real failure intact.
+        if e.kind() == ErrorKind::DeviceChanged {
+            return;
+        }
         let mut error = error.lock();
         *error = Some(e)
     }
@@ -726,6 +732,9 @@ pub(super) fn resolve_cache_root(config: &Config) -> PathBuf {
 
     STORAGE.cache.clone()
 }
+
+#[cfg(test)]
+mod error_callback_tests;
 
 #[cfg(test)]
 mod seek_worker_tests;
