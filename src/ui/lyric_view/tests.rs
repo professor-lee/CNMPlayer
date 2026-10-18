@@ -551,32 +551,50 @@ fn window_shows_translation_for_every_visible_line() {
 }
 
 #[test]
-fn horizontal_scroll_moves_with_playback() {
-    let line = LyricLine {
+fn long_lrc_lyrics_hold_each_segment_until_its_playback_phase() {
+    let lines = vec![LyricLine {
         start_ms: 1_000,
-        end_ms: Some(20_000),
-        text: "abcdefghijklmnopqrstuvwxyz".into(),
+        end_ms: Some(5_000),
+        text: "lyric sample".into(),
         words: Vec::new(),
-        translation: None,
-    };
-    let lines = vec![line];
-    let options = LyricOptions {
-        word_lyrics: false,
-        translation: false,
-    };
-    let start = render_pair(&lines, 1_000, 10, &theme(), options);
-    let later = render_pair(&lines, 4_000, 10, &theme(), options);
-    let start_text: String = start[0]
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect();
-    let later_text: String = later[0]
-        .spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect();
-    assert_ne!(start_text, later_text);
+        translation: Some("LYRIC SAMPLE".into()),
+    }];
+    let theme = theme();
+    for word_lyrics in [false, true] {
+        let mut cache = LyricRenderCache::default();
+        for (position, expected) in [
+            (1_000, ["lyric samp", "LYRIC SAMP"]),
+            (2_000, ["lyric samp", "LYRIC SAMP"]),
+            (2_999, ["lyric samp", "LYRIC SAMP"]),
+            (3_000, ["ric sample", "RIC SAMPLE"]),
+            (4_999, ["ric sample", "RIC SAMPLE"]),
+            (25_000, ["ric sample", "RIC SAMPLE"]),
+            (1_500, ["lyric samp", "LYRIC SAMP"]),
+            (1_500, ["lyric samp", "LYRIC SAMP"]),
+        ] {
+            let text = cache.pair(
+                LyricSurface::Compact,
+                &lines,
+                position,
+                false,
+                10,
+                &theme,
+                LyricOptions {
+                    word_lyrics,
+                    translation: true,
+                },
+            );
+            let actual: Vec<String> = text
+                .lines
+                .iter()
+                .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect())
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "position={position}, word_lyrics={word_lyrics}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -843,51 +861,81 @@ fn cache_invalidates_in_place_text_translation_and_word_timing() {
 }
 
 #[test]
-fn cache_preserves_clipping_scroll_dwell_and_seek_output() {
+fn yrc_scroll_uses_sung_characters_and_holds_during_word_gaps() {
     let lines = vec![LyricLine {
         start_ms: 1_000,
-        end_ms: Some(20_000),
-        text: "你好世界AB".into(),
-        words: Vec::new(),
-        translation: Some("translation".into()),
+        end_ms: Some(31_000),
+        text: "lyric sample".into(),
+        words: vec![
+            LyricWord {
+                text: "ly".into(),
+                start_ms: 1_000,
+                end_ms: 3_000,
+            },
+            LyricWord {
+                text: "ric sample".into(),
+                start_ms: 9_000,
+                end_ms: 19_000,
+            },
+        ],
+        translation: Some("LYRIC SAMPLE".into()),
     }];
-    let options = LyricOptions {
-        word_lyrics: false,
-        translation: true,
-    };
-    let mut cache = LyricRenderCache::default();
-    for (position, seeking, width) in [
-        (0, false, 5),
-        (1_000, false, 5),
-        (1_599, false, 5),
-        (1_800, false, 5),
-        (3_000, false, 5),
-        (1_000, true, 3),
-    ] {
-        let expected = render_pair(&lines, position, width, &theme(), options);
-        let actual = cache.pair(
-            LyricSurface::SmallWindow,
-            &lines,
-            position,
-            seeking,
-            width,
-            &theme(),
-            options,
-        );
-        assert_eq!(actual.lines, expected);
-        if position == 1_800 {
-            assert_eq!(
-                actual.lines[0]
-                    .spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>(),
-                " 好世"
+    for word_lyrics in [false, true] {
+        for (position, expected) in [
+            (3_000, "lyric samp"),
+            (8_999, "lyric samp"),
+            (12_999, "lyric samp"),
+            (13_000, "ric sample"),
+            (30_000, "ric sample"),
+            (1_500, "lyric samp"),
+        ] {
+            let rows = render_pair(
+                &lines,
+                position,
+                10,
+                &theme(),
+                LyricOptions {
+                    word_lyrics,
+                    translation: true,
+                },
             );
+            let text: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+            let translation: String = rows[1].spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(text, expected, "position={position}");
+            assert_eq!(translation, expected.to_uppercase());
         }
     }
-    assert!(cache.frames.last().unwrap().key.seeking);
-    assert!(cache.frames.len() <= 2);
+}
+
+#[test]
+fn segmented_scroll_clips_wide_characters_without_drifting_or_looping() {
+    let lines = vec![LyricLine {
+        start_ms: 1_000,
+        end_ms: Some(5_000),
+        text: "你好世界AB".into(),
+        words: Vec::new(),
+        translation: None,
+    }];
+    for (position, expected) in [
+        (1_000, "你好"),
+        (2_999, "你好"),
+        (3_000, " 界AB"),
+        (20_000, " 界AB"),
+        (1_500, "你好"),
+    ] {
+        let rows = render_pair(
+            &lines,
+            position,
+            5,
+            &theme(),
+            LyricOptions {
+                word_lyrics: true,
+                translation: false,
+            },
+        );
+        let text: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, expected);
+    }
 }
 
 #[test]

@@ -3,6 +3,12 @@
 //! The host overlay, the fullscreen lyric list, the compact visualizer strip
 //! and the small-window lyrics all call into this module. Geometry stays owned
 //! by each surface; colors, timing, clipping and horizontal scrolling do not.
+//! Overflowing current rows use held playback phases instead of a cyclic ticker.
+//! The viewport count divides progress into equal phases, with overlapping
+//! viewports spanning from the start to the end. YRC uses sung character
+//! progress, preserving word gaps; LRC uses existing line-time interpolation.
+//! Original and translation share progress, independent of word highlighting.
+//! Untimed text stays at the start; completed lyrics stay at the final phase.
 
 use crate::lyrics::{LyricLine, snapshot};
 use crate::ui::theme::Theme;
@@ -404,7 +410,8 @@ fn render_current<'a>(
 
     let total = spans_width(&spans);
     if total > usize::from(width) && width > 0 {
-        let offset = scroll_offset(total, usize::from(width), line.start_ms, position_ms);
+        let progress = scroll_progress(line, position_ms, line_progress);
+        let offset = scroll_offset(total, usize::from(width), progress);
         spans = clip_spans(&spans, offset, usize::from(width));
     }
     Line::from(spans)
@@ -546,7 +553,8 @@ fn render_translation_current<'a>(
 
     let total = spans_width(&spans);
     if total > usize::from(width) {
-        let offset = scroll_offset(total, usize::from(width), line.start_ms, position_ms);
+        let progress = scroll_progress(line, position_ms, line_progress);
+        let offset = scroll_offset(total, usize::from(width), progress);
         spans = clip_spans(&spans, offset, usize::from(width));
     }
     Line::from(spans)
@@ -589,32 +597,44 @@ fn ease_in_out(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn scroll_offset(
-    total_width: usize,
-    viewport: usize,
-    line_start_ms: u64,
-    position_ms: u64,
-) -> usize {
-    let max_offset = total_width.saturating_sub(viewport);
-    if max_offset == 0 || position_ms <= line_start_ms {
+fn scroll_progress(line: &LyricLine, position_ms: u64, line_progress: f32) -> f32 {
+    if line.is_untimed() {
+        return 0.0;
+    }
+    if line.words.is_empty() {
+        return line_progress;
+    }
+
+    let mut total = 0usize;
+    let mut completed = 0.0;
+    for word in &line.words {
+        let count = word.text.chars().count();
+        total += count;
+        let progress = if position_ms >= word.end_ms {
+            1.0
+        } else if position_ms <= word.start_ms {
+            0.0
+        } else {
+            (position_ms - word.start_ms) as f32 / (word.end_ms - word.start_ms) as f32
+        };
+        completed += count as f32 * progress;
+    }
+    if total == 0 {
+        0.0
+    } else {
+        completed / total as f32
+    }
+}
+
+fn scroll_offset(total_width: usize, viewport: usize, progress: f32) -> usize {
+    if viewport == 0 || total_width <= viewport {
         return 0;
     }
 
-    // Five cells per second, with a short dwell at both ends. The cycle is
-    // driven by playback time, so pausing freezes it and seeking re-bases it.
-    const CELL_MS: u64 = 200;
-    const START_DWELL_MS: u64 = 600;
-    const END_DWELL_MS: u64 = 600;
-    let travel_ms = max_offset as u64 * CELL_MS;
-    let cycle = START_DWELL_MS + travel_ms + END_DWELL_MS;
-    let elapsed = (position_ms - line_start_ms) % cycle;
-    if elapsed < START_DWELL_MS {
-        0
-    } else if elapsed < START_DWELL_MS + travel_ms {
-        (((elapsed - START_DWELL_MS) / CELL_MS) as usize).min(max_offset)
-    } else {
-        max_offset
-    }
+    let stages = total_width.div_ceil(viewport);
+    let stage = ((progress.clamp(0.0, 1.0) * stages as f32) as usize).min(stages - 1);
+    let max_offset = total_width - viewport;
+    (max_offset as u128 * stage as u128 / (stages - 1) as u128) as usize
 }
 
 fn clip_spans<'a>(spans: &[Span<'a>], offset: usize, width: usize) -> Vec<Span<'a>> {
