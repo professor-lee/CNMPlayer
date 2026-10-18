@@ -102,7 +102,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - 收藏 / 取消收藏：全屏页与折叠播放栏都可操作
 - 循环模式：顺序 → 随机 → 列表循环 → 单曲循环
 - 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷
-- Linux 媒体控制（MPRIS，播放器名 `cnmplayer`），包含元数据与封面
+- Linux 媒体控制（MPRIS，总线后缀 `cnmplayer`），包含元数据与封面
 
 ### 下载
 
@@ -239,6 +239,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `lyric_frame_divisor` | `2` | 歌词动画采样倍率（基于 `ui_fps`，1–8）；不改变重绘频率 |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
+| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer` |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |
 | `download_audio_quality` | `exhigh` | 下载音质：与 `audio_quality` 同一套可选值，同样按 VIP 权限放开 |

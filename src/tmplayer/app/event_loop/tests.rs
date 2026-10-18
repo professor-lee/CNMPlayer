@@ -82,6 +82,8 @@ fn missing_pcm_releases_scope_without_changing_playback_state() {
 #[test]
 fn every_settings_child_returns_to_the_settings_modal() {
     for child in [
+        Overlay::GeneralSettingsModal,
+        Overlay::DownloadSettingsModal,
         Overlay::BarSettingsModal,
         Overlay::LyricsSettingsModal,
         Overlay::HelpModal,
@@ -93,6 +95,14 @@ fn every_settings_child_returns_to_the_settings_modal() {
             "{child:?} 应该回设置弹窗"
         );
     }
+    assert_eq!(
+        settings_parent(Overlay::MprisNameEditModal),
+        Some(Overlay::GeneralSettingsModal)
+    );
+    assert_eq!(
+        settings_parent(Overlay::DownloadPathEditModal),
+        Some(Overlay::DownloadSettingsModal)
+    );
 
     // 设置弹窗本身与 EQ/播放列表没有上一级。
     assert_eq!(settings_parent(Overlay::SettingsModal), None);
@@ -368,4 +378,152 @@ fn runtime_snapshot_resets_position_anchor_when_position_is_unchanged() {
         app.position_anchor_at > before + Duration::from_secs(4),
         "an unchanged position snapshot must still refresh the anchor"
     );
+}
+
+#[compio::test]
+async fn name_edit_cancels_to_general_then_root_without_saving() {
+    let mut app = AppState::new(
+        Config::default(),
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::En,
+    );
+    let mut host = TransitionHost {
+        wake: crate::render::wake::WakeSignal::default(),
+    };
+    let layout = UiLayout::default();
+    app.overlay = Overlay::SettingsModal;
+    app.settings_selected = 2;
+    handle_action(&mut app, &mut host, Action::Confirm, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::GeneralSettingsModal);
+    handle_action(&mut app, &mut host, Action::ModalUp, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.general_settings_selected, 5);
+    handle_action(&mut app, &mut host, Action::Confirm, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::MprisNameEditModal);
+    assert_eq!(app.mpris_name_edit.as_ref().unwrap().buffer, "");
+    handle_action(&mut app, &mut host, Action::TextChar('t'), &layout)
+        .await
+        .unwrap();
+    handle_action(
+        &mut app,
+        &mut host,
+        Action::MouseScroll {
+            col: 0,
+            row: 0,
+            forward: true,
+        },
+        &layout,
+    )
+    .await
+    .unwrap();
+    assert_eq!(app.general_settings_selected, 5);
+    handle_action(&mut app, &mut host, Action::CloseOverlay, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::GeneralSettingsModal);
+    assert!(app.mpris_name_edit.is_none());
+    assert!(app.config.mpris_name.is_empty());
+    handle_action(&mut app, &mut host, Action::CloseOverlay, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::SettingsModal);
+    handle_action(&mut app, &mut host, Action::CloseOverlay, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::None);
+}
+
+#[compio::test]
+async fn name_editor_unicode_limit_applies_at_home_and_allows_replacement() {
+    let mut app = AppState::new(
+        Config::default(),
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::En,
+    );
+    app.config.mpris_name = "曲".repeat(256);
+    app.overlay = Overlay::GeneralSettingsModal;
+    app.general_settings_selected = 5;
+    let mut host = TransitionHost {
+        wake: crate::render::wake::WakeSignal::default(),
+    };
+    let layout = UiLayout::default();
+    handle_action(&mut app, &mut host, Action::ModalLeft, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::GeneralSettingsModal);
+    handle_action(&mut app, &mut host, Action::ModalRight, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::MprisNameEditModal);
+    handle_action(&mut app, &mut host, Action::TextHome, &layout)
+        .await
+        .unwrap();
+    handle_action(&mut app, &mut host, Action::TextChar('新'), &layout)
+        .await
+        .unwrap();
+    assert_eq!(
+        app.mpris_name_edit.as_ref().unwrap().buffer,
+        "曲".repeat(256)
+    );
+    handle_action(&mut app, &mut host, Action::TextDelete, &layout)
+        .await
+        .unwrap();
+    handle_action(&mut app, &mut host, Action::TextChar('新'), &layout)
+        .await
+        .unwrap();
+    assert!(
+        app.mpris_name_edit
+            .as_ref()
+            .unwrap()
+            .buffer
+            .starts_with("新曲")
+    );
+    assert_eq!(
+        app.mpris_name_edit.as_ref().unwrap().buffer.chars().count(),
+        256
+    );
+    handle_action(&mut app, &mut host, Action::CloseOverlay, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.config.mpris_name, "曲".repeat(256));
+    handle_action(&mut app, &mut host, Action::CloseSettings, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::None);
+}
+
+#[compio::test]
+async fn root_settings_navigation_wraps_across_nine_rows() {
+    let mut app = AppState::new(
+        Config::default(),
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::En,
+    );
+    let mut host = TransitionHost {
+        wake: crate::render::wake::WakeSignal::default(),
+    };
+    let layout = UiLayout::default();
+    handle_action(&mut app, &mut host, Action::OpenSettingsModal, &layout)
+        .await
+        .unwrap();
+    handle_action(&mut app, &mut host, Action::ModalUp, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.settings_selected, 8);
+    handle_action(&mut app, &mut host, Action::Confirm, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.overlay, Overlay::AboutModal);
+    handle_action(&mut app, &mut host, Action::CloseOverlay, &layout)
+        .await
+        .unwrap();
+    handle_action(&mut app, &mut host, Action::ModalDown, &layout)
+        .await
+        .unwrap();
+    assert_eq!(app.settings_selected, 0);
 }

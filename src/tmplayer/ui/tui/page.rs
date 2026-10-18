@@ -5,7 +5,7 @@ use super::modals::download::render_download_settings_modal;
 use super::modals::equalizer::render_eq_modal;
 use super::modals::help::render_help_modal;
 use super::modals::lyrics::render_lyrics_settings_modal;
-use super::modals::settings::render_settings_modal;
+use super::modals::settings::{render_general_settings_modal, render_settings_modal};
 use super::text::lang_text;
 use crate::render::cover_pipeline::{CoverKey, CoverPipeline, ImagePhase};
 use crate::render::drawer::{self, translated_clip};
@@ -297,6 +297,9 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
         match app.overlay {
             Overlay::SettingsModal => {
                 render_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::GeneralSettingsModal | Overlay::MprisNameEditModal => {
+                render_general_settings_modal(f, size, app, &mut layout_out.modal_rows)
             }
             Overlay::BarSettingsModal => {
                 render_bar_settings_modal(f, size, app, &mut layout_out.modal_rows)

@@ -130,6 +130,14 @@ impl App {
             return;
         }
 
+        // Inline text owns input before global shortcuts (including Ctrl+K).
+        if self.settings.text_editing()
+            && let Some(overlay) = self.overlay
+        {
+            self.handle_overlay_key(overlay, key).await;
+            return;
+        }
+
         if self.page != Page::Login
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
@@ -207,6 +215,9 @@ impl App {
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
             self.input.player_bar_progress_drag = None;
             self.page_lyrics_release();
+            return;
+        }
+        if self.settings.text_editing() {
             return;
         }
 
@@ -544,6 +555,7 @@ impl App {
     async fn handle_overlay_key(&mut self, overlay: Overlay, key: KeyEvent) {
         match overlay {
             Overlay::Settings => self.handle_settings_root_key(key).await,
+            Overlay::SettingsGeneral => self.handle_settings_general_key(key).await,
             Overlay::SettingsPlayback => self.handle_settings_playback_key(key),
             Overlay::SettingsKeybinds => self.handle_settings_keybinds_key(key),
             Overlay::SettingsLyrics => self.handle_settings_lyrics_key(key),
@@ -832,6 +844,7 @@ impl App {
     pub(crate) fn close_overlay(&mut self) {
         self.overlay = None;
         self.settings.keybind_rebinding = None;
+        self.settings.mpris_name_edit = None;
         self.input.search_motion.set(
             false,
             Instant::now(),

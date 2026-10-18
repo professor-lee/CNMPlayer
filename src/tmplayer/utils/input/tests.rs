@@ -72,6 +72,8 @@ fn esc_in_settings_submodals_closes_the_modal() {
 
     for overlay in [
         Overlay::SettingsModal,
+        Overlay::GeneralSettingsModal,
+        Overlay::MprisNameEditModal,
         Overlay::BarSettingsModal,
         Overlay::LyricsSettingsModal,
         Overlay::DownloadSettingsModal,
@@ -89,4 +91,70 @@ fn esc_in_settings_submodals_closes_the_modal() {
 
     // 没有弹窗时 Esc 才是退出全屏页。
     assert_eq!(map_key(esc(), Overlay::None, &config), Action::Quit);
+}
+
+#[test]
+fn settings_text_edit_keys_do_not_trigger_global_shortcuts() {
+    let config = Config::default();
+    for overlay in [Overlay::DownloadPathEditModal, Overlay::MprisNameEditModal] {
+        for (key, action) in [
+            (KeyCode::Char('t'), Action::TextChar('t')),
+            (KeyCode::Char('曲'), Action::TextChar('曲')),
+            (KeyCode::Delete, Action::TextDelete),
+            (KeyCode::Backspace, Action::TextBackspace),
+            (KeyCode::Home, Action::TextHome),
+            (KeyCode::End, Action::TextEnd),
+            (KeyCode::Left, Action::ModalLeft),
+            (KeyCode::Right, Action::ModalRight),
+            (KeyCode::Enter, Action::Confirm),
+        ] {
+            assert_eq!(
+                map_key(KeyEvent::new(key, KeyModifiers::NONE), overlay, &config),
+                action
+            );
+        }
+        assert_eq!(
+            map_key(
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+                overlay,
+                &config
+            ),
+            Action::None
+        );
+        assert_eq!(
+            map_key(
+                KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE),
+                overlay,
+                &config
+            ),
+            Action::None
+        );
+    }
+}
+
+#[test]
+fn general_settings_tab_navigation_and_toggle_close_do_not_leak() {
+    let config = Config::default();
+    for (key, action) in [
+        (KeyCode::Tab, Action::ModalDown),
+        (KeyCode::BackTab, Action::ModalUp),
+        (KeyCode::Char('t'), Action::CloseSettings),
+    ] {
+        assert_eq!(
+            map_key(
+                KeyEvent::new(key, KeyModifiers::NONE),
+                Overlay::GeneralSettingsModal,
+                &config
+            ),
+            action
+        );
+    }
+    assert_eq!(
+        map_key(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
+            Overlay::MprisNameEditModal,
+            &config
+        ),
+        Action::None
+    );
 }

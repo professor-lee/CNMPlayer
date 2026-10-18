@@ -22,7 +22,9 @@ use std::time::Instant;
 /// 下载路径输入框的长度上限（字符）。
 const DOWNLOAD_PATH_MAX_CHARS: usize = 4096;
 
-const SETTINGS_ROOT_ITEMS: usize = 13;
+const SETTINGS_ROOT_ITEMS: usize = 9;
+pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 6;
+const MPRIS_NAME_MAX_CHARS: usize = 256;
 
 const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 
@@ -61,13 +63,61 @@ pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 
 pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 22;
 
-/// 下载路径行的行内编辑状态（光标按字符计数，横向窗口按显示列算）。
+/// 设置行的文本编辑状态（光标按字符计数，横向窗口按显示列算）。
 #[derive(Debug, Clone, Default)]
-pub(crate) struct DownloadPathEdit {
+pub(crate) struct SettingsTextEdit {
     pub(crate) buffer: String,
     pub(crate) cursor: usize,
     /// 可见窗口左边界所在的显示列：只在光标撞到窗口边界时才挪动。
     pub(crate) window_col: usize,
+}
+
+impl SettingsTextEdit {
+    pub(crate) fn new(buffer: String) -> Self {
+        let cursor = char_count(&buffer);
+        Self {
+            buffer,
+            cursor,
+            window_col: 0,
+        }
+    }
+
+    pub(crate) fn insert(&mut self, ch: char, max_chars: usize) {
+        if ch.is_control() || char_count(&self.buffer) >= max_chars {
+            return;
+        }
+        let index = byte_index_for_char(&self.buffer, self.cursor);
+        self.buffer.insert(index, ch);
+        self.cursor += 1;
+    }
+
+    pub(crate) fn backspace(&mut self) {
+        if self.cursor > 0 {
+            let index = byte_index_for_char(&self.buffer, self.cursor - 1);
+            self.buffer.remove(index);
+            self.cursor -= 1;
+        }
+    }
+
+    pub(crate) fn delete(&mut self) {
+        if self.cursor < char_count(&self.buffer) {
+            let index = byte_index_for_char(&self.buffer, self.cursor);
+            self.buffer.remove(index);
+        }
+    }
+
+    pub(crate) fn move_cursor(&mut self, delta: i32) {
+        self.cursor = (self.cursor as i64 + i64::from(delta))
+            .clamp(0, char_count(&self.buffer) as i64) as usize;
+    }
+
+    pub(crate) fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub(crate) fn end(&mut self) {
+        self.cursor = char_count(&self.buffer);
+    }
 }
 
 fn cycle_bar_number(current: BarNumber, delta: i32) -> BarNumber {
@@ -111,6 +161,9 @@ impl App {
         col: u16,
         row: u16,
     ) {
+        if self.settings.text_editing() {
+            return;
+        }
         let Some((_, index)) = self
             .settings
             .item_hits
@@ -128,6 +181,10 @@ impl App {
                 if self.is_double_settings_click(overlay, index) {
                     self.activate_settings_root_item().await;
                 }
+            }
+            Overlay::SettingsGeneral => {
+                self.settings.general_selected = index;
+                self.activate_settings_general_item(1).await;
             }
             Overlay::SettingsPlayback => {
                 self.settings.playback_selected = index;
@@ -160,6 +217,9 @@ impl App {
 
     /// 设置弹窗滚轮：上下移动选中行（与 Up/Down 同效）。
     pub(super) fn scroll_settings_modal(&mut self, forward: bool) {
+        if self.settings.text_editing() {
+            return;
+        }
         let step = |selected: &mut usize, count: usize| {
             if count == 0 {
                 return;
@@ -181,6 +241,9 @@ impl App {
 
         match self.overlay {
             Some(Overlay::Settings) => step(&mut self.settings.selected, SETTINGS_ROOT_ITEMS),
+            Some(Overlay::SettingsGeneral) => {
+                step(&mut self.settings.general_selected, SETTINGS_GENERAL_ITEMS)
+            }
             Some(Overlay::SettingsPlayback) => step(
                 &mut self.settings.playback_selected,
                 SETTINGS_PLAYBACK_ITEMS,
@@ -217,22 +280,91 @@ impl App {
     /// 设置根页选中项的执行（键盘 Enter 与双击共用）。
     async fn activate_settings_root_item(&mut self) {
         match self.settings.selected {
-            0..=3 => self.apply_settings_root_delta(1).await,
-            4 => {
+            0..=1 => self.apply_settings_root_delta(1).await,
+            2 => {
+                self.settings.general_selected = 0;
+                self.settings.general_scroll = 0;
+                self.settings.mpris_name_edit = None;
+                self.overlay = Some(Overlay::SettingsGeneral);
+            }
+            3 => {
                 self.settings.playback_selected = 0;
                 self.overlay = Some(Overlay::SettingsPlayback);
             }
-            5 => self.open_keybind_settings(),
-            6 => {
+            4 => self.open_keybind_settings(),
+            5 => {
                 self.settings.lyrics_selected = 0;
                 self.overlay = Some(Overlay::SettingsLyrics);
             }
-            7..=9 => self.apply_settings_root_delta(1).await,
-            10 => self.open_download_settings(),
-            11 => self.logout_to_login().await,
-            12 => {
-                self.overlay = Some(Overlay::SettingsAbout);
+            6 => self.open_download_settings(),
+            7 => self.logout_to_login().await,
+            8 => self.overlay = Some(Overlay::SettingsAbout),
+            _ => {}
+        }
+    }
+
+    async fn activate_settings_general_item(&mut self, delta: i32) {
+        if self.settings.general_selected == 5 {
+            self.settings.mpris_name_edit =
+                Some(SettingsTextEdit::new(self.config.mpris_name.clone()));
+        } else {
+            self.apply_settings_general_delta(delta).await;
+        }
+    }
+
+    pub(super) async fn handle_settings_general_key(&mut self, key: KeyEvent) {
+        if let Some(edit) = self.settings.mpris_name_edit.as_mut() {
+            match key.code {
+                KeyCode::Esc => self.settings.mpris_name_edit = None,
+                KeyCode::Enter => {
+                    let edit = self.settings.mpris_name_edit.take().unwrap();
+                    let value = if edit.buffer.trim().is_empty() {
+                        String::new()
+                    } else {
+                        edit.buffer
+                    };
+                    if value != self.config.mpris_name {
+                        self.config.mpris_name = value;
+                        self.persist_config();
+                        self.sync_mpris_exposure();
+                    }
+                }
+                KeyCode::Backspace => edit.backspace(),
+                KeyCode::Delete => edit.delete(),
+                KeyCode::Left => edit.move_cursor(-1),
+                KeyCode::Right => edit.move_cursor(1),
+                KeyCode::Home => edit.home(),
+                KeyCode::End => edit.end(),
+                KeyCode::Char(ch)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    edit.insert(ch, MPRIS_NAME_MAX_CHARS);
+                }
+                _ => {}
             }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => self.overlay = Some(Overlay::Settings),
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
+                self.close_overlay();
+            }
+            KeyCode::Up | KeyCode::BackTab => {
+                self.settings.general_selected =
+                    (self.settings.general_selected + SETTINGS_GENERAL_ITEMS - 1)
+                        % SETTINGS_GENERAL_ITEMS;
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.settings.general_selected =
+                    (self.settings.general_selected + 1) % SETTINGS_GENERAL_ITEMS;
+            }
+            KeyCode::Left => self.apply_settings_general_delta(-1).await,
+            KeyCode::Right | KeyCode::Enter => self.activate_settings_general_item(1).await,
             _ => {}
         }
     }
@@ -424,57 +556,38 @@ impl App {
     }
 
     pub(super) fn download_path_edit_insert(&mut self, ch: char) {
-        let Some(edit) = self.settings.download_path_edit.as_mut() else {
-            return;
-        };
-        if edit.cursor >= DOWNLOAD_PATH_MAX_CHARS {
-            return;
+        if let Some(edit) = self.settings.download_path_edit.as_mut() {
+            edit.insert(ch, DOWNLOAD_PATH_MAX_CHARS);
         }
-        let index = byte_index_for_char(&edit.buffer, edit.cursor);
-        edit.buffer.insert(index, ch);
-        edit.cursor += 1;
     }
 
     pub(super) fn download_path_edit_backspace(&mut self) {
-        let Some(edit) = self.settings.download_path_edit.as_mut() else {
-            return;
-        };
-        if edit.cursor == 0 {
-            return;
+        if let Some(edit) = self.settings.download_path_edit.as_mut() {
+            edit.backspace();
         }
-        let index = byte_index_for_char(&edit.buffer, edit.cursor - 1);
-        edit.buffer.remove(index);
-        edit.cursor -= 1;
     }
 
     fn download_path_edit_delete(&mut self) {
-        let Some(edit) = self.settings.download_path_edit.as_mut() else {
-            return;
-        };
-        if edit.cursor >= char_count(&edit.buffer) {
-            return;
+        if let Some(edit) = self.settings.download_path_edit.as_mut() {
+            edit.delete();
         }
-        let index = byte_index_for_char(&edit.buffer, edit.cursor);
-        edit.buffer.remove(index);
     }
 
     pub(super) fn download_path_edit_move(&mut self, delta: i32) {
-        let Some(edit) = self.settings.download_path_edit.as_mut() else {
-            return;
-        };
-        let last = char_count(&edit.buffer) as i32;
-        edit.cursor = (edit.cursor as i32 + delta).clamp(0, last) as usize;
+        if let Some(edit) = self.settings.download_path_edit.as_mut() {
+            edit.move_cursor(delta);
+        }
     }
 
     fn download_path_edit_home(&mut self) {
         if let Some(edit) = self.settings.download_path_edit.as_mut() {
-            edit.cursor = 0;
+            edit.home();
         }
     }
 
     fn download_path_edit_end(&mut self) {
         if let Some(edit) = self.settings.download_path_edit.as_mut() {
-            edit.cursor = char_count(&edit.buffer);
+            edit.end();
         }
     }
 
@@ -757,28 +870,34 @@ impl App {
                 self.config.transparent_background = !self.config.transparent_background;
                 self.persist_config();
             }
-            2 if delta != 0 => {
+            _ => {}
+        }
+    }
+
+    async fn apply_settings_general_delta(&mut self, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+        match self.settings.general_selected {
+            0 => {
                 self.config.language = match self.config.language {
                     Language::Zh => Language::En,
                     Language::En => Language::Zh,
                 };
                 self.persist_config();
             }
-            3 if delta != 0 => {
+            1 => {
                 let next_protocol = self.config.graphics_protocol.cycle(delta);
                 if next_protocol != self.config.graphics_protocol {
                     self.config.graphics_protocol = next_protocol;
                     self.persist_config();
                 }
             }
-            6 => {
-                // “歌词浮窗...”是可进入项：左右键不改变配置（与播放设置/按键绑定一致）
-            }
-            7 if delta != 0 => {
+            2 => {
                 self.config.show_hints = !self.config.show_hints;
                 self.persist_config();
             }
-            8 if delta != 0 => {
+            3 => {
                 let was_small_context = self.is_small_window_context();
                 self.config.small_window_display = !self.config.small_window_display;
                 self.persist_config();
@@ -787,7 +906,7 @@ impl App {
                 }
                 self.sync_terminal_size();
             }
-            9 if delta != 0 => {
+            4 => {
                 self.config.home_more_recommend = !self.config.home_more_recommend;
                 self.persist_config();
                 if self.page == Page::Home
@@ -860,21 +979,31 @@ impl App {
 #[derive(Default)]
 pub(crate) struct SettingsController {
     pub(crate) selected: usize,
+    pub(crate) general_selected: usize,
+    pub(crate) general_scroll: usize,
+    pub(crate) mpris_name_edit: Option<SettingsTextEdit>,
     pub(crate) playback_selected: usize,
     pub(crate) lyrics_selected: usize,
     pub(crate) keybind_selected: usize,
     pub(crate) keybind_rebinding: Option<usize>,
     pub(crate) keybind_scroll: usize,
     pub(crate) download_selected: usize,
-    pub(crate) download_path_edit: Option<DownloadPathEdit>,
+    pub(crate) download_path_edit: Option<SettingsTextEdit>,
     pub(crate) download_reset_armed: bool,
     pub(super) item_hits: Vec<(HitRect, usize)>,
     pub(super) last_click: Option<(Instant, Overlay, usize)>,
 }
 
 impl SettingsController {
+    pub(crate) fn text_editing(&self) -> bool {
+        self.download_path_edit.is_some() || self.mpris_name_edit.is_some()
+    }
+
     pub(super) fn reset_navigation(&mut self) {
         self.selected = 0;
+        self.general_selected = 0;
+        self.general_scroll = 0;
+        self.mpris_name_edit = None;
         self.playback_selected = 0;
         self.lyrics_selected = 0;
         self.keybind_selected = 0;
@@ -891,12 +1020,7 @@ impl SettingsController {
     }
 
     pub(super) fn begin_download_path_edit(&mut self, value: String) {
-        let cursor = value.chars().count();
-        self.download_path_edit = Some(DownloadPathEdit {
-            buffer: value,
-            cursor,
-            window_col: 0,
-        });
+        self.download_path_edit = Some(SettingsTextEdit::new(value));
     }
 
     pub(super) fn cancel_download_path_edit(&mut self) {

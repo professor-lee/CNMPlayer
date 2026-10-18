@@ -174,6 +174,8 @@ pub enum Overlay {
     None,
     Playlist,
     SettingsModal,
+    GeneralSettingsModal,
+    MprisNameEditModal,
     BarSettingsModal,
     LyricsSettingsModal,
     /// 「下载设置」页：音质 / 路径 / 恢复默认。
@@ -219,6 +221,9 @@ pub struct AppState {
     pub overlay: Overlay,
 
     pub settings_selected: usize,
+    pub general_settings_selected: usize,
+    pub general_settings_scroll: usize,
+    pub mpris_name_edit: Option<crate::app::settings_controller::SettingsTextEdit>,
     pub bar_settings_selected: usize,
     pub lyrics_settings_selected: usize,
     pub help_keybind_selected: usize,
@@ -234,7 +239,7 @@ pub struct AppState {
     /// 「下载设置」页的选中行 / 待确认态 / 路径行编辑状态。
     pub download_settings_selected: usize,
     pub download_reset_armed: bool,
-    pub download_path_edit: Option<crate::app::settings_controller::DownloadPathEdit>,
+    pub download_path_edit: Option<crate::app::settings_controller::SettingsTextEdit>,
     /// 解析后的下载目录（`None` = 不可用，设置页除路径行外全部灰置）。
     pub download_root: Option<PathBuf>,
 
@@ -341,6 +346,9 @@ impl AppState {
             cover_render_inflight: RefCell::new(HashSet::new()),
             overlay: Overlay::None,
             settings_selected: 0,
+            general_settings_selected: 0,
+            general_settings_scroll: 0,
+            mpris_name_edit: None,
             bar_settings_selected: 0,
             lyrics_settings_selected: 0,
             help_keybind_selected: 0,
@@ -633,6 +641,7 @@ impl AppState {
         if self.overlay == Overlay::HelpModal {
             self.close_overlay();
         } else {
+            self.close_overlay();
             self.help_keybind_selected = self.help_keybind_selected.min(
                 crate::tmplayer::ui::tui::modals::help::help_item_count(self).saturating_sub(1),
             );
@@ -643,6 +652,10 @@ impl AppState {
 
     pub fn close_overlay(&mut self) {
         self.overlay = Overlay::None;
+        self.download_path_edit = None;
+        self.mpris_name_edit = None;
+        self.download_reset_armed = false;
+        self.last_mouse_click = None;
     }
 }
 

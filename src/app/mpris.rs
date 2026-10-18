@@ -198,7 +198,10 @@ impl App {
     pub(super) fn sync_mpris_exposure(&mut self) {
         let identity_changed = self.mpris_name.update(
             &self.config.mpris_name,
-            self.playback.now_playing.as_ref().map(|track| track.title.as_str()),
+            self.playback
+                .now_playing
+                .as_ref()
+                .map(|track| track.title.as_str()),
         );
         let now = Instant::now();
         let signature = self

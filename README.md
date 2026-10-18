@@ -102,7 +102,7 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 - Like / unlike from the fullscreen page and from the collapsed player bar
 - Repeat modes: sequence → shuffle → loop all → loop one
 - Playlist playback prefetches the next page when entering the last three loaded tracks, and waits for an unfinished page instead of stopping or wrapping early
-- Linux media control (MPRIS, player name `cnmplayer`) with metadata and cover art
+- Linux media control (MPRIS, bus suffix `cnmplayer`) with metadata and cover art
 
 ### Downloads
 
@@ -239,6 +239,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `lyric_frame_divisor` | `2` | Lyric animation sampling divisor on top of `ui_fps` (1–8); does not change the redraw rate |
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
+| `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer` |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
 | `audio_quality` | `exhigh` | `standard`, `higher`, `exhigh`, `lossless`, `hires`, `jyeffect`, `sky`, `dolby`, `jymaster`; clamped to `exhigh` without VIP |
 | `download_audio_quality` | `exhigh` | Download quality: same option set as `audio_quality`, VIP-aware as well |

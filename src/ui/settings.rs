@@ -28,6 +28,7 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
 
     let title = match app.overlay {
         Some(Overlay::Settings) => l(app, " 设置 ", " Settings "),
+        Some(Overlay::SettingsGeneral) => l(app, " 通用设置 ", " General Settings "),
         Some(Overlay::SettingsPlayback) => l(app, " 播放设置 ", " Playback Settings "),
         Some(Overlay::SettingsKeybinds) => l(app, " 按键绑定 ", " Keybinds "),
         Some(Overlay::SettingsLyrics) => l(app, " 歌词 ", " Lyrics "),
@@ -52,6 +53,7 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
     });
 
     match app.overlay {
+        Some(Overlay::SettingsGeneral) => draw_general_settings(frame, app, inner),
         Some(Overlay::SettingsPlayback) => draw_playback_settings(frame, app, inner),
         Some(Overlay::SettingsKeybinds) => draw_keybind_settings(frame, app, inner),
         Some(Overlay::SettingsLyrics) => draw_lyrics_settings(frame, app, inner),
@@ -81,37 +83,10 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             l(app, "背景透明", "Transparent Background"),
             on_off(app, app.config.transparent_background)
         ),
-        format!(
-            "{}: {}",
-            l(app, "语言", "Language"),
-            match app.config.language {
-                Language::Zh => l(app, "中文", "Chinese"),
-                Language::En => "English",
-            }
-        ),
-        format!(
-            "{}: {}",
-            l(app, "图像协议", "Image Protocol"),
-            app.config.graphics_protocol.display_name()
-        ),
+        format!("{}...", l(app, "通用设置", "General Settings")),
         format!("{}...", l(app, "播放设置", "Playback Settings")),
         format!("{}...", l(app, "按键绑定", "Keybinds")),
         format!("{}...", l(app, "歌词设置", "Lyrics Settings")),
-        format!(
-            "{}: {}",
-            l(app, "显示提示", "Show Hints"),
-            on_off(app, app.config.show_hints)
-        ),
-        format!(
-            "{}: {}",
-            l(app, "小窗口显示", "Small Window Display"),
-            on_off(app, app.config.small_window_display)
-        ),
-        format!(
-            "{}: {}",
-            l(app, "主页更多推荐", "More Home Recommendations"),
-            on_off(app, app.config.home_more_recommend)
-        ),
         format!("{}...", l(app, "下载设置", "Download Settings")),
         l(app, "退出登录", "Logout").to_string(),
         "about".to_string(),
@@ -150,8 +125,7 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         rows[2],
     );
 
-    // 命中区与上面的渲染同源：前 10 项在 rows[1] 逐行排布（超高的行会被
-    // Paragraph 裁掉，故只登记放得下的），about 固定在最底一行。
+    // 命中区与渲染同源：可见条目逐行登记，about 固定在最底一行。
     for idx in 0..about_idx {
         if idx as u16 >= rows[1].height {
             break;
@@ -177,6 +151,148 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             about_idx,
         );
     }
+}
+
+fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let surface = app.theme.color_surface();
+    let text_color = app.theme.color_text();
+    let buff = app.theme.color_buff();
+    let accent2 = app.theme.color_accent2();
+    let items = [
+        format!(
+            "{}: {}",
+            l(app, "语言", "Language"),
+            match app.config.language {
+                Language::Zh => l(app, "中文", "Chinese"),
+                Language::En => "English",
+            }
+        ),
+        format!(
+            "{}: {}",
+            l(app, "图像协议", "Image Protocol"),
+            app.config.graphics_protocol.display_name()
+        ),
+        format!(
+            "{}: {}",
+            l(app, "显示提示", "Show Hints"),
+            on_off(app, app.config.show_hints)
+        ),
+        format!(
+            "{}: {}",
+            l(app, "小窗口显示", "Small Window Display"),
+            on_off(app, app.config.small_window_display)
+        ),
+        format!(
+            "{}: {}",
+            l(app, "主页更多推荐", "More Home Recommendations"),
+            on_off(app, app.config.home_more_recommend)
+        ),
+    ];
+    let name_prefix = format!("{}: ", l(app, "MPRIS服务名称", "MPRIS Service Name"));
+    let selected = app.settings.general_selected;
+    let visible = usize::from(rows[1].height);
+    app.settings.general_scroll = scroll_for_focus(
+        app.settings.general_scroll,
+        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
+        visible,
+        selected,
+    );
+    let visible_rows = scrolled_rows(
+        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
+        visible,
+        app.settings.general_scroll,
+    );
+    let lines: Vec<Line> = visible_rows
+        .iter()
+        .map(|&(idx, _)| {
+            let style = if idx == selected {
+                Style::default().fg(accent2).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(text_color)
+            };
+            if idx < items.len() {
+                Line::from(Span::styled(format!("  {}", items[idx]), style))
+            } else {
+                let avail = usize::from(rows[1].width)
+                    .saturating_sub(display_width(&name_prefix) + 2)
+                    .max(1);
+                let spans = if let Some(edit) = app.settings.mpris_name_edit.as_mut() {
+                    text_edit_spans(edit, &name_prefix, avail, style, text_color, buff, surface)
+                } else {
+                    let name = if app.config.mpris_name.trim().is_empty() {
+                        "CNMPlayer"
+                    } else {
+                        &app.config.mpris_name
+                    };
+                    vec![Span::styled(
+                        format!("  {name_prefix}{}", clip_to_display_width(name, avail)),
+                        style,
+                    )]
+                };
+                Line::from(spans)
+            }
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(surface)),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(surface)),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(l(app, "  @play=当前曲名", "  @play=Current Track"))
+            .style(Style::default().fg(app.theme.color_subtext()).bg(surface)),
+        rows[2],
+    );
+    for (idx, offset) in visible_rows {
+        app.push_settings_item_hit(
+            HitRect {
+                x: rows[1].x,
+                y: rows[1].y + offset,
+                width: rows[1].width,
+                height: 1,
+            },
+            idx,
+        );
+    }
+}
+
+fn text_edit_spans(
+    edit: &mut crate::app::settings_controller::SettingsTextEdit,
+    prefix: &str,
+    width: usize,
+    label_style: Style,
+    text_color: ratatui::style::Color,
+    buff: ratatui::style::Color,
+    surface: ratatui::style::Color,
+) -> Vec<Span<'static>> {
+    let caret_col = caret_display_col(&edit.buffer, edit.cursor);
+    edit.window_col = adjust_path_window(edit.window_col, caret_col, width);
+    let (visible, caret) = path_window(&edit.buffer, edit.cursor, width, edit.window_col);
+    let value_style = Style::default().fg(text_color).bg(buff);
+    let head: String = visible.chars().take(caret).collect();
+    let caret_char = visible
+        .chars()
+        .nth(caret)
+        .map(|ch| ch.to_string())
+        .unwrap_or_else(|| " ".to_string());
+    let tail: String = visible.chars().skip(caret + 1).collect();
+    vec![
+        Span::styled(format!("  {prefix}"), label_style.bg(surface)),
+        Span::styled(head, value_style),
+        Span::styled(caret_char, value_style.add_modifier(Modifier::REVERSED)),
+        Span::styled(tail, value_style),
+    ]
 }
 
 fn draw_playback_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
@@ -448,28 +564,7 @@ fn draw_download_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
                     .saturating_sub(display_width(&path_prefix) + 2)
                     .max(1);
                 if let Some(edit) = app.settings.download_path_edit.as_mut() {
-                    // 编辑态：只有**路径值**这一段的底色变 buff（标签保持行样式），
-                    // 光标所在字符反显；窗口只在光标撞到边界时才横向滚动。
-                    let caret_col = caret_display_col(&edit.buffer, edit.cursor);
-                    edit.window_col = adjust_path_window(edit.window_col, caret_col, avail);
-                    let (visible, caret) =
-                        path_window(&edit.buffer, edit.cursor, avail, edit.window_col);
-                    let value_style = Style::default().fg(text_color).bg(buff);
-                    let caret_style = value_style.add_modifier(Modifier::REVERSED);
-                    let head: String = visible.chars().take(caret).collect();
-                    let caret_char = visible
-                        .chars()
-                        .nth(caret)
-                        .map(|ch| ch.to_string())
-                        .unwrap_or_else(|| " ".to_string());
-                    let tail: String = visible.chars().skip(caret + 1).collect();
-                    vec![
-                        // 标签保持 modal 底色（只有路径值段落换成 buff）。
-                        Span::styled(format!("  {path_prefix}"), style.bg(surface)),
-                        Span::styled(head, value_style),
-                        Span::styled(caret_char, caret_style),
-                        Span::styled(tail, value_style),
-                    ]
+                    text_edit_spans(edit, &path_prefix, avail, style, text_color, buff, surface)
                 } else {
                     let clipped = clip_to_display_width(&path_display, avail);
                     vec![Span::styled(format!("  {path_prefix}{clipped}"), style)]
@@ -564,11 +659,20 @@ pub(crate) fn path_window(
             col += w;
             continue;
         }
-        if used + w > width {
-            break;
+        if col < start_col {
+            // A wide glyph cut by the left edge occupies only its remaining cells.
+            // Pad rather than shifting the following text/caret to the right.
+            let remaining = (col + w - start_col).min(width.saturating_sub(used));
+            out.extend(std::iter::repeat_n(' ', remaining));
+            used += remaining;
+            col += w;
+            continue;
         }
         if idx == cursor {
             caret = out.chars().count();
+        }
+        if used + w > width {
+            break;
         }
         out.push(*ch);
         used += w;

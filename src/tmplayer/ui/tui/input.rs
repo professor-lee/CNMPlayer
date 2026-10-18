@@ -6,6 +6,12 @@ use crate::tmplayer::utils::input::Action;
 use ratatui::layout::Rect;
 
 pub fn hit_test(layout: &UiLayout, app: &AppState, col: u16, row: u16) -> Option<Action> {
+    if matches!(
+        app.overlay,
+        Overlay::DownloadPathEditModal | Overlay::MprisNameEditModal
+    ) {
+        return None;
+    }
     // Eq modal consumes clicks first
     if app.overlay == Overlay::EqModal {
         let area = centered_rect(layout.full, 44, 31);
