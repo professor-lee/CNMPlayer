@@ -4,6 +4,8 @@
 //! permanently bypass the configured budget.
 
 use super::streaming::reclaim_orphan_streaming_temp;
+use crate::data::atomic_file::cleanup_orphan_atomic_temps;
+use crate::data::atomic_file::is_atomic_temp_path;
 use crate::data::config::{CacheCleanStrategy, CacheConfig};
 use anyhow::{Context, Result};
 use parking_lot::{Condvar, Mutex};
@@ -199,6 +201,7 @@ fn cleanup(
     remove: impl Fn(&CacheEntry) -> bool,
 ) -> Result<()> {
     cleanup_orphan_streaming_temps(cache_dir)?;
+    cleanup_orphan_atomic_temps(cache_dir)?;
     let mut entries = list_cache_entries(cache_dir)?;
     if matches!(
         policy.clean_strategy,
@@ -252,7 +255,7 @@ fn list_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry>> {
     {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "part") {
+        if path.extension().is_some_and(|ext| ext == "part") || is_atomic_temp_path(&path) {
             continue;
         }
         let metadata = match entry.metadata() {

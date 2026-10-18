@@ -43,6 +43,20 @@ fn concurrent_replacements_use_unique_same_directory_temporaries() {
     let _ = fs::remove_dir_all(dir);
 }
 
+#[test]
+fn atomic_temp_names_are_recognized_without_matching_hidden_files() {
+    let current_pid = std::process::id();
+    assert!(super::is_atomic_temp_path(std::path::Path::new(&format!(
+        ".cover.tmp-{current_pid}-123-0"
+    ))));
+    assert!(!super::is_atomic_temp_path(std::path::Path::new(
+        ".cover.tmp"
+    )));
+    assert!(!super::is_atomic_temp_path(std::path::Path::new(
+        "cover.tmp-1-2-3"
+    )));
+}
+
 #[cfg(unix)]
 #[test]
 fn explicit_cookie_mode_is_private_and_general_mode_is_preserved() {

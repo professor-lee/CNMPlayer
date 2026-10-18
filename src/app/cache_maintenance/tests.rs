@@ -58,6 +58,26 @@ fn completed_writes_enforce_budget_without_restart_and_preserve_parts() {
 }
 
 #[test]
+fn active_atomic_temps_are_not_counted_or_removed() {
+    let directory = Directory::new();
+    let old = directory.file("old.audio", 2 * 1024 * 1024, Duration::ZERO);
+    let temp_name = format!(
+        ".cover.tmp-{}-{}-0",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let temp = directory.file(&temp_name, 2 * 1024 * 1024, Duration::from_secs(2 * 86400));
+    let maintenance = CacheMaintenance::new(policy(CacheCleanStrategy::Both));
+    maintenance.request(directory.0.clone());
+    maintenance.flush();
+    assert!(!old.exists());
+    assert!(temp.exists());
+}
+
+#[test]
 fn active_audio_survives_size_and_age_until_last_lease_is_released() {
     let directory = Directory::new();
     let active = directory.file(

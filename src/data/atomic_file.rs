@@ -6,7 +6,65 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub(crate) fn is_atomic_temp_path(path: &Path) -> bool {
+    atomic_temp_pid(path).is_some()
+}
 
+/// Remove atomic-write leftovers owned by a process that is no longer alive.
+/// Current-process files are always retained because an active writer can be
+/// between creation and registration with any in-process tracking structure.
+pub(crate) fn cleanup_orphan_atomic_temps(cache_dir: &Path) -> Result<()> {
+    if !cache_dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(cache_dir)
+        .with_context(|| format!("read cache dir failed: {}", cache_dir.display()))?
+    {
+        let path = entry?.path();
+        let Some(pid) = atomic_temp_pid(&path) else {
+            continue;
+        };
+        if pid == std::process::id() || !process_is_dead(pid) {
+            continue;
+        }
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
+fn atomic_temp_pid(path: &Path) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let (base, suffix) = name.rsplit_once(".tmp-")?;
+    if !base.starts_with('.') {
+        return None;
+    }
+    let mut fields = suffix.split('-');
+    let pid = fields.next()?.parse().ok()?;
+    fields.next()?.parse::<u128>().ok()?;
+    fields.next()?.parse::<u64>().ok()?;
+    fields.next().is_none().then_some(pid)
+}
+
+#[cfg(unix)]
+fn process_is_dead(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: kill(pid, 0) only probes process existence and sends no signal.
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return false;
+    }
+    matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(code) if code == libc::ESRCH
+    )
+}
+
+#[cfg(not(unix))]
+fn process_is_dead(_pid: u32) -> bool {
+    false
+}
 /// Replace a file without ever truncating the previous contents.
 ///
 /// The temporary is created in the destination directory with `create_new`,
