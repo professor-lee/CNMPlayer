@@ -538,18 +538,10 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
-        if self.player.playback == PlaybackState::Playing
-            && self.config.visualize != VisualizeMode::Hidden
-            && self
-                .player
-                .track
-                .lyrics
-                .as_ref()
-                .is_some_and(|lines| !lines.is_empty())
-        {
-            return true;
-        }
-
+        // Lyrics are intentionally not a continuous animation. During playback
+        // the host runtime snapshot advances playback position about every 50ms;
+        // that dirty update drives the lyric samples (~20Hz), which is well below
+        // the UI FPS cap and avoids repainting identical lyric frames at 60Hz.
         if self.player.playback == PlaybackState::Playing
             && !matches!(
                 self.config.visualize,

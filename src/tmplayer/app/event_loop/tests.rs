@@ -259,6 +259,37 @@ async fn fullscreen_page_transition_keeps_animation_frame_pacing() {
 }
 
 #[test]
+fn fullscreen_lyrics_do_not_force_continuous_redraw() {
+    let config = Config {
+        visualize: VisualizeMode::Lyrics,
+        word_lyrics: true,
+        ..Config::default()
+    };
+    let mut app = AppState::new(
+        config,
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::En,
+    );
+    app.player.playback = PlaybackState::Playing;
+    app.player.track.lyrics = Some(vec![crate::lyrics::LyricLine {
+        start_ms: 0,
+        end_ms: Some(2_000),
+        text: "line".to_string(),
+        words: vec![],
+        translation: None,
+    }]);
+    assert!(
+        !app.should_continuous_redraw(),
+        "lyrics must be driven by host position dirty frames, not a 60Hz clock"
+    );
+    app.config.visualize = VisualizeMode::Bars;
+    assert!(
+        app.should_continuous_redraw(),
+        "the spectrum still animates continuously while playing"
+    );
+}
+
+#[test]
 fn runtime_snapshot_resets_position_anchor_when_position_is_unchanged() {
     let mut app = AppState::new(
         Config::default(),
