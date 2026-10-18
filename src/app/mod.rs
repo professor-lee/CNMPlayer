@@ -255,7 +255,7 @@ impl App {
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let download_root =
             crate::app::download::resolve_download_root(config.download_path.as_deref());
-        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache, wake.clone());
+        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache);
         if config.cache.clean_on_startup {
             cache_maintenance.request(cover_cache_dir.clone());
         }

@@ -42,22 +42,26 @@ fn mpris_metadata_signature(track: &PlaybackTrack) -> u64 {
 
 impl App {
     pub(super) async fn apply_mpris_control_events(&mut self) {
-        for event in self.mpris_bridge.drain_control_events() {
-            match event {
-                MprisControlEvent::Play => self.mpris_play().await,
-                MprisControlEvent::Pause => self.mpris_pause(),
-                MprisControlEvent::PlayPause => self.toggle_play_pause_hotkey().await,
-                MprisControlEvent::Stop => {
-                    self.playback.page_advance = None;
-                    self.playback.cancel_pending_start();
-                    self.playback.audio_player.stop();
-                    self.playback.playback_state = PlaybackRuntimeState::Stopped;
+        let events = self.mpris_bridge.drain_control_events();
+        if !events.is_empty() {
+            for event in events {
+                match event {
+                    MprisControlEvent::Play => self.mpris_play().await,
+                    MprisControlEvent::Pause => self.mpris_pause(),
+                    MprisControlEvent::PlayPause => self.toggle_play_pause_hotkey().await,
+                    MprisControlEvent::Stop => {
+                        self.playback.page_advance = None;
+                        self.playback.cancel_pending_start();
+                        self.playback.audio_player.stop();
+                        self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                    }
+                    MprisControlEvent::Next => self.play_next_hotkey().await,
+                    MprisControlEvent::Previous => self.play_previous_hotkey().await,
+                    MprisControlEvent::SeekRelativeMicros(delta) => self.mpris_seek_relative(delta),
+                    MprisControlEvent::SeekAbsoluteMicros(pos) => self.mpris_seek_absolute(pos),
                 }
-                MprisControlEvent::Next => self.play_next_hotkey().await,
-                MprisControlEvent::Previous => self.play_previous_hotkey().await,
-                MprisControlEvent::SeekRelativeMicros(delta) => self.mpris_seek_relative(delta),
-                MprisControlEvent::SeekAbsoluteMicros(pos) => self.mpris_seek_absolute(pos),
             }
+            self.wake.notify();
         }
     }
 

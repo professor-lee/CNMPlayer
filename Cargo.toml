@@ -50,6 +50,9 @@ rodio = { git = "https://github.com/RustAudio/rodio", default-features = false, 
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac"] }
 lofty = "0.25.4"
 
+[patch.crates-io]
+cpal = { git = "https://github.com/revonateB0T/cpal" }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
