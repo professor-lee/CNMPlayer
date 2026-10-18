@@ -69,7 +69,7 @@ impl App {
             playlist_cover: self.playback.fullscreen_playlist_cover(),
             state: self.playback.playback_state,
             repeat_mode: self.playback.playback_repeat_mode,
-            position: self.playback.audio_player.display_position(),
+            position: self.playback_position(),
         }
     }
 
@@ -79,7 +79,7 @@ impl App {
             now_playing_liked: self.playback.now_playing_liked,
             state: self.playback.playback_state,
             repeat_mode: self.playback.playback_repeat_mode,
-            position: self.playback.audio_player.display_position(),
+            position: self.playback_position(),
             volume: self.playback.audio_player.volume(),
             seeking: self.playback.audio_player.is_seeking(),
             download: self.current_download_state(),

@@ -2,10 +2,10 @@ use crate::app::App;
 use crate::data::config::Language;
 use crate::ui::lyric_view;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear};
 
 pub(crate) const PAGE_LYRICS_PANEL_HEIGHT: u16 = 4;
 
@@ -142,16 +142,20 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let mut lyric_rows = match app
+    let mut cache = app.lyric_render_cache.borrow_mut();
+    let fallback;
+    let lyric_rows = match app
         .playback
         .now_playing
         .as_ref()
         .and_then(|track| track.lyrics.as_ref())
         .filter(|lines| !lines.is_empty())
     {
-        Some(lines) => lyric_view::render_pair(
+        Some(lines) => cache.pair(
+            lyric_view::LyricSurface::Overlay,
             lines,
             app.lyric_position_ms(),
+            app.is_seeking(),
             inner.width,
             &app.theme,
             app.lyric_options(),
@@ -161,7 +165,7 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
                 Language::Zh => "暂无歌词",
                 Language::En => "No lyrics",
             };
-            vec![
+            fallback = ratatui::text::Text::from(vec![
                 Line::from(Span::styled(
                     label,
                     Style::default()
@@ -169,23 +173,13 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::default(),
-            ]
+            ])
+            .alignment(Alignment::Center);
+            &fallback
         }
     };
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(lyric_rows.remove(0)).alignment(Alignment::Center),
-        rows[0],
-    );
-    frame.render_widget(
-        Paragraph::new(lyric_rows.remove(0)).alignment(Alignment::Center),
-        rows[1],
-    );
+    frame.render_widget(lyric_rows, inner);
 }
 
 fn base_bg_style(app: &App) -> Style {

@@ -2,6 +2,7 @@
 //! on decoder/audio workers. Published bytes are fully written before readers see them.
 
 use super::api::error_for_status;
+use super::cache_maintenance::CacheMaintenance;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -142,6 +143,32 @@ impl Drop for StreamingTempRegistration {
         release_streaming_temp(&self.0);
     }
 }
+struct StreamingTempCleanup(Option<PathBuf>);
+
+impl StreamingTempCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    fn disarm(&mut self) {
+        self.0.take();
+    }
+}
+
+impl Drop for StreamingTempCleanup {
+    fn drop(&mut self) {
+        let Some(path) = self.0.take() else {
+            return;
+        };
+        // Cleanup can run while the reader future is being cancelled on the
+        // reactor. Keep the potentially blocking filesystem operation in a
+        // detached async task rather than doing it from Drop.
+        compio::runtime::spawn(async move {
+            let _ = compio::fs::remove_file(path).await;
+        })
+        .detach();
+    }
+}
 /// Its synchronous Read/Seek implementation must only run on blocking workers.
 pub(super) struct StreamingReader {
     state: Arc<StreamingState>,
@@ -155,12 +182,25 @@ struct StreamingState {
     condvar: Condvar,
     // Protects condition changes/waits, NOT file I/O; never held across await.
     wait_lock: Mutex<()>,
-    done: AtomicU64, // 0 = in progress, 1 = complete, 2 = error
+    done: AtomicU64, // 0 = in progress, 1 = complete, 2 = error, 3 = cancelled
     error: Mutex<Option<String>>,
     cancelled: AtomicBool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StreamingStatus {
+    Active,
+    Complete,
+    Cancelled,
+    Failed,
+}
+
 impl StreamingState {
+    fn has_complete_body(&self) -> bool {
+        let total = self.total.load(Ordering::SeqCst);
+        total > 0 && self.downloaded.load(Ordering::SeqCst) >= total
+    }
+
     fn cancel(&self) {
         let _guard = self.wait_lock.lock();
         self.cancelled.store(true, Ordering::SeqCst);
@@ -169,7 +209,11 @@ impl StreamingState {
 
     fn finish(&self, result: &Result<()>) {
         let _guard = self.wait_lock.lock();
-        if let Err(err) = result {
+        if result.is_ok() && self.has_complete_body() {
+            self.done.store(1, Ordering::SeqCst);
+        } else if self.cancelled.load(Ordering::SeqCst) {
+            self.done.store(3, Ordering::SeqCst);
+        } else if let Err(err) = result {
             *self.error.lock() = Some(err.to_string());
             self.done.store(2, Ordering::SeqCst);
         } else {
@@ -188,6 +232,24 @@ impl StreamingReaderHandle {
     pub(super) fn cancel(&self) {
         self.state.cancel();
     }
+
+    pub(super) fn status(&self) -> StreamingStatus {
+        match self.state.done.load(Ordering::SeqCst) {
+            1 => StreamingStatus::Complete,
+            2 => StreamingStatus::Failed,
+            3 => StreamingStatus::Cancelled,
+            _ if self.state.cancelled.load(Ordering::SeqCst) => StreamingStatus::Cancelled,
+            _ => StreamingStatus::Active,
+        }
+    }
+
+    pub(super) fn error_message(&self) -> Option<String> {
+        self.state.error.lock().clone()
+    }
+
+    pub(super) fn has_complete_body(&self) -> bool {
+        self.state.has_complete_body()
+    }
 }
 
 impl From<&StreamingReader> for StreamingReaderHandle {
@@ -201,8 +263,11 @@ impl From<&StreamingReader> for StreamingReaderHandle {
 impl Drop for StreamingReader {
     fn drop(&mut self) {
         // The detached writer owns its file and removes its unique temporary path
-        // after close. Do not cancel/drop its future mid-write or clean up from here.
-        self.state.cancel();
+        // after close. Do not cancel/drop its future mid-write or clean up from here
+        // once the complete body is already published to the reader.
+        if !self.state.has_complete_body() {
+            self.state.cancel();
+        }
     }
 }
 
@@ -213,7 +278,9 @@ impl StreamingReader {
         cache_path: PathBuf,
         cookie: Option<&str>,
         progress_tx: Sender<(u64, u64)>,
+        cache_maintenance: CacheMaintenance,
     ) -> Result<Self> {
+        let writer_lease = cache_maintenance.protect(cache_path.clone());
         let mut request = http.get(url)?;
         if let Some(cookie) = cookie {
             request = request.header("Cookie", cookie)?;
@@ -236,10 +303,11 @@ impl StreamingReader {
         // A cancelled old reader may still be finishing an async write. Never let
         // its close/cleanup truncate or unlink the next reader's temporary file.
         static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let (tmp_path, writer_file, registration) = loop {
+        let (tmp_path, writer_file, registration, cleanup) = loop {
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             let candidate = cache_path.with_extension(format!("{}-{id}.part", std::process::id()));
             reserve_streaming_temp(&candidate);
+            let mut cleanup = StreamingTempCleanup::new(candidate.clone());
             let registration = StreamingTempRegistration(candidate.clone());
             match compio::fs::OpenOptions::new()
                 .create_new(true)
@@ -247,8 +315,8 @@ impl StreamingReader {
                 .open(&candidate)
                 .await
             {
-                Ok(file) => break (candidate, file, registration),
-                Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+                Ok(file) => break (candidate, file, registration, cleanup),
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => cleanup.disarm(),
                 Err(err) => return Err(err.into()),
             }
         };
@@ -269,12 +337,14 @@ impl StreamingReader {
         state.total.store(total, Ordering::SeqCst);
         let task_state = state.clone();
         compio::runtime::spawn(async move {
+            let _cleanup = cleanup;
             let _registration = registration;
+            let _writer_lease = writer_lease;
             let result = download_streaming(
                 response,
                 writer_file,
                 &tmp_path,
-                cache_path,
+                cache_path.clone(),
                 &task_state,
                 progress_tx,
             )
@@ -282,6 +352,8 @@ impl StreamingReader {
             task_state.finish(&result);
             if result.is_err() {
                 let _ = compio::fs::remove_file(&tmp_path).await;
+            } else if let Some(parent) = cache_path.parent() {
+                cache_maintenance.request(parent.to_path_buf());
             }
         })
         .detach();
@@ -291,9 +363,6 @@ impl StreamingReader {
     fn wait_for_position(&self, pos: u64, reading: bool) -> std::io::Result<()> {
         let mut guard = self.state.wait_lock.lock();
         loop {
-            if self.state.cancelled.load(Ordering::SeqCst) {
-                return Err(Error::new(ErrorKind::Interrupted, "streaming cancelled"));
-            }
             let done = self.state.done.load(Ordering::SeqCst);
             if done == 2 {
                 let error = self.state.error.lock();
@@ -301,8 +370,14 @@ impl StreamingReader {
                     error.as_deref().unwrap_or("download failed").to_owned(),
                 ));
             }
+            if done == 1 {
+                return Ok(());
+            }
+            if self.state.cancelled.load(Ordering::SeqCst) {
+                return Err(Error::new(ErrorKind::Interrupted, "streaming cancelled"));
+            }
             let downloaded = self.state.downloaded.load(Ordering::SeqCst);
-            if done == 1 || pos < downloaded || (!reading && pos == downloaded) {
+            if pos < downloaded || (!reading && pos == downloaded) {
                 return Ok(());
             }
             self.state.condvar.wait(&mut guard);
@@ -361,18 +436,43 @@ async fn download_streaming(
     state: &StreamingState,
     progress_tx: Sender<(u64, u64)>,
 ) -> Result<()> {
+    download_streaming_with_timeout(
+        response,
+        file,
+        tmp_path,
+        cache_path,
+        state,
+        progress_tx,
+        Duration::from_secs(30),
+    )
+    .await
+}
+
+async fn download_streaming_with_timeout(
+    response: Response,
+    file: compio::fs::File,
+    tmp_path: &PathBuf,
+    cache_path: PathBuf,
+    state: &StreamingState,
+    progress_tx: Sender<(u64, u64)>,
+    body_stall_timeout: Duration,
+) -> Result<()> {
     let result: Result<()> = async {
         let mut cursor = Cursor::new(&file);
         let mut stream = response.bytes_stream();
         let total = state.total.load(Ordering::SeqCst);
         let mut downloaded = 0u64;
+        let mut last_progress = std::time::Instant::now();
         loop {
             if state.cancelled.load(Ordering::SeqCst) {
                 bail!("streaming cancelled");
             }
-            // Timed polling lets cancellation terminate a stalled CDN response.
-            let chunk = match compio::time::timeout(Duration::from_millis(500), stream.next()).await
-            {
+            if last_progress.elapsed() >= body_stall_timeout {
+                bail!("streaming body stalled with no byte progress");
+            }
+            let wait = Duration::from_millis(500)
+                .min(body_stall_timeout.saturating_sub(last_progress.elapsed()));
+            let chunk = match compio::time::timeout(wait, stream.next()).await {
                 Ok(Some(Ok(chunk))) if !chunk.is_empty() => chunk,
                 Ok(Some(Ok(_))) => continue,
                 Ok(Some(Err(err))) => return Err(err.into()),
@@ -387,7 +487,7 @@ async fn download_streaming(
             }
             cursor.write_all(chunk).await.0?;
             downloaded = next;
-            // Complete positional writes are visible to the independent reader.
+            last_progress = std::time::Instant::now();
             // Pair publication with the wait mutex to prevent missed wakeups.
             {
                 let _guard = state.wait_lock.lock();

@@ -23,7 +23,7 @@ pub(super) enum MprisControlEvent {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use super::super::player::cleanup_cache_dir;
+    use super::super::cache_maintenance::cleanup_cache_dir;
     use super::MprisControlEvent;
     use super::MprisSyncPayload;
     use crate::data::config::CacheConfig;

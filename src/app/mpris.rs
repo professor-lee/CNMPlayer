@@ -51,6 +51,7 @@ impl App {
                     MprisControlEvent::PlayPause => self.toggle_play_pause_hotkey().await,
                     MprisControlEvent::Stop => {
                         self.playback.page_advance = None;
+                        self.playback.cancel_pending_start();
                         self.playback.audio_player.stop();
                         self.playback.playback_state = PlaybackRuntimeState::Stopped;
                     }
@@ -65,6 +66,10 @@ impl App {
     }
 
     async fn mpris_play(&mut self) {
+        if self.playback.has_pending_start() {
+            self.playback.set_pending_paused(false);
+            return;
+        }
         if self.playback.now_playing.is_none() {
             return;
         }
@@ -81,7 +86,11 @@ impl App {
     }
 
     fn mpris_pause(&mut self) {
-        self.playback.page_advance = None;
+        self.playback.cancel_deferred_advance();
+        if self.playback.has_pending_start() {
+            self.playback.set_pending_paused(true);
+            return;
+        }
         if self.playback.playback_state == PlaybackRuntimeState::Playing {
             self.playback.audio_player.toggle_play_pause();
             self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
@@ -133,7 +142,7 @@ impl App {
 
         let payload = MprisSyncPayload {
             playback: self.playback.playback_state,
-            position: self.playback.audio_player.display_position(),
+            position: self.playback_position(),
             track: if metadata_changed {
                 self.playback.now_playing.clone()
             } else {

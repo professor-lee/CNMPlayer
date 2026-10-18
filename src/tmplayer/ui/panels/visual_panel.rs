@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders};
 use std::time::Instant;
 
 pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut AppState) {
@@ -52,22 +52,27 @@ pub fn render(f: &mut Frame, lyric_area: Rect, spectrum_area: Rect, app: &mut Ap
 
     let position = app.lyric_position_ms(Instant::now());
     let options = app.lyric_options();
-    let lyric_rows = app
-        .player
-        .track
-        .lyrics
-        .as_ref()
-        .filter(|lines| !lines.is_empty())
-        .map(|lines| {
-            lyric_view::render_pair(lines, position, lyric_inner.width, &app.theme, options)
-        });
-    if lyric_inner.height >= 1
-        && let Some(rows) = lyric_rows
     {
-        f.render_widget(
-            Paragraph::new(rows).alignment(Alignment::Center),
-            lyric_inner,
-        );
+        let mut cache = app.lyric_render_cache.borrow_mut();
+        if lyric_inner.height >= 1
+            && let Some(lines) = app
+                .player
+                .track
+                .lyrics
+                .as_ref()
+                .filter(|lines| !lines.is_empty())
+        {
+            let rows = cache.pair(
+                lyric_view::LyricSurface::Compact,
+                lines,
+                position,
+                app.player.seeking,
+                lyric_inner.width,
+                &app.theme,
+                options,
+            );
+            f.render_widget(rows, lyric_inner);
+        }
     }
 
     match app.config.visualize {
@@ -90,10 +95,13 @@ fn render_full_lyrics(f: &mut Frame, area: Rect, app: &AppState) {
         .as_ref()
         .filter(|lines| !lines.is_empty());
 
+    let mut cache = app.lyric_render_cache.borrow_mut();
+    let fallback;
     let lines = if let Some(lyrics) = lyrics {
-        lyric_view::render_window(
+        cache.window(
             lyrics,
             app.lyric_position_ms(Instant::now()),
+            app.player.seeking,
             rows,
             area.width,
             &app.theme,
@@ -105,10 +113,11 @@ fn render_full_lyrics(f: &mut Frame, area: Rect, app: &AppState) {
         let center = count / 2;
         rows[center] =
             Line::from(no_lyrics_label(app)).style(Style::default().fg(app.theme.color_subtext()));
-        rows
+        fallback = ratatui::text::Text::from(rows).alignment(Alignment::Center);
+        &fallback
     };
 
-    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
+    f.render_widget(lines, area);
 }
 
 fn no_lyrics_label(app: &AppState) -> &'static str {

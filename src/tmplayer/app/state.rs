@@ -210,6 +210,7 @@ pub struct AppState {
     pub vector: crate::tmplayer::render::vector_renderer::VectorState,
 
     pub cover_cache: RefCell<CoverCache>,
+    pub(crate) lyric_render_cache: RefCell<crate::ui::lyric_view::LyricRenderCache>,
 
     cover_render_tx: Sender<CoverRenderRequest>,
     cover_render_rx: Receiver<CoverRenderResult>,
@@ -334,6 +335,7 @@ impl AppState {
             scope_gain: ScopeGain::default(),
             vector: Default::default(),
             cover_cache: RefCell::new(CoverCache::new(20)),
+            lyric_render_cache: RefCell::new(crate::ui::lyric_view::LyricRenderCache::default()),
             cover_render_tx,
             cover_render_rx,
             cover_render_inflight: RefCell::new(HashSet::new()),
