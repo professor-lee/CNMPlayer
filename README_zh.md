@@ -249,7 +249,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `bar_channels` | `mono` | `stereo`、`mono` |
 | `bar_channel_reverse` | `false` | 左右声道反画（全屏频谱） |
 | `bars_gap` | `false` | 频谱条之间留出间隔 |
-| `ui_fps` | `60` | 正整数，控制主程序与全屏页（包括空闲时）的 UI 提交上限；无变化的帧可跳过，实际 FPS 取决于终端速度与处理开销 |
+| `ui_fps` | `60` | 正整数，控制主程序与全屏页连续动画的 UI 提交上限；输入/内容脏帧立即提交，空闲时按 1 秒心跳刷新。实际 FPS 取决于终端速度与处理开销 |
 | `cache.path` | 未设置 | 缓存目录覆盖（默认用系统缓存目录） |
 | `cache.clean_strategy` | `both` | `size`、`age`、`both` |
 | `cache.max_size_mb` | `500` | LRU 阶段的容量上限 |

@@ -249,7 +249,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `bar_channels` | `mono` | `stereo`, `mono` |
 | `bar_channel_reverse` | `false` | Draw the right channel on the left (fullscreen spectrum) |
 | `bars_gap` | `false` | Leave a gap between bars |
-| `ui_fps` | `60` | Positive integer UI submission cap for the host and the fullscreen page, including idle; clean frames may be skipped, and the actual FPS depends on terminal speed and processing cost |
+| `ui_fps` | `60` | Positive integer cap for continuous UI animation on the host and the fullscreen page. Dirty input/content updates are submitted immediately; idle surfaces wake on a one-second heartbeat. Actual FPS depends on terminal speed and processing cost |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |
 | `cache.clean_strategy` | `both` | `size`, `age`, `both` |
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
