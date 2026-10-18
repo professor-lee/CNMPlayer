@@ -291,10 +291,10 @@ impl App {
             // 五行都是开关（值行）：与播放设置页同构，Left/Right 都用来改值，
             // 返回上一级只走 Esc。
             KeyCode::Esc => self.overlay = Some(Overlay::Settings),
-            KeyCode::Char('t') | KeyCode::Char('T') => {
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                    self.close_overlay();
-                }
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                self.close_overlay();
             }
             KeyCode::Left => self.apply_settings_lyrics_delta(-1),
             KeyCode::Right | KeyCode::Enter => self.apply_settings_lyrics_delta(1),
@@ -571,11 +571,11 @@ impl App {
                 self.settings.download_reset_armed = false;
                 self.overlay = Some(Overlay::Settings);
             }
-            KeyCode::Char('t') | KeyCode::Char('T') => {
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                    self.settings.download_reset_armed = false;
-                    self.close_overlay();
-                }
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                self.settings.download_reset_armed = false;
+                self.close_overlay();
             }
             KeyCode::Up | KeyCode::BackTab => self.move_download_selection(-1),
             KeyCode::Down | KeyCode::Tab => self.move_download_selection(1),
@@ -588,10 +588,10 @@ impl App {
     pub(super) async fn handle_settings_root_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.close_overlay(),
-            KeyCode::Char('t') | KeyCode::Char('T') => {
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                    self.close_overlay();
-                }
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                self.close_overlay();
             }
             KeyCode::Up | KeyCode::BackTab => {
                 if self.settings.selected == 0 {
@@ -613,10 +613,10 @@ impl App {
     pub(super) fn handle_settings_playback_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.overlay = Some(Overlay::Settings),
-            KeyCode::Char('t') | KeyCode::Char('T') => {
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                    self.close_overlay();
-                }
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                self.close_overlay();
             }
             KeyCode::Left => {
                 self.apply_settings_playback_delta(-1);
@@ -708,11 +708,11 @@ impl App {
                 self.settings.keybind_rebinding = None;
                 self.overlay = Some(Overlay::Settings);
             }
-            KeyCode::Char('t') | KeyCode::Char('T') => {
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                    self.settings.keybind_rebinding = None;
-                    self.close_overlay();
-                }
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                self.settings.keybind_rebinding = None;
+                self.close_overlay();
             }
             KeyCode::Left => {
                 self.settings.keybind_rebinding = None;
@@ -753,49 +753,39 @@ impl App {
                     self.persist_config();
                 }
             }
-            1 => {
-                if delta != 0 {
-                    self.config.transparent_background = !self.config.transparent_background;
-                    self.persist_config();
-                }
+            1 if delta != 0 => {
+                self.config.transparent_background = !self.config.transparent_background;
+                self.persist_config();
             }
-            2 => {
-                if delta != 0 {
-                    self.config.language = match self.config.language {
-                        Language::Zh => Language::En,
-                        Language::En => Language::Zh,
-                    };
-                    self.persist_config();
-                }
+            2 if delta != 0 => {
+                self.config.language = match self.config.language {
+                    Language::Zh => Language::En,
+                    Language::En => Language::Zh,
+                };
+                self.persist_config();
             }
-            3 => {
-                if delta != 0 {
-                    let next_protocol = self.config.graphics_protocol.cycle(delta);
-                    if next_protocol != self.config.graphics_protocol {
-                        self.config.graphics_protocol = next_protocol;
-                        self.persist_config();
-                    }
+            3 if delta != 0 => {
+                let next_protocol = self.config.graphics_protocol.cycle(delta);
+                if next_protocol != self.config.graphics_protocol {
+                    self.config.graphics_protocol = next_protocol;
+                    self.persist_config();
                 }
             }
             6 => {
                 // “歌词浮窗...”是可进入项：左右键不改变配置（与播放设置/按键绑定一致）
             }
-            7 => {
-                if delta != 0 {
-                    self.config.show_hints = !self.config.show_hints;
-                    self.persist_config();
-                }
+            7 if delta != 0 => {
+                self.config.show_hints = !self.config.show_hints;
+                self.persist_config();
             }
-            8 => {
-                if delta != 0 {
-                    let was_small_context = self.is_small_window_context();
-                    self.config.small_window_display = !self.config.small_window_display;
-                    self.persist_config();
-                    if !was_small_context && self.is_small_window_context() {
-                        self.close_panels_for_small_window();
-                    }
-                    self.sync_terminal_size();
+            8 if delta != 0 => {
+                let was_small_context = self.is_small_window_context();
+                self.config.small_window_display = !self.config.small_window_display;
+                self.persist_config();
+                if !was_small_context && self.is_small_window_context() {
+                    self.close_panels_for_small_window();
                 }
+                self.sync_terminal_size();
             }
             9 if delta != 0 => {
                 self.config.home_more_recommend = !self.config.home_more_recommend;

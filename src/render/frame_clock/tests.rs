@@ -13,7 +13,6 @@ fn events_coalesce_without_exceeding_the_cap_or_replaying_missed_frames() {
     let late = start + Duration::from_secs(2);
     assert!(clock.due(late));
     clock.presented(late);
-    assert!(!clock.is_dirty());
     clock.mark_dirty();
     assert!(!clock.due(late));
     assert!(!clock.due(late + Duration::from_millis(30)));
@@ -27,7 +26,6 @@ fn fps_change_keeps_pending_input_and_prevents_immediate_extra_frame() {
     clock.presented(start);
     clock.mark_dirty();
     clock.set_fps(60, start + Duration::from_millis(5));
-    assert!(clock.is_dirty());
     assert!(!clock.due(start + Duration::from_millis(6)));
     assert!(clock.due(start + Duration::from_millis(34)));
 }
@@ -86,11 +84,8 @@ fn continuous_frames_keep_the_next_deadline_after_presenting() {
     clock.set_continuous(true);
     assert!(clock.due(start));
     clock.presented(start);
-    assert!(clock.is_dirty());
     assert!(!clock.due(start + Duration::from_millis(16)));
     assert!(clock.due(start + Duration::from_millis(17)));
     clock.presented(start + Duration::from_millis(17));
     clock.set_continuous(false);
-    assert!(!clock.is_dirty());
-    assert!(clock.next_deadline().is_none());
 }

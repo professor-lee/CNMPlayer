@@ -35,16 +35,19 @@ impl FrameClock {
         self.continuous = continuous;
     }
 
-    pub fn is_dirty(&self) -> bool {
-        self.dirty || self.continuous
-    }
-
     pub fn due(&self, now: Instant) -> bool {
-        (self.dirty || self.continuous) && now >= self.deadline
+        self.dirty || (self.continuous && now >= self.deadline)
     }
 
-    pub fn next_deadline(&self) -> Option<Instant> {
-        (self.dirty || self.continuous).then_some(self.deadline)
+    pub fn next_deadline(&self) -> Duration {
+        let instant = if self.dirty {
+            Instant::now()
+        } else if self.continuous {
+            self.deadline
+        } else {
+            Instant::now() + Duration::from_secs(1)
+        };
+        instant.saturating_duration_since(Instant::now())
     }
 
     /// Skip expired slots instead of submitting catch-up frames. Input wakeups

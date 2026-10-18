@@ -466,10 +466,7 @@ where
             }
             let maintenance_wait =
                 Duration::from_millis(50).saturating_sub(last_host_sync.elapsed());
-            let frame_wait = clock
-                .next_deadline()
-                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
-                .unwrap_or(Duration::from_secs(1));
+            let frame_wait = clock.next_deadline();
             let wait = maintenance_wait.min(frame_wait);
             if !wait.is_zero() {
                 compio::time::sleep(wait).await;
@@ -564,10 +561,7 @@ where
                 break layout;
             }
         }
-        let wait = clock
-            .next_deadline()
-            .unwrap_or(now)
-            .saturating_duration_since(Instant::now());
+        let wait = clock.next_deadline();
         compio::time::sleep(wait).await;
     };
     // Snapshot ownership ends here, before stable Fullscreen or Host resumes.
@@ -1162,44 +1156,34 @@ async fn apply_settings_delta(
             }
         }
         // Transparent background
-        1 => {
-            if delta != 0 {
-                app.config.transparent_background = !app.config.transparent_background;
-                save_and_sync_host_config(app, host_bridge).await;
-            }
+        1 if delta != 0 => {
+            app.config.transparent_background = !app.config.transparent_background;
+            save_and_sync_host_config(app, host_bridge).await;
         }
         // Language
-        2 => {
-            if delta != 0 {
-                app.language = match app.language {
-                    crate::data::config::Language::Zh => crate::data::config::Language::En,
-                    crate::data::config::Language::En => crate::data::config::Language::Zh,
-                };
-                save_and_sync_host_config(app, host_bridge).await;
-            }
+        2 if delta != 0 => {
+            app.language = match app.language {
+                crate::data::config::Language::Zh => crate::data::config::Language::En,
+                crate::data::config::Language::En => crate::data::config::Language::Zh,
+            };
+            save_and_sync_host_config(app, host_bridge).await;
         }
         // Color halfblocks / ASCII cover display
-        3 => {
-            if delta != 0 {
-                app.config.graphics_protocol = app.config.graphics_protocol.cycle(delta);
-                save_and_sync_host_config(app, host_bridge).await;
-            }
+        3 if delta != 0 => {
+            app.config.graphics_protocol = app.config.graphics_protocol.cycle(delta);
+            save_and_sync_host_config(app, host_bridge).await;
         }
         // “歌词浮窗...”是可进入项：左右键不改变配置。
         6 => {}
         // Show hints
-        7 => {
-            if delta != 0 {
-                app.config.show_hints = !app.config.show_hints;
-                save_and_sync_host_config(app, host_bridge).await;
-            }
+        7 if delta != 0 => {
+            app.config.show_hints = !app.config.show_hints;
+            save_and_sync_host_config(app, host_bridge).await;
         }
         // Small window display
-        8 => {
-            if delta != 0 {
-                app.config.small_window_display = !app.config.small_window_display;
-                save_and_sync_host_config(app, host_bridge).await;
-            }
+        8 if delta != 0 => {
+            app.config.small_window_display = !app.config.small_window_display;
+            save_and_sync_host_config(app, host_bridge).await;
         }
         // Home more recommendations
         9 if delta != 0 => {
