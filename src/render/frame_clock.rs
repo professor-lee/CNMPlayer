@@ -1,4 +1,6 @@
-//! A shared render cap. Dirtiness and maintenance/data deadlines are independent.
+//! Frame pacing shared by the Host and Fullscreen. Dirty frames are submitted
+//! on the next loop turn; continuous animation is capped at the configured FPS;
+//! idle surfaces wake on a one-second heartbeat.
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -27,18 +29,24 @@ impl FrameClock {
         }
     }
 
+    /// Request an immediate submission on the next loop turn.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
 
+    /// Continuous animation is paced by this clock. Local animation loops must
+    /// set this, otherwise `next_deadline()` falls back to the idle heartbeat.
     pub fn set_continuous(&mut self, continuous: bool) {
         self.continuous = continuous;
     }
 
+    /// Dirty work is due immediately; continuous frames are due at the deadline.
     pub fn due(&self, now: Instant) -> bool {
         self.dirty || (self.continuous && now >= self.deadline)
     }
 
+    /// Time until the next wake: zero for dirty work, the animation deadline for
+    /// continuous frames, or the one-second idle heartbeat.
     pub fn next_deadline(&self) -> Duration {
         let instant = if self.dirty {
             Instant::now()
@@ -50,8 +58,10 @@ impl FrameClock {
         instant.saturating_duration_since(Instant::now())
     }
 
-    /// Skip expired slots instead of submitting catch-up frames. Input wakeups
-    /// cannot bypass the cap; a late submission starts a new minimum interval.
+    /// Skip expired slots instead of submitting catch-up frames. A dirty frame
+    /// may be submitted before the continuous deadline; the next continuous slot
+    /// still starts a new minimum interval. A late submission also starts a new
+    /// minimum interval.
     pub fn presented(&mut self, now: Instant) {
         self.dirty = false;
         let elapsed = now.saturating_duration_since(self.deadline);
