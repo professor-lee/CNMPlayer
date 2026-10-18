@@ -50,6 +50,29 @@ fn continuous_frames_wait_for_the_ui_deadline() {
 }
 
 #[test]
+fn early_dirty_frames_do_not_shift_the_continuous_deadline() {
+    let start = Instant::now();
+    let mut clock = FrameClock::new(60, start);
+    clock.set_continuous(true);
+    clock.presented(start);
+    let deadline = clock.deadline;
+
+    clock.mark_dirty();
+    clock.presented(start + Duration::from_millis(5));
+    assert_eq!(
+        clock.deadline, deadline,
+        "an early dirty frame is extra, not a reason to push the animation schedule"
+    );
+    assert!(clock.due(deadline));
+
+    clock.presented(deadline);
+    assert!(
+        clock.deadline > deadline,
+        "an on-time continuous frame advances the schedule"
+    );
+}
+
+#[test]
 fn two_fps_continuous_uses_half_second_intervals() {
     let start = Instant::now();
     let mut clock = FrameClock::new(2, start);

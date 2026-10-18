@@ -64,6 +64,12 @@ impl FrameClock {
     /// minimum interval.
     pub fn presented(&mut self, now: Instant) {
         self.dirty = false;
+        // A dirty frame may be submitted before the continuous deadline. It is
+        // an extra frame; it must not push the animation schedule forward, or a
+        // burst of wakeups will accumulate into a long idle gap.
+        if self.continuous && now < self.deadline {
+            return;
+        }
         let elapsed = now.saturating_duration_since(self.deadline);
         let periods = elapsed.as_nanos() / self.interval.as_nanos() + 1;
         let advance = self.interval.mul_f64(periods as f64);
