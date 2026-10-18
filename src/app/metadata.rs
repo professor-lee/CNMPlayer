@@ -1,5 +1,6 @@
 use super::App;
 use super::api::ApiState;
+use super::cache_maintenance::CacheMaintenance;
 use super::latest_fetch;
 use super::playback_controller::PlaybackTrack;
 use crate::data::atomic_file::write_atomic;
@@ -64,13 +65,21 @@ pub(super) fn validate_cached_cover(bytes: &[u8]) -> bool {
 /// FIFO job until completion, then recover ownership without copying its data.
 async fn persist_fetched_cover(
     persistence: &PersistenceHandle,
+    maintenance: &CacheMaintenance,
     path: PathBuf,
     bytes: Arc<[u8]>,
 ) -> Arc<[u8]> {
     let job_bytes = bytes.clone();
+    let maintenance = maintenance.clone();
     let (done_tx, done_rx) = futures::channel::oneshot::channel();
     let queued = persistence.enqueue(move || {
+        let _write_lease = maintenance.protect(path.clone());
         let result = write_atomic(&path, &job_bytes);
+        if result.is_ok()
+            && let Some(directory) = path.parent()
+        {
+            maintenance.request(directory.to_path_buf());
+        }
         drop(job_bytes);
         let _ = done_tx.send(());
         result
@@ -105,6 +114,7 @@ pub(super) async fn loop_cover_fetch(
     client: Client,
     cache_dir: PathBuf,
     persistence: PersistenceHandle,
+    maintenance: CacheMaintenance,
     wake: WakeSignal,
 ) {
     let Ok(api) = ApiState::new(None, client) else {
@@ -128,7 +138,7 @@ pub(super) async fn loop_cover_fetch(
         }
         let bytes = api.fetch_display_cover_bytes(&req.url).await.ok()?;
         let path = cover_cache_path_for_dir(&cache_dir, &req.url)?;
-        Some(persist_fetched_cover(&persistence, path, Arc::from(bytes)).await)
+        Some(persist_fetched_cover(&persistence, &maintenance, path, Arc::from(bytes)).await)
     };
     latest_fetch::run_latest(
         rx,
@@ -317,40 +327,6 @@ impl App {
             word_lyrics: self.config.word_lyrics,
             translation: self.config.lyric_translation,
         }
-    }
-
-    fn cover_cache_path_for_url(&self, url: &str) -> Option<PathBuf> {
-        cover_cache_path_for_dir(&self.cover_cache_dir, url)
-    }
-
-    async fn load_cover_from_disk_cache(&self, url: &str) -> Option<Arc<[u8]>> {
-        let path = self.cover_cache_path_for_url(url)?;
-        compio::runtime::spawn_blocking(move || {
-            let bytes = std::fs::read(path).ok()?;
-            validate_cached_cover(&bytes).then(|| Arc::<[u8]>::from(bytes))
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    async fn persist_cover_to_disk_cache(&self, url: &str, bytes: Arc<[u8]>) -> Arc<[u8]> {
-        let Some(path) = self.cover_cache_path_for_url(url) else {
-            return bytes;
-        };
-        persist_fetched_cover(&self.persistence.handle(), path, bytes).await
-    }
-
-    async fn fetch_cover_with_disk_cache(&self, url: &str) -> Option<Arc<[u8]>> {
-        if let Some(bytes) = self.load_cover_from_disk_cache(url).await {
-            return Some(bytes);
-        }
-
-        let bytes = self.api.fetch_display_cover_bytes(url).await.ok()?;
-        Some(
-            self.persist_cover_to_disk_cache(url, Arc::from(bytes))
-                .await,
-        )
     }
 
     fn apply_cover_fetch_result(&mut self, result: CoverFetchResult) {
@@ -556,6 +532,7 @@ impl App {
     pub(super) fn trim_non_current_cover_memory(&mut self, current_index: usize) {
         let cover_cache_dir = &self.cover_cache_dir;
         let persistence = &self.persistence;
+        let maintenance = &self.cache_maintenance;
         for (idx, track) in self.playback.playback_queue.iter_mut().enumerate() {
             if idx == current_index {
                 continue;
@@ -563,48 +540,21 @@ impl App {
 
             if let (Some(bytes), Some(url)) = (track.cover.take(), track.cover_url.as_deref())
                 && let Some(path) = cover_cache_path_for_dir(cover_cache_dir, url)
-                && let Err(error) = persistence.enqueue(move || {
+            {
+                let maintenance = maintenance.clone();
+                if let Err(error) = persistence.enqueue(move || {
                     if validate_cached_cover(&bytes) {
+                        let _write_lease = maintenance.protect(path.clone());
                         write_atomic(&path, &bytes)?;
+                        if let Some(directory) = path.parent() {
+                            maintenance.request(directory.to_path_buf());
+                        }
                     }
                     Ok(())
-                })
-            {
-                log::warn!("cover cache write not admitted: {error:#}");
+                }) {
+                    log::warn!("cover cache write not admitted: {error:#}");
+                }
             }
-        }
-    }
-
-    pub(super) async fn enrich_track_metadata(
-        &mut self,
-        track: &mut PlaybackTrack,
-        allow_network: bool,
-    ) {
-        // Queue switches hydrate through the cover worker after the new track is
-        // installed. Neither disk IO nor image decoding delays the transition.
-        if allow_network
-            && track.cover.is_none()
-            && let Some(url) = track.cover_url.as_deref()
-        {
-            track.cover = self.fetch_cover_with_disk_cache(url).await;
-        }
-
-        if allow_network
-            && track.cover.is_none()
-            && let Ok(detail) = self.api.song_detail(&track.song_id).await
-            && let Some(song) = detail
-                .body
-                .get("songs")
-                .and_then(|value| value.as_array())
-                .and_then(|items| items.first())
-            && let Some(cover_url) = song.pointer("/al/picUrl").and_then(|value| value.as_str())
-            && let Some(bytes) = self.fetch_cover_with_disk_cache(cover_url).await
-        {
-            track.cover = Some(bytes);
-        }
-
-        if allow_network && track.lyrics.is_none() {
-            track.lyrics = fetch_lyrics(&mut self.api, &track.song_id).await;
         }
     }
 }

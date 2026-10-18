@@ -3,6 +3,7 @@ mod api;
 pub(crate) mod auth;
 mod author;
 mod browse_controller;
+mod cache_maintenance;
 mod cover_presentation;
 pub(crate) mod cover_state;
 pub(crate) mod download;
@@ -40,6 +41,7 @@ use self::api::ApiState;
 use self::auth::LoginMethod;
 use self::auth::LoginState;
 use self::browse_controller::BrowseController;
+use self::cache_maintenance::CacheMaintenance;
 use self::cover_presentation::CoverPresentation;
 use self::download::DownloadManager;
 use self::download::DownloadRowCache;
@@ -60,7 +62,6 @@ use self::mpris_bridge::MprisBridge;
 use self::playback_controller::PlaybackController;
 use self::playback_controller::PlaybackRuntimeState;
 use self::player::AudioPlayer;
-use self::player::cleanup_cache_dir;
 use self::player::resolve_cache_root;
 use self::playlist::PlaylistPageKind;
 use self::playlist::PlaylistState;
@@ -200,6 +201,7 @@ pub(crate) struct App {
     last_content_click: Option<(Instant, Page, usize)>,
     mini_spectrum: Spectrum,
     cover_cache_dir: PathBuf,
+    cache_maintenance: CacheMaintenance,
     cover_fetch_tx: watch::Sender<Option<CoverFetchRequest>>,
     cover_fetch_rx: async_mpsc::Receiver<CoverFetchResult>,
     cover_fetch_inflight_url: Option<String>,
@@ -230,7 +232,8 @@ impl App {
     /// 构造 App 并启动后台初始化：本地设置同步完成，网络初始化交给
     /// [`StartupInit`]，加载页随即可以显示真实进度。
     pub(crate) async fn new(config: Config, theme: Theme) -> Result<Self> {
-        let audio_player = AudioPlayer::new(&config)?;
+        let cache_maintenance = CacheMaintenance::new(config.cache.clone());
+        let audio_player = AudioPlayer::new(&config, cache_maintenance.clone())?;
         let persistence = PersistenceWorker::spawn("cnmplayer-persistence")?;
         let saved_cookie = compio::runtime::spawn_blocking(session::load_cookie)
             .await
@@ -254,12 +257,7 @@ impl App {
             crate::app::download::resolve_download_root(config.download_path.as_deref());
         let mpris_bridge = MprisBridge::new(&cache_root, &config.cache, wake.clone());
         if config.cache.clean_on_startup {
-            let startup_dir = cover_cache_dir.clone();
-            let startup_policy = config.cache.clone();
-            compio::runtime::spawn_blocking(move || {
-                let _ = cleanup_cache_dir(&startup_dir, &startup_policy);
-            })
-            .detach();
+            cache_maintenance.request(cover_cache_dir.clone());
         }
 
         // One active request plus one replaceable latest request, not a FIFO backlog.
@@ -271,6 +269,7 @@ impl App {
             http_client.clone(),
             cover_cache_dir.clone(),
             persistence.handle(),
+            cache_maintenance.clone(),
             wake.clone(),
         );
         launch(worker);
@@ -340,6 +339,7 @@ impl App {
             last_content_click: None,
             mini_spectrum: Spectrum::new(MINI_BARS),
             cover_cache_dir,
+            cache_maintenance,
             cover_fetch_tx,
             cover_fetch_rx,
             cover_fetch_inflight_url: None,

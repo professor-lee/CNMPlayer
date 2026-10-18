@@ -201,14 +201,30 @@ fn response_lrc_preserves_non_timestamp_brackets_and_clear_nodes() {
 
 #[test]
 fn response_enhanced_lrc_retains_text_and_uses_real_word_bounds() {
-    let body = json!({"lrc": "[00:01.00]intro <ordinary><00:02.00>Hello <00:03.00>world\n[00:05.00]next"});
+    let body =
+        json!({"lrc": "[00:01.00]intro <ordinary><00:02.00>Hello <00:03.00>world\n[00:05.00]next"});
     let lines = parse_lyric_response(&body).unwrap();
     assert_eq!(lines[0].text, "intro <ordinary>Hello world");
-    assert_eq!(lines[0].words, vec![
-        LyricWord { text: "intro <ordinary>".into(), start_ms: 1_000, end_ms: 2_000 },
-        LyricWord { text: "Hello ".into(), start_ms: 2_000, end_ms: 3_000 },
-        LyricWord { text: "world".into(), start_ms: 3_000, end_ms: 5_000 },
-    ]);
+    assert_eq!(
+        lines[0].words,
+        vec![
+            LyricWord {
+                text: "intro <ordinary>".into(),
+                start_ms: 1_000,
+                end_ms: 2_000
+            },
+            LyricWord {
+                text: "Hello ".into(),
+                start_ms: 2_000,
+                end_ms: 3_000
+            },
+            LyricWord {
+                text: "world".into(),
+                start_ms: 3_000,
+                end_ms: 5_000
+            },
+        ]
+    );
     assert_eq!(lines[0].end_ms, Some(5_000));
     assert!(lines[1].words.is_empty());
 }
@@ -230,7 +246,13 @@ fn response_enhanced_lrc_trailing_zero_and_gap_bounds_are_deterministic() {
 
 #[test]
 fn response_malformed_timestamp_tags_do_not_consume_lyric_text() {
-    for suffix in ["[00:60.00]text", "[00:01.x]text", "[00:01.1234oops]text", "[00:01.00oops]text", "[18446744073709551615:00]text"] {
+    for suffix in [
+        "[00:60.00]text",
+        "[00:01.x]text",
+        "[00:01.1234oops]text",
+        "[00:01.00oops]text",
+        "[18446744073709551615:00]text",
+    ] {
         let body = json!({"lrc": format!("[00:01.00]{suffix}")});
         assert_eq!(parse_lyric_response(&body).unwrap()[0].text, suffix);
     }
@@ -262,8 +284,13 @@ fn response_normalizes_json_lrc_and_mixed_documents_without_credits() {
         "{\"t\":4000,\"c\":[{\"tx\":\"end\",\"tr\":[0,0]}]}"
     )});
     let lines = parse_lyric_response(&body).unwrap();
-    assert_eq!(lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
-        vec!["usable untimed words", "ordinary <angle>", "end"]);
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["usable untimed words", "ordinary <angle>", "end"]
+    );
     assert!(lines[0].words.is_empty());
     assert_eq!(lines[0].end_ms, Some(3_000));
     assert_eq!(lines[2].words[0].start_ms, 4_000);
@@ -280,7 +307,10 @@ fn response_malformed_formats_never_display_raw_json_or_metadata() {
         "[18446744073709551615:00]overflow",
         "{\"t\":0,\"c\":[{\"tx\":\"作曲: credit\"}]}",
     ] {
-        assert!(parse_lyric_response(&json!({"lrc": source})).is_none(), "{source}");
+        assert!(
+            parse_lyric_response(&json!({"lrc": source})).is_none(),
+            "{source}"
+        );
     }
     let body = json!({"yrc": "[1000,500](broken)bad", "lrc": "[00:01.00]usable"});
     assert_eq!(parse_lyric_response(&body).unwrap()[0].text, "usable");
@@ -289,8 +319,13 @@ fn response_malformed_formats_never_display_raw_json_or_metadata() {
 #[test]
 fn response_plain_fallback_retains_the_complete_unsynchronized_document() {
     let lines = parse_lyric_response(&json!({"lrc": "first\nsecond\nthird\nfourth"})).unwrap();
-    assert_eq!(lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
-        vec!["first", "second", "third", "fourth"]);
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "second", "third", "fourth"]
+    );
     assert!(lines.iter().all(LyricLine::is_untimed));
     assert_eq!(snapshot(&lines, 60_000).current, Some(0));
 }
@@ -313,7 +348,8 @@ fn response_timestamp_fractions_and_decreasing_word_tags_are_bounded() {
     let lines = parse_lyric_response(&json!({"lrc": concat!(
         "[00:00.1]tenth\n[00:00.12]hundredth\n[00:00.123]millisecond\n",
         "[00:01.00]<00:02.00>A<00:01.00>B<00:03.00>"
-    )})).unwrap();
+    )}))
+    .unwrap();
     assert_eq!(lines[0].start_ms, 100);
     assert_eq!(lines[1].start_ms, 120);
     assert_eq!(lines[2].start_ms, 123);
@@ -333,7 +369,11 @@ fn response_json_overflow_and_invalid_yrc_fall_back_without_panicking() {
         "[1000,2000](1000,1000)bad",
     ] {
         let body = json!({"yrc": source, "lrc": "[00:01.00]fallback"});
-        assert_eq!(parse_lyric_response(&body).unwrap()[0].text, "fallback", "{source}");
+        assert_eq!(
+            parse_lyric_response(&body).unwrap()[0].text,
+            "fallback",
+            "{source}"
+        );
     }
     let lines = parse_lyric_response(&json!({"lrc": "[Chorus]one\ntwo\nthree"})).unwrap();
     assert_eq!(lines.len(), 3);
@@ -355,20 +395,34 @@ fn response_malformed_fields_without_usable_lyrics_remain_absent() {
 
 #[test]
 fn response_plain_brackets_are_not_mistaken_for_structural_tags() {
-    let lines = parse_lyric_response(&json!({"lrc": "[broken\n[2026]text\n[[Chorus]]\n<ordinary>"})).unwrap();
-    assert_eq!(lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
-        vec!["[broken", "[2026]text", "[[Chorus]]", "<ordinary>"]);
+    let lines =
+        parse_lyric_response(&json!({"lrc": "[broken\n[2026]text\n[[Chorus]]\n<ordinary>"}))
+            .unwrap();
+    assert_eq!(
+        lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["[broken", "[2026]text", "[[Chorus]]", "<ordinary>"]
+    );
 }
 
 #[test]
 fn response_json_metadata_does_not_hide_lrc_or_plain_fallback() {
     let credits = r#"{"t":0,"c":[{"tx":"作词: credit"}]}"#;
-    let timed = parse_lyric_response(&json!({"lrc": format!("{credits}\n[00:01.00]usable")})).unwrap();
+    let timed =
+        parse_lyric_response(&json!({"lrc": format!("{credits}\n[00:01.00]usable")})).unwrap();
     assert_eq!(timed.len(), 1);
     assert_eq!(timed[0].text, "usable");
-    let plain = parse_lyric_response(&json!({"lrc": format!("{credits}\none\ntwo\nthree")})).unwrap();
-    assert_eq!(plain.iter().map(|line| line.text.as_str()).collect::<Vec<_>>(),
-        vec!["one", "two", "three"]);
+    let plain =
+        parse_lyric_response(&json!({"lrc": format!("{credits}\none\ntwo\nthree")})).unwrap();
+    assert_eq!(
+        plain
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["one", "two", "three"]
+    );
     assert!(plain.iter().all(LyricLine::is_untimed));
 }
 
@@ -377,7 +431,8 @@ fn response_higher_precision_timestamps_truncate_to_milliseconds() {
     let lines = parse_lyric_response(&json!({"lrc": concat!(
         "[00:01.123456]<00:01.123456>first<00:02.234567>second<00:03.345678>\n",
         "[00:04.456789]next"
-    )})).unwrap();
+    )}))
+    .unwrap();
     assert_eq!(lines[0].start_ms, 1_123);
     assert_eq!(lines[0].text, "firstsecond");
     assert_eq!(lines[0].words[0].start_ms, 1_123);

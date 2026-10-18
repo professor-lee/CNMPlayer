@@ -380,6 +380,7 @@ impl App {
         if fetch.id != HOME_PRIVATE_ROAM_TILE_ID || fetch.tracks.is_empty() {
             return;
         }
+        self.playback.roam_append = None;
 
         self.browse.private_roam.tracks = fetch.tracks.clone();
         self.browse.private_roam.bound_history();
@@ -400,6 +401,7 @@ impl App {
             // 拉取失败保留旧列表，下次启动再试
             return;
         }
+        self.playback.roam_append = None;
 
         let (new_tracks, new_index) = merge_private_roam_refresh(
             &self.browse.private_roam.tracks,
@@ -417,8 +419,24 @@ impl App {
     }
 
     /// 播放到列表末尾时追加一批新歌
-    async fn append_private_roam_songs(&mut self) {
-        let fetched = fetch_private_roam_songs(&mut self.api).await;
+    fn append_private_roam_songs(&mut self) {
+        if self.playback.roam_append.is_some() {
+            return;
+        }
+        let mut api = self.api.clone();
+        self.playback.roam_append = Some(super::owned_task::spawn_shared(
+            Box::pin(async move { Some(fetch_private_roam_songs(&mut api).await) }),
+            self.api.wake_signal(),
+        ));
+    }
+
+    pub(super) fn tick_playback_roam_append(&mut self) {
+        let Some(fetched) =
+            super::owned_task::peek_shared_future(&self.playback.roam_append).cloned()
+        else {
+            return;
+        };
+        self.playback.roam_append = None;
         if fetched.is_empty() {
             return;
         }
@@ -448,7 +466,7 @@ impl App {
     }
 
     /// 播放队列切到某首歌时，记录漫游播放位置与封面；播放到最后一首时追加新歌
-    pub(super) async fn track_private_roam_playback(&mut self, track: &PlaybackTrack) {
+    pub(super) fn track_private_roam_playback(&mut self, track: &PlaybackTrack) {
         let Some(pos) = self
             .browse
             .private_roam
@@ -486,7 +504,7 @@ impl App {
         self.persist_private_roam();
 
         if is_last && self.playback_queue_is_roam() {
-            self.append_private_roam_songs().await;
+            self.append_private_roam_songs();
         }
     }
 

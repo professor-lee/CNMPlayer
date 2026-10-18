@@ -167,9 +167,8 @@ fn cached_raw_bands_match_independent_old_execution_sequence() {
     for amplitude in [0.125, 100.0] {
         let mut cached = Core::new(8, 1000, 50, 400).unwrap();
         let mut reference = Core::new(8, 1000, 50, 400).unwrap();
-        let left: [f32; 128] = std::array::from_fn(|n| {
-            (2.0 * PI * 70.0 * n as f64 / 1000.0).sin() as f32 * amplitude
-        });
+        let left: [f32; 128] =
+            std::array::from_fn(|n| (2.0 * PI * 70.0 * n as f64 / 1000.0).sin() as f32 * amplitude);
         let right: [f32; 128] = std::array::from_fn(|n| {
             (2.0 * PI * 240.0 * n as f64 / 1000.0).cos() as f32 * amplitude
         });
@@ -241,7 +240,8 @@ fn raw_cache_invalidates_first_window_clear_reset_and_new_mapping() {
     assert!(core.raw[..core.bars * 2].iter().all(|&value| value == 0.0));
 
     let samples = [0.5; 128];
-    core.execute(Some((&samples, &samples)), samples.len()).unwrap();
+    core.execute(Some((&samples, &samples)), samples.len())
+        .unwrap();
     assert!(core.raw[..core.bars * 2].iter().any(|&value| value > 0.0));
     // Discontinuities call clear_window even when there is no replacement PCM.
     core.clear_window();
@@ -249,7 +249,8 @@ fn raw_cache_invalidates_first_window_clear_reset_and_new_mapping() {
     core.execute(None, 0).unwrap();
     assert!(core.raw[..core.bars * 2].iter().all(|&value| value == 0.0));
 
-    core.execute(Some((&samples, &samples)), samples.len()).unwrap();
+    core.execute(Some((&samples, &samples)), samples.len())
+        .unwrap();
     core.reset();
     assert!(!core.raw_valid);
     core.execute(None, 0).unwrap();

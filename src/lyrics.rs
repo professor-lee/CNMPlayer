@@ -186,9 +186,7 @@ fn parse_lrc(content: &str) -> Option<Vec<LyricLine>> {
         if line.end_ms.is_none() {
             line.end_ms = next.filter(|end| *end > line.start_ms);
         }
-        if *open_word
-            && let Some(word) = line.words.last_mut()
-        {
+        if *open_word && let Some(word) = line.words.last_mut() {
             word.end_ms = line.end_ms.unwrap_or(word.start_ms).max(word.start_ms);
         }
     }
@@ -291,8 +289,10 @@ fn is_plain_lyric_text(line: &str) -> bool {
         }
         if let Some((prefix, _)) = rest.split_once(':') {
             let prefix = prefix.trim();
-            if matches!(prefix, "ar" | "ti" | "al" | "by" | "re" | "ve" | "length" | "offset")
-                || (!prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit()))
+            if matches!(
+                prefix,
+                "ar" | "ti" | "al" | "by" | "re" | "ve" | "length" | "offset"
+            ) || (!prefix.is_empty() && prefix.bytes().all(|byte| byte.is_ascii_digit()))
             {
                 return false;
             }
