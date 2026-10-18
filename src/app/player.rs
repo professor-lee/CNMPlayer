@@ -25,7 +25,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI32;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -46,141 +45,10 @@ pub(super) struct AudioPlayer {
     pcm_ring: Arc<PcmRing>,
     /// 400ms Momentary LUFS 计量器；`EqSource` 按批写入，小窗口窄窗读取。
     lufs_meter: Arc<LufsMeter>,
-    completion: Option<Arc<SourceCompletion>>,
 }
 
 pub(super) struct PreparedSource {
     source: Box<dyn Source<Item = f32> + Send + 'static>,
-    completion: Arc<SourceCompletion>,
-}
-
-const SOURCE_ACTIVE: u8 = 0;
-const SOURCE_COMPLETE: u8 = 1;
-const SOURCE_DECODER_FAILED: u8 = 2;
-const EOF_PADDING_TOLERANCE: Duration = Duration::from_millis(250);
-
-pub(super) struct SourceCompletion {
-    state: AtomicU8,
-}
-
-impl SourceCompletion {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            state: AtomicU8::new(SOURCE_ACTIVE),
-        })
-    }
-
-    fn mark_eof(&self, premature: bool) {
-        let state = if premature {
-            SOURCE_DECODER_FAILED
-        } else {
-            SOURCE_COMPLETE
-        };
-        let _ =
-            self.state
-                .compare_exchange(SOURCE_ACTIVE, state, Ordering::AcqRel, Ordering::Acquire);
-    }
-
-    fn decoder_failed(&self) -> bool {
-        self.state.load(Ordering::Acquire) == SOURCE_DECODER_FAILED
-    }
-}
-
-struct CompletionSource<S>
-where
-    S: Source<Item = f32>,
-{
-    inner: S,
-    completion: Arc<SourceCompletion>,
-    total_duration: Option<Duration>,
-    channels: NonZero<u16>,
-    sample_rate: NonZero<u32>,
-    sample_position: u64,
-}
-
-impl<S> CompletionSource<S>
-where
-    S: Source<Item = f32>,
-{
-    fn new(inner: S, completion: Arc<SourceCompletion>) -> Self {
-        Self {
-            total_duration: inner.total_duration(),
-            channels: inner.channels(),
-            sample_rate: inner.sample_rate(),
-            inner,
-            completion,
-            sample_position: 0,
-        }
-    }
-
-    fn duration_for_samples(&self, samples: u64) -> Duration {
-        let denominator = u128::from(self.channels.get()) * u128::from(self.sample_rate.get());
-        let nanos = u128::from(samples)
-            .saturating_mul(1_000_000_000)
-            .checked_div(denominator)
-            .unwrap_or(u128::MAX);
-        Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
-    }
-
-    fn samples_for_duration(&self, position: Duration) -> u64 {
-        let denominator = u128::from(self.channels.get()) * u128::from(self.sample_rate.get());
-        let samples = position
-            .as_nanos()
-            .saturating_mul(denominator)
-            .checked_div(1_000_000_000)
-            .unwrap_or(u128::MAX);
-        samples.min(u128::from(u64::MAX)) as u64
-    }
-}
-
-impl<S> Iterator for CompletionSource<S>
-where
-    S: Source<Item = f32>,
-{
-    type Item = f32;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let Some(sample) = self.inner.next() else {
-            let consumed = self.duration_for_samples(self.sample_position);
-            let premature = self
-                .total_duration
-                .is_some_and(|total| total > consumed.saturating_add(EOF_PADDING_TOLERANCE));
-            self.completion.mark_eof(premature);
-            return None;
-        };
-        self.sample_position = self.sample_position.saturating_add(1);
-        Some(sample)
-    }
-}
-
-impl<S> Source for CompletionSource<S>
-where
-    S: Source<Item = f32>,
-{
-    fn current_span_len(&self) -> Option<usize> {
-        self.inner.current_span_len()
-    }
-
-    fn channels(&self) -> NonZero<u16> {
-        self.inner.channels()
-    }
-
-    fn sample_rate(&self) -> NonZero<u32> {
-        self.inner.sample_rate()
-    }
-
-    fn total_duration(&self) -> Option<Duration> {
-        self.inner.total_duration()
-    }
-
-    fn try_seek(&mut self, pos: Duration) -> std::result::Result<(), SeekError> {
-        self.inner.try_seek(pos)?;
-        self.sample_position = self.samples_for_duration(pos);
-        self.completion
-            .state
-            .store(SOURCE_ACTIVE, Ordering::Release);
-        Ok(())
-    }
 }
 
 pub(super) fn make_prepared_source<S>(
@@ -192,11 +60,9 @@ pub(super) fn make_prepared_source<S>(
 where
     S: Source<Item = f32> + Send + 'static,
 {
-    let completion = SourceCompletion::new();
     let source = EqSource::new(decoder, eq_params, pcm_ring, lufs_meter);
     PreparedSource {
-        source: Box::new(CompletionSource::new(source, completion.clone())),
-        completion,
+        source: Box::new(source),
     }
 }
 
@@ -366,7 +232,6 @@ impl AudioPlayer {
         // Invalidate before stopping/appending: an old worker completion must not
         // consume a new track's intent, and queued work must be admitted again.
         self.seek_worker.invalidate();
-        self.completion = None;
         self.rebuild_on_error()?;
         // 切歌前先取消旧流：音频线程可能正阻塞在旧 StreamingReader 的
         // read/seek 等待上，取消后立即释放，append 内部的 sleep_until_end
@@ -436,7 +301,6 @@ impl AudioPlayer {
             cache_maintenance,
             cache_lease: None,
             lufs_meter: Arc::new(LufsMeter::new()),
-            completion: None,
         };
 
         Ok(player)
@@ -466,9 +330,8 @@ impl AudioPlayer {
         cache_lease: CacheLease,
         start_paused: bool,
     ) -> Result<()> {
-        let PreparedSource { source, completion } = source;
+        let PreparedSource { source } = source;
         self.clear_and_play(source, start_paused)?;
-        self.completion = Some(completion);
         self.stream_handle = stream_handle;
         self.total_duration = total_duration;
         self.progress_rx = progress_rx;
@@ -495,12 +358,6 @@ impl AudioPlayer {
             .unwrap_or(StreamingStatus::Complete)
     }
 
-    pub(super) fn decoder_failed(&self) -> bool {
-        self.completion
-            .as_ref()
-            .is_some_and(|completion| completion.decoder_failed())
-    }
-
     pub(super) fn stream_has_complete_body(&self) -> bool {
         match self.stream_handle.as_ref() {
             Some(handle) => handle.has_complete_body(),
@@ -517,9 +374,6 @@ impl AudioPlayer {
             && let Some(message) = handle.error_message()
         {
             failures.push(message);
-        }
-        if self.decoder_failed() {
-            failures.push("audio decoder ended before its expected duration".to_string());
         }
         (!failures.is_empty()).then(|| failures.join("; "))
     }
@@ -568,7 +422,6 @@ impl AudioPlayer {
         // 换歌不会漏看上一首——所有播放入口都经 clear_and_play，那里会清。
         self.progress_rx = None;
         self.total_duration = None;
-        self.completion = None;
     }
 
     pub(super) fn set_volume(&mut self, volume: f32) {
@@ -874,7 +727,5 @@ pub(super) fn resolve_cache_root(config: &Config) -> PathBuf {
     STORAGE.cache.clone()
 }
 
-#[cfg(test)]
-mod completion_tests;
 #[cfg(test)]
 mod seek_worker_tests;
