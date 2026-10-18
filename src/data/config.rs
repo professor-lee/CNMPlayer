@@ -86,6 +86,8 @@ pub struct Config {
     pub show_hints: bool,
     pub small_window_display: bool,
     pub home_more_recommend: bool,
+    /// MPRIS Identity 模板；留空使用 CNMPlayer，`@play` 替换为当前曲名。
+    pub mpris_name: String,
     pub cache: CacheConfig,
     pub keybind_search_box: String,
     pub keybind_fullscreen: String,

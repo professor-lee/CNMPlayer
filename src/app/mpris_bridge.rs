@@ -1,9 +1,12 @@
 use super::playback_controller::PlaybackRuntimeState;
 use super::playback_controller::PlaybackTrack;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub(super) struct MprisSyncPayload {
+    // Every latest-value snapshot retains Identity, even when updates coalesce.
+    pub(super) identity: Arc<String>,
     pub(super) playback: PlaybackRuntimeState,
     pub(super) position: Duration,
     pub(super) track: Option<PlaybackTrack>,
@@ -29,7 +32,6 @@ mod imp {
     use crate::data::config::CacheConfig;
     use crate::launch;
 
-    const MPRIS_IDENTITY: &str = "CNMPlayer";
     use mpris_server::Metadata;
     use mpris_server::PlaybackStatus;
     use mpris_server::Player;
@@ -53,7 +55,11 @@ mod imp {
     }
 
     impl MprisBridge {
-        pub fn new(cache_root: &Path, cache_policy: &CacheConfig) -> Self {
+        pub fn new(
+            cache_root: &Path,
+            cache_policy: &CacheConfig,
+            identity: std::sync::Arc<String>,
+        ) -> Self {
             let art_dir = cache_root.join("mpris_art");
 
             let (tx, mut rx) = see::unsync::channel(None);
@@ -73,7 +79,7 @@ mod imp {
                     log::warn!("mpris cache initialization task panicked");
                 }
                 let player = match Player::builder("cnmplayer")
-                    .identity(MPRIS_IDENTITY)
+                    .identity(identity.as_str())
                     .can_play(true)
                     .can_pause(true)
                     .can_seek(true)
@@ -171,6 +177,10 @@ mod imp {
         cache_policy: &CacheConfig,
         payload: MprisSyncPayload,
     ) -> zbus::Result<()> {
+        if player.identity().as_str() != payload.identity.as_str() {
+            player.set_identity(payload.identity.as_str()).await?;
+        }
+
         player
             .set_playback_status(match payload.playback {
                 super::PlaybackRuntimeState::Playing => PlaybackStatus::Playing,
@@ -336,7 +346,11 @@ mod imp {
     pub struct MprisBridge;
 
     impl MprisBridge {
-        pub fn new(_cache_root: &Path, _cache_policy: &CacheConfig) -> Self {
+        pub fn new(
+            _cache_root: &Path,
+            _cache_policy: &CacheConfig,
+            _identity: std::sync::Arc<String>,
+        ) -> Self {
             Self
         }
 

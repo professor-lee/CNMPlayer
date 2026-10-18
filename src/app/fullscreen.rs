@@ -327,6 +327,7 @@ impl App {
         self.config = config;
         self.refresh_download_root();
         self.persist_config();
+        self.sync_mpris_exposure();
         if memory_changed {
             if self.config.playback_memory {
                 self.persist_playback_memory();

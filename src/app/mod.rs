@@ -58,6 +58,7 @@ use self::metadata::LyricFetchRequest;
 use self::metadata::LyricFetchResult;
 use self::metadata::loop_cover_fetch;
 use self::metadata::loop_lyric_fetch;
+use self::mpris::MprisName;
 use self::mpris_bridge::MprisBridge;
 use self::playback_controller::PlaybackController;
 use self::playback_controller::PlaybackRuntimeState;
@@ -122,6 +123,7 @@ pub(crate) enum Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Overlay {
     Settings,
+    SettingsGeneral,
     SettingsPlayback,
     SettingsKeybinds,
     SettingsLyrics,
@@ -214,6 +216,7 @@ pub(crate) struct App {
     lyric_fetch_generation: u64,
     lyric_fetch_last_attempt_at: Option<Instant>,
     mpris_bridge: MprisBridge,
+    mpris_name: MprisName,
     mpris_last_sync_at: Instant,
     mpris_last_signature: Option<u64>,
     mpris_last_playback: PlaybackRuntimeState,
@@ -255,7 +258,9 @@ impl App {
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let download_root =
             crate::app::download::resolve_download_root(config.download_path.as_deref());
-        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache);
+        let mpris_name = MprisName::new(&config.mpris_name, None);
+        let mpris_bridge =
+            MprisBridge::new(&cache_root, &config.cache, mpris_name.identity.clone());
         if config.cache.clean_on_startup {
             cache_maintenance.request(cover_cache_dir.clone());
         }
@@ -352,6 +357,7 @@ impl App {
             lyric_fetch_generation: 0,
             lyric_fetch_last_attempt_at: None,
             mpris_bridge,
+            mpris_name,
             mpris_last_sync_at: Instant::now(),
             mpris_last_signature: None,
             mpris_last_playback: PlaybackRuntimeState::Stopped,
