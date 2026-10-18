@@ -30,7 +30,6 @@ mod imp {
     use crate::launch;
 
     const MPRIS_IDENTITY: &str = "CNMPlayer";
-    use crate::render::wake::WakeSignal;
     use mpris_server::Metadata;
     use mpris_server::PlaybackStatus;
     use mpris_server::Player;
@@ -54,7 +53,7 @@ mod imp {
     }
 
     impl MprisBridge {
-        pub fn new(cache_root: &Path, cache_policy: &CacheConfig, wake: WakeSignal) -> Self {
+        pub fn new(cache_root: &Path, cache_policy: &CacheConfig) -> Self {
             let art_dir = cache_root.join("mpris_art");
 
             let (tx, mut rx) = see::unsync::channel(None);
@@ -90,7 +89,7 @@ mod imp {
                     }
                 };
 
-                bind_control_callbacks(&player, &event_tx, &wake);
+                bind_control_callbacks(&player, &event_tx);
 
                 launch(player.run());
 
@@ -124,65 +123,45 @@ mod imp {
         }
     }
 
-    fn bind_control_callbacks(
-        player: &Player,
-        event_tx: &Sender<MprisControlEvent>,
-        wake: &WakeSignal,
-    ) {
+    fn bind_control_callbacks(player: &Player, event_tx: &Sender<MprisControlEvent>) {
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_play(move |_| {
             let _ = tx.send(MprisControlEvent::Play);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_pause(move |_| {
             let _ = tx.send(MprisControlEvent::Pause);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_play_pause(move |_| {
             let _ = tx.send(MprisControlEvent::PlayPause);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_stop(move |_| {
             let _ = tx.send(MprisControlEvent::Stop);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_next(move |_| {
             let _ = tx.send(MprisControlEvent::Next);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_previous(move |_| {
             let _ = tx.send(MprisControlEvent::Previous);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_seek(move |_, offset| {
             let _ = tx.send(MprisControlEvent::SeekRelativeMicros(offset.as_micros()));
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_set_position(move |_, _, position| {
             let _ = tx.send(MprisControlEvent::SeekAbsoluteMicros(position.as_micros()));
-            signal.notify();
         });
     }
 
