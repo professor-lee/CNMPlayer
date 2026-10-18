@@ -36,9 +36,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alsa"
-version = "0.12.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3f93573e7ddb15145d27c58c0fa0a452faad9f5452ac17ed4554ea035ea9b71"
+checksum = "812947049edcd670a82cd5c73c3661d2e58468577ba8489de58e1a73c04cbd5d"
 dependencies = [
  "alsa-sys",
  "bitflags 2.13.2",
@@ -48,11 +48,10 @@ dependencies = [
 
 [[package]]
 name = "alsa-sys"
-version = "0.6.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0320138053ef93099f168102c37b46ac0b9c53affc56ef7696633ad5477e2be"
+checksum = "ad7569085a265dd3f607ebecce7458eaab2132a84393534c95b18dcbc3f31e04"
 dependencies = [
- "cc",
  "libc",
  "pkg-config",
 ]
@@ -979,8 +978,9 @@ dependencies = [
 
 [[package]]
 name = "cpal"
-version = "0.18.0"
-source = "git+https://github.com/revonateB0T/cpal#d5bb8c12092567435eebd0de126b5f473fbae5f4"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f02e8d0327b42d3e2e4ab2119af397344eb9fc54a34bf0ddeaa1277af8681f1"
 dependencies = [
  "alsa",
  "block2",
