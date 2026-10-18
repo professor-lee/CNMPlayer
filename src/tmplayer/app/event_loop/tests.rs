@@ -171,6 +171,93 @@ fn appended_host_page_keeps_playlist_focus_on_the_boundary_row() {
     assert_eq!(app.playlist_view.selected, 0, "替换来源时聚焦当前播放项");
 }
 
+struct TransitionHost {
+    wake: crate::render::wake::WakeSignal,
+}
+
+impl HostPlaybackBridge for TransitionHost {
+    async fn tick(&mut self) {}
+
+    fn wake_signal(&self) -> crate::render::wake::WakeSignal {
+        self.wake.clone()
+    }
+
+    fn metadata_signature(&self) -> u64 {
+        0
+    }
+
+    fn runtime_snapshot(&self) -> HostPlaybackRuntimeSnapshot {
+        HostPlaybackRuntimeSnapshot::default()
+    }
+
+    fn pcm_ring(&self) -> std::sync::Arc<crate::tmplayer::audio::pcm_tap::PcmRing> {
+        std::sync::Arc::new(crate::tmplayer::audio::pcm_tap::PcmRing::new())
+    }
+
+    fn snapshot(&mut self) -> HostPlaybackSnapshot {
+        HostPlaybackSnapshot::default()
+    }
+
+    fn host_snapshot<B: Backend>(
+        &mut self,
+        _terminal: &mut Terminal<B>,
+    ) -> std::result::Result<ratatui::buffer::Buffer, B::Error> {
+        Ok(ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(
+            0, 0, 80, 24,
+        )))
+    }
+
+    fn config_signature(&self) -> u64 {
+        0
+    }
+
+    fn config_snapshot(&self) -> Config {
+        Config::default()
+    }
+
+    async fn apply_config_sync(&mut self, _config: Config) {}
+
+    fn vip_audio_unlocked(&self) -> bool {
+        false
+    }
+
+    async fn toggle_play_pause(&mut self) {}
+    async fn play_previous(&mut self) {}
+    async fn play_next(&mut self) {}
+    async fn play_queue_index(&mut self, _index: usize) {}
+    fn request_queue_page(&mut self) {}
+    fn seek_to_ratio(&mut self, _ratio: f32) {}
+    fn set_volume(&mut self, _volume: f32) {}
+    fn toggle_repeat_mode(&mut self) {}
+    async fn toggle_like_current(&mut self) {}
+    fn download_current(&mut self) {}
+}
+
+#[compio::test]
+async fn fullscreen_page_transition_keeps_animation_frame_pacing() {
+    let mut app = AppState::new(
+        Config::default(),
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::En,
+    );
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    let wake = crate::render::wake::WakeSignal::default();
+    let mut tui = Tui::new(&mut terminal, wake.clone());
+    let mut host = TransitionHost { wake };
+    let snapshot = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 80, 24));
+    let started = Instant::now();
+    let layout = play_page_transition(&mut tui, &mut app, &mut host, true, snapshot)
+        .await
+        .expect("page transition");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(900),
+        "page transition must not fall back to the one-second idle heartbeat: {elapsed:?}"
+    );
+    assert_eq!(layout.full.width, 80);
+}
+
 #[test]
 fn runtime_snapshot_resets_position_anchor_when_position_is_unchanged() {
     let mut app = AppState::new(

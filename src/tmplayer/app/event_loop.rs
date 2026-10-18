@@ -523,6 +523,10 @@ where
     let mut motion = Transition::new(start_value);
     let mut started = false;
     let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
+    // The transition is an animation: dirty is cleared after every submission,
+    // so the local clock must stay in continuous mode or `next_deadline()` falls
+    // back to the one-second idle heartbeat.
+    clock.set_continuous(true);
     let mut metadata = None;
     let mut previous_layout = UiLayout::default();
     let layout = loop {
