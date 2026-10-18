@@ -289,6 +289,30 @@ fn fullscreen_lyrics_do_not_force_continuous_redraw() {
 }
 
 #[test]
+fn continuous_animation_alone_does_not_mark_state_dirty() {
+    let config = Config {
+        visualize: VisualizeMode::Bars,
+        ..Config::default()
+    };
+    let mut app = AppState::new(
+        config,
+        crate::ui::theme::Theme::default(),
+        crate::data::config::Language::En,
+    );
+    app.player.playback = PlaybackState::Playing;
+    assert!(
+        app.should_continuous_redraw(),
+        "bars animation is continuous while playing"
+    );
+    let now = Instant::now();
+    app.last_frame = now;
+    assert!(
+        !tick_visual_state(&mut app, now),
+        "continuous animation must be paced by the clock, not marked dirty every frame"
+    );
+}
+
+#[test]
 fn continuous_animation_end_marks_one_final_frame() {
     let start = Instant::now();
     let mut clock = FrameClock::new(60, start);

@@ -448,7 +448,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         app.prepare_page_transition(terminal)?;
         let continuous = app.should_continuous_redraw();
         mark_animation_end_frame(&mut clock, was_continuous, continuous);
-        if app.covers.poll() || continuous {
+        if app.covers.poll() {
             clock.mark_dirty();
         }
         clock.set_continuous(continuous);

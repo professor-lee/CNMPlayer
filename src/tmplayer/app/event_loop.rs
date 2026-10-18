@@ -382,7 +382,9 @@ async fn sync_from_host_bridge(
 fn tick_visual_state(app: &mut AppState, now: Instant) -> bool {
     let scope_before = app.scope_gain.value();
     app.tick(now);
-    scope_before != app.scope_gain.value() || app.should_continuous_redraw()
+    // Continuous animation is paced by the frame clock, not by dirty frames.
+    // Only report actual state changes here.
+    scope_before != app.scope_gain.value()
 }
 
 pub async fn run<B: Backend>(
@@ -457,7 +459,7 @@ where
             state_changed |= tui.poll_cover_frames();
             let continuous = app.should_continuous_redraw();
             mark_animation_end_frame(&mut clock, was_continuous, continuous);
-            if state_changed || continuous {
+            if state_changed {
                 clock.mark_dirty();
             }
             clock.set_fps(app.render_fps(), frame_start);
@@ -547,8 +549,9 @@ where
         let now = Instant::now();
         app.tick(now);
         motion.tick(now);
-        tui.poll_cover_frames();
-        clock.mark_dirty();
+        if tui.poll_cover_frames() {
+            clock.mark_dirty();
+        }
         if clock.due(now) {
             update_spectrum(app, &previous_layout, now)?;
             let layout = tui.draw_reveal(app, &host_snapshot, motion.value())?;
