@@ -196,6 +196,8 @@ sudo apt install -y build-essential cmake pkg-config \
 - Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime
 - A Nerd Font is required for the playback and navigation icons; the application never guesses glyph availability from `TERM`
 
+When PipeWire successfully reroutes playback to a new system default output, the current track keeps its position and pause state. CPAL's [`DeviceChanged`](https://docs.rs/cpal/0.18.2/cpal/enum.ErrorKind.html#variant.DeviceChanged) notification does not restart playback; actual output failures still stop playback and appear in the status line.
+
 ## First Run and Asset Root
 
 On first run the app creates an asset directory under your OS config directory; on Linux this is usually `~/.config/cnmplayer`.
