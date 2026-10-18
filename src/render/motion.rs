@@ -179,6 +179,10 @@ impl Trail {
         self.motion.tick(now)
     }
 
+    pub fn is_running(&self) -> bool {
+        self.motion.is_running()
+    }
+
     pub fn value(&self) -> f32 {
         self.motion.value()
     }

@@ -168,7 +168,7 @@ impl App {
         }
         if self.input.search_motion.is_running()
             || self.browse.home_sidebar.motion.is_running()
-            || self.browse.home_sidebar.trail.value() > 0.0
+            || self.browse.home_sidebar.trail.is_running()
         {
             return true;
         }
