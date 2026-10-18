@@ -39,8 +39,8 @@ parking_lot = "0.12"
 realfft = "3.5"
 cyper = { version = "0.9", features = ["json", "cookies", "stream", "http2"] }
 compio = { version = "0.19", features = ["macros", "time"] }
-http = "1.4"
-see = { git = "https://github.com/compio-rs/see" }
+http = "1.5"
+see = "0.1"
 unicode-width = "0.2"
 rodio = { git = "https://github.com/RustAudio/rodio", default-features = false, features = ["playback", "symphonia", "pipewire"] }
 
