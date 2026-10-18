@@ -94,9 +94,8 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 
 ### Playback
 
-- Streaming: URL lookup, cache opening and decoder preparation run in the background, so buffering does not block input or drawing. Setup is bounded to 30 seconds; a stream with no new bytes for 30 seconds fails and stops with an error instead of silently advancing. Normal EOF advances the queue. Only a complete response becomes a cache file; the progress bar shows buffered bytes, and partial/cancelled transfers are not reused.
+- Streaming: the song is downloaded into the local audio cache while it plays, and only becomes the cached file after the complete response is written — a partial or cancelled transfer is never played from the cache. The buffered part of the progress bar shows download progress.
 - Seeking from the progress bar or inside the fullscreen page, with a pulse animation while the position catches up
-- Lyrics accept ordinary/enhanced LRC and JSON/YRC, including mixed JSON/LRC documents, without stripping literal bracketed text. Confirmed empty responses are remembered for the current queue; request/parse failures remain retryable. Rendered lyric frames are bounded and reused across matching document, time, geometry, theme and display settings.
 - Queue memory (`playback_memory`): queue, current index, repeat mode and the queue's origin list are saved on every track change and restored on startup; the restored track starts from the beginning
 - VIP-aware audio quality (`audio_quality`): 9 levels from `standard` to `jymaster`; a non-VIP account is clamped to `exhigh`
 - 10-band EQ, ±12 dB (`eq_bands_db`), edited from the fullscreen EQ modal and applied to the live stream
@@ -253,12 +252,12 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `ui_fps` | `60` | Positive integer cap for continuous UI animation on the host and the fullscreen page. Dirty input/content updates are submitted immediately; idle surfaces wake on a one-second heartbeat. Actual FPS depends on terminal speed and processing cost |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |
 | `cache.clean_strategy` | `both` | `size`, `age`, `both` |
-| `cache.max_size_mb` | `500` | Per-directory size ceiling; active/preparing audio is protected until released |
+| `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
 | `cache.max_age_days` | `7` | Age limit for the TTL pass |
-| `cache.clean_on_startup` | `true` | Run a startup cleanup pass; runtime cleanup remains enabled |
+| `cache.clean_on_startup` | `true` | Run the cleanup while starting |
 | `keybind_*` | see below | 22 rebindable shortcuts |
 
-Completed audio/cover writes enqueue coalesced background cleanup: an age pass followed by eviction of the oldest modified files to meet the size limit, looking only at each directory's direct files. In-flight `.part` files and active/preparing audio are protected; releasing audio schedules another pass. Turning off `clean_on_startup` skips only the startup pass.
+Cleanup runs as an age pass followed by a size LRU pass, and only looks at files directly inside the directory.
 
 ## Keyboard Shortcuts
 
