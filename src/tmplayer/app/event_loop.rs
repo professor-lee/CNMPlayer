@@ -1,7 +1,6 @@
 use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
-use crate::render::mark_animation_end_frame;
 use crate::tmplayer::app::state::{AppState, Overlay, PlaybackState, RepeatMode};
 use crate::tmplayer::ui::tui::Tui;
 use crate::tmplayer::ui::tui::layout::UiLayout;
@@ -405,7 +404,6 @@ where
     let mut last_host_sync = Instant::now() - Duration::from_millis(50);
     let wake = host_bridge.wake_signal();
     let mut clock = FrameClock::new(app.render_fps(), Instant::now());
-    let mut was_continuous = false;
 
     let _ = sync_from_host_bridge(
         app,
@@ -456,13 +454,11 @@ where
             state_changed |= tick_visual_state(app, frame_start);
             state_changed |= tui.poll_cover_frames();
             let continuous = app.should_continuous_redraw();
-            mark_animation_end_frame(&mut clock, was_continuous, continuous);
             if state_changed || continuous {
                 clock.mark_dirty();
             }
             clock.set_fps(app.render_fps(), frame_start);
             clock.set_continuous(continuous);
-            was_continuous = continuous;
             if clock.due(frame_start) {
                 update_spectrum(app, &last_layout, frame_start)?;
                 last_layout = tui.draw(app)?;
