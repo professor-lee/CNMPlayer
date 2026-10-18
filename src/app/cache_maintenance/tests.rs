@@ -58,23 +58,26 @@ fn completed_writes_enforce_budget_without_restart_and_preserve_parts() {
 }
 
 #[test]
-fn active_atomic_temps_are_not_counted_or_removed() {
+fn tmp_files_survive_age_and_size_cleanup_without_evicting_valid_cache() {
     let directory = Directory::new();
-    let old = directory.file("old.audio", 2 * 1024 * 1024, Duration::ZERO);
-    let temp_name = format!(
-        ".cover.tmp-{}-{}-0",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+    let cached = directory.file("cached.audio", 700 * 1024, Duration::ZERO);
+    let temp = directory.file(
+        "song-123.tmp",
+        2 * 1024 * 1024,
+        Duration::from_secs(2 * 86400),
     );
-    let temp = directory.file(&temp_name, 2 * 1024 * 1024, Duration::from_secs(2 * 86400));
+    let fresh_temp = directory.file("download-456.tmp", 2 * 1024 * 1024, Duration::ZERO);
+    let open_temp = fs::OpenOptions::new().write(true).open(&temp).unwrap();
     let maintenance = CacheMaintenance::new(policy(CacheCleanStrategy::Both));
     maintenance.request(directory.0.clone());
     maintenance.flush();
-    assert!(!old.exists());
-    assert!(temp.exists());
+    assert!(cached.exists());
+    assert_eq!(fs::metadata(&temp).unwrap().len(), 2 * 1024 * 1024);
+    assert_eq!(fs::metadata(fresh_temp).unwrap().len(), 2 * 1024 * 1024);
+    drop(open_temp);
+    let target = directory.0.join("cover.img");
+    fs::rename(&temp, &target).unwrap();
+    assert_eq!(fs::metadata(target).unwrap().len(), 2 * 1024 * 1024);
 }
 
 #[test]

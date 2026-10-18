@@ -13,7 +13,7 @@ fn replacement_failure_keeps_existing_directory_and_cleans_temp() {
         fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-"))
+            .all(|entry| entry.path().extension().is_none_or(|ext| ext != "tmp"))
     );
     let _ = fs::remove_dir_all(dir);
 }
@@ -38,23 +38,9 @@ fn concurrent_replacements_use_unique_same_directory_temporaries() {
         fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-"))
+            .all(|entry| entry.path().extension().is_none_or(|ext| ext != "tmp"))
     );
     let _ = fs::remove_dir_all(dir);
-}
-
-#[test]
-fn atomic_temp_names_are_recognized_without_matching_hidden_files() {
-    let current_pid = std::process::id();
-    assert!(super::is_atomic_temp_path(std::path::Path::new(&format!(
-        ".cover.tmp-{current_pid}-123-0"
-    ))));
-    assert!(!super::is_atomic_temp_path(std::path::Path::new(
-        ".cover.tmp"
-    )));
-    assert!(!super::is_atomic_temp_path(std::path::Path::new(
-        "cover.tmp-1-2-3"
-    )));
 }
 
 #[cfg(unix)]
