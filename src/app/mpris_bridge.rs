@@ -331,13 +331,12 @@ mod imp {
     use super::MprisControlEvent;
     use super::MprisSyncPayload;
     use crate::data::config::CacheConfig;
-    use crate::render::wake::WakeSignal;
     use std::path::Path;
 
     pub struct MprisBridge;
 
     impl MprisBridge {
-        pub fn new(_cache_root: &Path, _cache_policy: &CacheConfig, _wake: WakeSignal) -> Self {
+        pub fn new(_cache_root: &Path, _cache_policy: &CacheConfig) -> Self {
             Self
         }
 
