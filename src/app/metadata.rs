@@ -94,6 +94,8 @@ pub(super) struct LyricFetchRequest {
 pub(super) struct LyricFetchResult {
     pub(super) song_id: String,
     pub(super) generation: u64,
+    /// `None` is retryable; `Some(empty)` records confirmed absence in both
+    /// the current track and queue, suppressing subsequent lyric requests.
     pub(super) lyrics: Option<Vec<LyricLine>>,
 }
 
@@ -145,18 +147,130 @@ pub(super) async fn loop_cover_fetch(
     .await;
 }
 
-/// Fetch the complete lyric document, including YRC word timings and
-/// translations, regardless of `word_lyrics` / `lyric_translation`. Those
-/// settings are display-only and must never gate this path.
-pub(super) async fn fetch_lyrics(api: &mut ApiState, song_id: &str) -> Option<Vec<LyricLine>> {
-    if let Ok(response) = api.lyric_new(song_id).await
-        && let Some(lines) = parse_lyric_response(&response.body)
-    {
-        return Some(lines);
+enum LyricResponse {
+    Present(Vec<LyricLine>),
+    Absent,
+    Retryable,
+}
+
+fn classify_lyric_response(response: anyhow::Result<ncm_api::ApiResponse>) -> LyricResponse {
+    let Ok(response) = response else {
+        return LyricResponse::Retryable;
+    };
+    let code = response.body.get("code").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|code| code.parse().ok()))
+    });
+    // The API normalizes some error statuses to 200, so inspect the body code
+    // before either accepting lyrics or recording a negative cache entry.
+    if response.status != 200 || code != Some(200) {
+        return LyricResponse::Retryable;
+    }
+    if let Some(lines) = parse_lyric_response(&response.body) {
+        return LyricResponse::Present(lines);
     }
 
-    let response = api.lyric(song_id).await.ok()?;
-    parse_lyric_response(&response.body)
+    // Empty successful documents (including nolyric/uncollected responses)
+    // confirm absence. Nonempty unparseable or wrongly typed lyric fields do
+    // not: a later request must still be allowed to recover their contents.
+    let empty = ["yrc", "lrc", "ytlrc", "tlyric", "romalrc"]
+        .iter()
+        .all(|key| {
+            let field = &response.body[*key];
+            let text = match field {
+                serde_json::Value::Null => return true,
+                serde_json::Value::String(text) => return text.trim().is_empty(),
+                serde_json::Value::Object(fields) if fields.is_empty() => return true,
+                serde_json::Value::Object(fields) => fields.get("lyric"),
+                _ => return false,
+            };
+            match text {
+                Some(serde_json::Value::Null) => true,
+                Some(serde_json::Value::String(text)) => text.trim().is_empty(),
+                _ => false,
+            }
+        });
+    if empty {
+        LyricResponse::Absent
+    } else {
+        LyricResponse::Retryable
+    }
+}
+
+async fn fetch_lyrics_from(
+    mut fetch: impl AsyncFnMut(bool) -> anyhow::Result<ncm_api::ApiResponse>,
+) -> Option<Vec<LyricLine>> {
+    let first = classify_lyric_response(fetch(true).await);
+    if let LyricResponse::Present(lines) = first {
+        return Some(lines);
+    }
+    match classify_lyric_response(fetch(false).await) {
+        LyricResponse::Present(lines) => Some(lines),
+        LyricResponse::Absent if matches!(first, LyricResponse::Absent) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+/// Fetch the complete lyric document, including YRC word timings and
+/// translations, regardless of `word_lyrics` / `lyric_translation`. Those
+/// settings are display-only and must never gate this path. `Some(empty)` is
+/// confirmed absence from both endpoints; `None` remains eligible for retry.
+pub(super) async fn fetch_lyrics(api: &mut ApiState, song_id: &str) -> Option<Vec<LyricLine>> {
+    fetch_lyrics_from(async |new_endpoint| {
+        if new_endpoint {
+            api.lyric_new(song_id).await
+        } else {
+            api.lyric(song_id).await
+        }
+    })
+    .await
+}
+
+fn apply_lyric_result(
+    result: LyricFetchResult,
+    generation: u64,
+    inflight_song_id: &mut Option<String>,
+    now_playing: &mut Option<PlaybackTrack>,
+    queue: &mut [PlaybackTrack],
+    index: Option<usize>,
+) {
+    if result.generation != generation {
+        return;
+    }
+    if inflight_song_id.as_deref() == Some(result.song_id.as_str()) {
+        *inflight_song_id = None;
+    }
+    let Some(now) = now_playing.as_mut() else {
+        return;
+    };
+    if now.song_id != result.song_id || now.lyrics.is_some() {
+        return;
+    }
+    let Some(lyrics) = result.lyrics else {
+        return;
+    };
+    now.lyrics = Some(lyrics.clone());
+    if let Some(slot) = index.and_then(|index| queue.get_mut(index))
+        && slot.song_id == result.song_id
+    {
+        slot.lyrics = Some(lyrics);
+    }
+}
+
+fn lyric_fetch_due(
+    now_playing: Option<&PlaybackTrack>,
+    inflight_song_id: Option<&str>,
+    last_attempt_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    now_playing.is_some_and(|track| {
+        track.lyrics.is_none()
+            && inflight_song_id != Some(track.song_id.as_str())
+            && last_attempt_at.is_none_or(|last| {
+                now.duration_since(last) >= Duration::from_millis(LYRICS_FETCH_RETRY_MS)
+            })
+    })
 }
 
 pub(super) async fn loop_lyric_fetch(
@@ -372,35 +486,14 @@ impl App {
     }
 
     fn apply_lyric_fetch_result(&mut self, result: LyricFetchResult) {
-        if result.generation != self.lyric_fetch_generation {
-            return;
-        }
-        if self.lyric_fetch_inflight_song_id.as_deref() == Some(result.song_id.as_str()) {
-            self.lyric_fetch_inflight_song_id = None;
-        }
-
-        let Some(now) = self.playback.now_playing.as_ref() else {
-            return;
-        };
-        if now.song_id != result.song_id {
-            return;
-        }
-        if now.lyrics.is_some() {
-            return;
-        }
-
-        let Some(lyrics) = result.lyrics else {
-            return;
-        };
-
-        if let Some(now_mut) = self.playback.now_playing.as_mut() {
-            now_mut.lyrics = Some(lyrics.clone());
-        }
-        if let Some(index) = self.playback.playback_index
-            && let Some(slot) = self.playback.playback_queue.get_mut(index)
-        {
-            slot.lyrics = Some(lyrics);
-        }
+        apply_lyric_result(
+            result,
+            self.lyric_fetch_generation,
+            &mut self.lyric_fetch_inflight_song_id,
+            &mut self.playback.now_playing,
+            &mut self.playback.playback_queue,
+            self.playback.playback_index,
+        );
     }
 
     pub(super) fn maybe_schedule_now_playing_lyric_fetch(&mut self) {
@@ -415,14 +508,13 @@ impl App {
             }
         };
 
-        if self.lyric_fetch_inflight_song_id.as_deref() == Some(song_id.as_str()) {
-            return;
-        }
-
         let now_at = Instant::now();
-        if let Some(last) = self.lyric_fetch_last_attempt_at
-            && now_at.duration_since(last) < Duration::from_millis(LYRICS_FETCH_RETRY_MS)
-        {
+        if !lyric_fetch_due(
+            self.playback.now_playing.as_ref(),
+            self.lyric_fetch_inflight_song_id.as_deref(),
+            self.lyric_fetch_last_attempt_at,
+            now_at,
+        ) {
             return;
         }
 
@@ -516,3 +608,6 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
