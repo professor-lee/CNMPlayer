@@ -7,8 +7,10 @@ fn paused_theme_transition_keeps_redrawing_until_the_exact_target_frame() {
         visualize: VisualizeMode::Hidden,
         ..Config::default()
     };
-    let mut theme = Theme::default();
-    theme.capability = ColorCapability::TrueColor;
+    let theme = Theme {
+        capability: ColorCapability::TrueColor,
+        ..Theme::default()
+    };
     let mut app = AppState::new(config, theme.clone(), crate::data::config::Language::En);
     assert!(!app.should_continuous_redraw());
     let mut next = theme.clone();
