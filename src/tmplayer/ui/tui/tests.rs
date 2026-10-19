@@ -652,9 +652,16 @@ fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
                     for x in closed_layout.left.left()..closed_layout.left.right() {
                         if contains(frame.playlist_rect, x, y) {
                             let source_x = (i32::from(x) - i32::from(dx)) as u16;
+                            let mut expected = fully_open[(source_x, y)].clone();
+                            if x == closed_layout.left.left() {
+                                // Only the frame's left glyph stays above the drawer;
+                                // its background still moves with the original panel.
+                                expected = background[(x, y)].clone();
+                                expected.bg = fully_open[(source_x, y)].bg;
+                            }
                             assert_eq!(
                                 actual[(x, y)],
-                                fully_open[(source_x, y)],
+                                expected,
                                 "drawer cell must translate, not rescale: opening={opening}, dx={dx}"
                             );
                         } else {
@@ -715,7 +722,8 @@ fn drawer_failed_cover_is_blank_without_ascii_or_retry_loop() {
         let exposed = translated_clip(cover, i32::from(dx), frame.playlist_rect);
         for y in exposed.top()..exposed.bottom() {
             for x in exposed.left()..exposed.right() {
-                assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), " ");
+                let expected = if x == frame.left.x { "│" } else { " " };
+                assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), expected);
             }
         }
     }

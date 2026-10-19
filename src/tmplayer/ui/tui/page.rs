@@ -266,7 +266,15 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
                         cover_key(pl_layout.cover_rect, hash),
                     );
                 }
-                drawer::paint(f.buffer_mut(), &sidebar.buffer, i32::from(dx), visible);
+                // Keep the page's left frame above the drawer, but let the
+                // drawer's background cover the same area as before.
+                let content =
+                    Rect::new(visible.x + 1, visible.y, visible.width - 1, visible.height);
+                drawer::paint(f.buffer_mut(), &sidebar.buffer, i32::from(dx), content);
+                let source_x = (i32::from(visible.x) - i32::from(dx)) as u16;
+                for y in visible.top()..visible.bottom() {
+                    f.buffer_mut()[(visible.x, y)].bg = sidebar.buffer[(source_x, y)].bg;
+                }
                 layout_out.playlist_inner =
                     translated_clip(pl_layout.inner, i32::from(dx), visible);
                 layout_out.playlist_list_inner =
