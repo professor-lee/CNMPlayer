@@ -37,6 +37,12 @@ pub(crate) struct HitRect {
 }
 
 impl HitRect {
+    fn translated_clip(self, dx: i32, clip: Rect) -> Option<Self> {
+        let area = Rect::new(self.x, self.y, self.width, self.height);
+        let visible = crate::render::drawer::translated_clip(area, dx, clip);
+        (!visible.is_empty()).then(|| Self::from(visible))
+    }
+
     pub(crate) fn contains(self, col: u16, row: u16) -> bool {
         self.width > 0
             && self.height > 0
@@ -510,6 +516,28 @@ impl App {
 
     pub(crate) fn set_home_sidebar_panel_hit(&mut self, rect: Option<HitRect>) {
         self.home_sidebar_panel_hit = rect;
+    }
+
+    /// Keep click and wheel regions on exactly the cells exposed by the drawer.
+    pub(crate) fn translate_home_sidebar_hits(&mut self, dx: i32, clip: Rect) {
+        let translate = |rect: HitRect| rect.translated_clip(dx, clip);
+        self.home_sidebar_panel_hit = self.home_sidebar_panel_hit.and_then(translate);
+        self.home_sidebar_playlist_hits.retain_mut(|(rect, _)| {
+            if let Some(visible) = translate(*rect) {
+                *rect = visible;
+                true
+            } else {
+                false
+            }
+        });
+        self.home_sidebar_section_hits.retain_mut(|(rect, _)| {
+            if let Some(visible) = translate(*rect) {
+                *rect = visible;
+                true
+            } else {
+                false
+            }
+        });
     }
 
     pub(crate) fn set_home_sidebar_anim_span_cells(&mut self, span_cells: u16) {

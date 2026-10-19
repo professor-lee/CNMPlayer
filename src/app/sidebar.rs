@@ -261,6 +261,8 @@ pub(crate) struct HomeSidebarState {
     pub(crate) motion: Toggle,
     pub(crate) trail: Trail,
     pub(crate) status_line: String,
+    /// Fixed-size rendering scratch, reused while the drawer translates.
+    pub(crate) buffer: ratatui::buffer::Buffer,
 }
 
 impl Default for HomeSidebarState {
@@ -287,6 +289,7 @@ impl Default for HomeSidebarState {
             motion: Toggle::new(false),
             trail: Trail::new(0.0),
             status_line: String::new(),
+            buffer: ratatui::buffer::Buffer::default(),
         }
     }
 }
