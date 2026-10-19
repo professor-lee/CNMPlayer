@@ -204,55 +204,24 @@ jobs:
     name: Sync AUR packages
     needs: [guard, build, gate, publish]
     # push：随发布自动同步；dispatch+sync_aur：手动补同步（此时 publish 被跳过）
-    if: ${{ always() && !cancelled() && needs.gate.result == 'success' && needs.publish.result != 'failed' && (github.event_name == 'push' || inputs.sync_aur == true) }}
+    if: ${{ always() && !cancelled() && needs.gate.result == 'success' && (needs.publish.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.sync_aur == true)) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
     container:
       image: archlinux:base-devel
-    env:
-      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
     steps:
-      - name: Prepare container
-        run: |
-          pacman -Syu --noconfirm git openssh curl
-          useradd -m builder
-
-      - name: Install SSH key & git identity
-        run: |
-          [ -n "$AUR_SSH_KEY" ] || { echo "::error::secret AUR_SSH_KEY is not set"; exit 1; }
-          install -d -m700 -o builder -g builder /home/builder/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" > /home/builder/.ssh/aur_key
-          chown builder:builder /home/builder/.ssh/aur_key
-          chmod 600 /home/builder/.ssh/aur_key
-          ssh-keyscan -H aur.archlinux.org > /home/builder/.ssh/known_hosts
-          chown builder:builder /home/builder/.ssh/known_hosts
-          git config --file /home/builder/.gitconfig core.sshCommand \
-            "ssh -i /home/builder/.ssh/aur_key -oIdentitiesOnly=yes"
-          git config --file /home/builder/.gitconfig user.name "白鞋油"
-          git config --file /home/builder/.gitconfig user.email \
-            "89632742+professor-lee@users.noreply.github.com"
-          chown builder:builder /home/builder/.gitconfig
-
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.tag }}
+
+      - name: Prepare AUR publishing environment
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: bash .github/scripts/aur_setup.sh
 
       - name: Run AUR sync as builder
         env:
-          INPUT_TAG: ${{ inputs.tag }}
-          SYNC_AUR: ${{ inputs.sync_aur }}
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="$INPUT_TAG"
-            if [ "$SYNC_AUR" = "true" ]; then DRY_RUN=false; else DRY_RUN=true; fi
-          else
-            TAG="$GITHUB_REF_NAME"
-            DRY_RUN=false
-          fi
-          # 脚本在 cwd 里 git clone 两个 AUR 仓库，而 $GITHUB_WORKSPACE 属 root，
-          # builder 无写权限（曾以 "could not create work tree dir: Permission denied"
-          # 失败）。因此在 builder 自己的 HOME 下另开一个工作目录。
-          workdir=/home/builder/aur
-          install -d -m755 -o builder -g builder "$workdir"
-          sudo -u builder -H bash -c \
-            "cd '$workdir' && bash '$GITHUB_WORKSPACE/.github/scripts/aur_sync.sh' '$TAG' '$DRY_RUN'"
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: sudo -u builder -H bash "$GITHUB_WORKSPACE/.github/scripts/aur_sync.sh" release "$TAG" false
