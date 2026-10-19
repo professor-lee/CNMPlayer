@@ -1,3 +1,4 @@
+# 设置中的两列半块色板：上排 accent / accent2，下排均为 accent3；无彩色终端不显示。
 theme = "frappe"
 ui_fps = 60
 visualize = "bars"

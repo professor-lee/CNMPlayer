@@ -83,6 +83,9 @@ pub(in crate::tmplayer::ui::tui) fn render_settings_modal(
             Paragraph::new(Line::styled(format!("  {}", text), item_style(idx))),
             rect,
         );
+        if idx == 0 {
+            crate::ui::settings::draw_theme_preview(f, &app.theme, rect);
+        }
         modal_rows.push(rect, idx);
     }
 

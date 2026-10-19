@@ -1,3 +1,4 @@
+use super::theme::{ColorCapability, Theme};
 use crate::app::App;
 use crate::app::Overlay;
 use crate::app::input_controller::HitRect;
@@ -62,6 +63,25 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
     }
 }
 
+/// 用原有的两列缩进显示 2×2 色板，不改变文字布局和鼠标命中区。
+pub(crate) fn draw_theme_preview(frame: &mut Frame, theme: &Theme, row: Rect) {
+    if row.is_empty() || theme.capability == ColorCapability::NoColor {
+        return;
+    }
+
+    let bottom = theme.color_accent3();
+    for (offset, top) in [theme.color_accent(), theme.color_accent2()]
+        .into_iter()
+        .take(usize::from(row.width))
+        .enumerate()
+    {
+        if let Some(cell) = frame.buffer_mut().cell_mut((row.x + offset as u16, row.y)) {
+            cell.set_symbol("▀")
+                .set_style(Style::reset().fg(top).bg(bottom));
+        }
+    }
+}
+
 fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -115,6 +135,7 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         Paragraph::new(lines).style(Style::default().bg(app.theme.color_surface())),
         rows[1],
     );
+    draw_theme_preview(frame, &app.theme, rows[1]);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
