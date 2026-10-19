@@ -266,15 +266,13 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
                         cover_key(pl_layout.cover_rect, hash),
                     );
                 }
-                // Keep the page's left frame above the drawer, but let the
-                // drawer's background cover the same area as before.
+                // Keep the left frame above moving content, on the drawer's surface color.
                 let content =
                     Rect::new(visible.x + 1, visible.y, visible.width - 1, visible.height);
                 drawer::paint(f.buffer_mut(), &sidebar.buffer, i32::from(dx), content);
-                let source_x = (i32::from(visible.x) - i32::from(dx)) as u16;
                 for y in visible.top()..visible.bottom() {
                     let cell = &mut f.buffer_mut()[(visible.x, y)];
-                    cell.bg = sidebar.buffer[(source_x, y)].bg;
+                    cell.set_style(surface);
                     if visible.width > 1
                         && !pl_layout.separator_area.is_empty()
                         && y == pl_layout.separator_area.y

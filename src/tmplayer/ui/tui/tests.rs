@@ -662,10 +662,10 @@ fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
                             let source_x = (i32::from(x) - i32::from(dx)) as u16;
                             let mut expected = fully_open[(source_x, y)].clone();
                             if x == closed_layout.left.left() {
-                                // Only the frame's left glyph stays above the drawer;
-                                // its background still moves with the original panel.
+                                // The fixed frame uses the drawer's surface, never
+                                // the selected row or the moving cover's pixel color.
                                 expected = background[(x, y)].clone();
-                                expected.bg = fully_open[(source_x, y)].bg;
+                                expected.bg = app.theme.color_surface();
                                 if frame.playlist_rect.width > 1
                                     && y == final_layout.separator_area.y
                                 {
