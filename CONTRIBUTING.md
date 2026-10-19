@@ -85,7 +85,8 @@ with `--no-default-features` to drop it.
 | `themes/` | 20 built-in TOML color themes (Catppuccin variants, ayu, everforest, monokai, nord, rose pine, solarized, tomorrow, zenburn, zinc and `system`; default `frappe`). |
 | `about/` | Content of the About modal — links, QQ group, braille art. |
 | `assets/`, `tools/` | Mascot source image and the script that regenerates its braille frames. |
-| `.github/` | `workflows/ci.yml`, `workflows/release.yml` and `scripts/aur_sync.sh`. |
+| `packaging/aur/` | Stable AUR recipe templates and the complete `cnmplayer-git` recipe. |
+| `.github/` | Rust and packaging CI, release publishing, and AUR synchronization scripts. |
 | Root documents | `README.md` / `README_zh.md` (two language variants kept in parallel), `DISCLAIMER.md` / `DISCLAIMER_zh.md`, `CHANGELOG`-free release notes on the Releases page, `CITATION.cff`, `THIRD_PARTY_NOTICES.md`, `LICENSE` (AGPL-3.0-only). |
 
 ## Module conventions
@@ -154,6 +155,25 @@ Version bumps and packaging are not part of a normal pull request: releases are
 triggered by a `v*` tag, the tag must equal the version in `Cargo.toml`, and
 `release.yml` tests both workspace crates before publishing amd64/aarch64 tarballs,
 their `SHA256SUMS`, and the AUR packages.
+
+### AUR packaging
+
+Maintain the three package recipes under `packaging/aur/`; the AUR repositories are publishing destinations, not a second source of recipe changes. Do not add nested Git repositories or generated `.SRCINFO` files here.
+
+- `cnmplayer/PKGBUILD.in` and `cnmplayer-bin/PKGBUILD.in` are rendered from the release tag. The sync downloads the source archive and both binary archives, computes their SHA-256 checksums, then generates complete `PKGBUILD` and `.SRCINFO` files. CI does not write release metadata back to this repository.
+- `release.yml` checks out the release tag for packaging as well as compilation. Tags published before these templates were introduced do not contain this packaging setup. The normal release path syncs stable packages only after successful publication; `workflow_dispatch` with `sync_aur=true` requires the release assets to exist already.
+- `aur-git.yml` runs on every push to `develop`. It compares the repository's `cnmplayer-git/PKGBUILD` and freshly generated `.SRCINFO` with AUR, and commits/pushes only when either differs. Ordinary source commits do not cause VCS version-only updates.
+- New upstream releases normally use `pkgrel=1`. For a packaging fix to an already released version, increment `pkgrel` in the relevant template/recipe before republishing. Keep any emergency AUR-side recipe correction in the main repository as well.
+- Publishing jobs use the `AUR_SSH_KEY` repository secret. Pull request packaging checks need no secret and use isolated local Git remotes; they never contact AUR or download release assets.
+
+On Arch Linux with `git`, `python`, and `makepkg` available, run the offline checks:
+
+```bash
+python .github/scripts/test_aur_sync.py -v
+```
+
+To inspect generated stable metadata for an existing release without publishing, run `bash .github/scripts/aur_sync.sh render v0.7.1 /tmp/cnmplayer-aur-preview`. To compare without committing or pushing, use `bash .github/scripts/aur_sync.sh release v0.7.1 true` or `bash .github/scripts/aur_sync.sh git true`. These commands only render recipes/metadata; they do not compile or install CNMPlayer. Actual build validation still requires an isolated Arch build environment.
+
 
 
 ## TUI-specific requirements

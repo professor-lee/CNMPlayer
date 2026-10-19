@@ -69,7 +69,8 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 | `themes/` | 内置 20 款 TOML 配色主题（Catppuccin 各变体、ayu、everforest、monokai、nord、rose pine、solarized、tomorrow、zenburn、zinc 与 `system`；默认 `frappe`）。 |
 | `about/` | About 弹窗的内容 —— 链接、QQ 群、点阵图案。 |
 | `assets/`、`tools/` | 彩蛋形象源图，以及重新生成其点阵帧的脚本。 |
-| `.github/` | `workflows/ci.yml`、`workflows/release.yml` 与 `scripts/aur_sync.sh`。 |
+| `packaging/aur/` | 稳定版 AUR 配方模板与完整的 `cnmplayer-git` 配方。 |
+| `.github/` | Rust 与打包 CI、发版流程及 AUR 同步脚本。 |
 | 根目录文档 | `README.md` / `README_zh.md`（中英两份并行维护）、`DISCLAIMER.md` / `DISCLAIMER_zh.md`、`CITATION.cff`、`THIRD_PARTY_NOTICES.md`、`LICENSE`（AGPL-3.0-only）。 |
 
 ## 模块维护规则
@@ -121,6 +122,25 @@ cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 随手一条 `cargo clippy` 不等同于门禁：`quality` 额外要求 `-D warnings`、覆盖两种特性组合，并单独对 vendored crate 执行 clippy，因此本地单独跑通并不代表该 job 会通过。
 
 版本号与打包不属于普通 PR 的范围：发布由 `v*` tag 触发，tag 必须与 `Cargo.toml` 里的版本号一致；`release.yml` 会在发布前测试 workspace 两个 crate，再发布 amd64/aarch64 压缩包、`SHA256SUMS` 与 AUR 包。
+
+### AUR 打包维护
+
+统一维护 `packaging/aur/` 下的三个包配方；AUR 仓库是发布出口，不是另一份独立维护的配方来源。不要在这里加入嵌套 Git 仓库或生成的 `.SRCINFO`。
+
+- `cnmplayer/PKGBUILD.in` 与 `cnmplayer-bin/PKGBUILD.in` 从 release tag 渲染。同步时下载源码归档和两种架构的二进制归档，计算实际 SHA-256，再生成完整的 `PKGBUILD` 与 `.SRCINFO`。CI 不将发布元数据回写主仓库。
+- `release.yml` 的打包与编译均 checkout 对应 release tag。引入模板之前的旧 tag 不含这套打包配置。正常发版仅在发布成功后同步稳定包；`workflow_dispatch` 的 `sync_aur=true` 要求 release 资产已经存在。
+- `aur-git.yml` 在每次推送 `develop` 时触发，将仓库中的 `cnmplayer-git/PKGBUILD` 和新生成的 `.SRCINFO` 与 AUR 比较，仅在任一文件不同时提交和推送。普通源码提交不会导致只更新 VCS 版本号的 AUR 提交。
+- 新上游版本通常使用 `pkgrel=1`；修复已经发布版本的打包问题时，应先递增对应模板或配方的 `pkgrel` 再发布。AUR 端的紧急配方修正也必须带回主仓库。
+- 发布 job 使用仓库 secret `AUR_SSH_KEY`。PR 的打包检查不需要密钥，使用隔离的本地 Git 远端，不访问 AUR 或下载 release 资产。
+
+在具有 `git`、`python` 和 `makepkg` 的 Arch Linux 环境中执行离线检查：
+
+```bash
+python .github/scripts/test_aur_sync.py -v
+```
+
+检查已有 release 的稳定版生成结果但不发布：`bash .github/scripts/aur_sync.sh render v0.7.1 /tmp/cnmplayer-aur-preview`。仅比较而不提交、推送：`bash .github/scripts/aur_sync.sh release v0.7.1 true` 或 `bash .github/scripts/aur_sync.sh git true`。这些命令仅渲染配方与元数据，不编译或安装 CNMPlayer；实际构建仍需隔离的 Arch 构建环境验证。
+
 
 ## TUI 专属要求
 
