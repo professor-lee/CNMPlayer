@@ -71,6 +71,12 @@ pub struct Config {
     /// 歌词浮窗左上角在内容区内的归一化位置（0..=1）。
     pub page_lyrics_pos_x: f32,
     pub page_lyrics_pos_y: f32,
+    /// 有 YRC 数据时使用逐字着色。仅影响显示；歌词读取始终包含 YRC。
+    pub word_lyrics: bool,
+    /// 有翻译时显示翻译行。仅影响显示；歌词读取始终包含翻译。
+    pub lyric_translation: bool,
+    /// 歌词刷新间隔 = 全局帧间隔 × 该倍率（1 = 跟随 `ui_fps`）。
+    pub lyric_frame_divisor: u32,
     pub audio_quality: AudioQuality,
     /// 下载音频档位，默认值由内嵌配置模板提供。
     pub download_audio_quality: AudioQuality,
@@ -80,6 +86,8 @@ pub struct Config {
     pub show_hints: bool,
     pub small_window_display: bool,
     pub home_more_recommend: bool,
+    /// MPRIS Identity 模板；留空使用 CNMPlayer，`@play` 替换为当前曲名。
+    pub mpris_name: String,
     pub cache: CacheConfig,
     pub keybind_search_box: String,
     pub keybind_fullscreen: String,
@@ -364,6 +372,7 @@ impl Config {
 
         cfg.page_lyrics_pos_x = cfg.page_lyrics_pos_x.clamp(0.0, 1.0);
         cfg.page_lyrics_pos_y = cfg.page_lyrics_pos_y.clamp(0.0, 1.0);
+        cfg.lyric_frame_divisor = cfg.lyric_frame_divisor.clamp(1, 8);
 
         let mut migrated_legacy_sidebar = false;
         if is_legacy_sidebar_default(&cfg.keybind_sidebar) {

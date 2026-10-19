@@ -1,3 +1,5 @@
+# 主题名称前的两列半块色板：上排 accent / accent2，下排均为 accent3；无彩色终端不显示。
+# 彩色主题切换使用 200ms RGB 渐变；无彩色终端直接切换。
 theme = "frappe"
 ui_fps = 60
 visualize = "bars"
@@ -17,6 +19,13 @@ page_lyrics_drag = true
 page_lyrics_snap = true
 page_lyrics_pos_x = 1.0
 page_lyrics_pos_y = 1.0
+# 逐字着色；有 YRC 词时间时按词，否则按整行进度。仅影响显示。
+word_lyrics = true
+# 有翻译歌词时显示翻译行。仅影响显示。
+lyric_translation = false
+# 歌词动画采样倍率 = 全局帧间隔 × 该倍率（1 = 跟随 ui_fps）。
+# 只影响动画采样粒度，不改变界面重绘频率。
+lyric_frame_divisor = 2
 audio_quality = "exhigh"
 # 下载音质（可选值与 audio_quality 一致，按 VIP 权限放开）。
 download_audio_quality = "exhigh"
@@ -27,10 +36,13 @@ eq_bands_db = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 show_hints = true
 small_window_display = true
 home_more_recommend = false
+# MPRIS 播放器显示名；留空为 CNMPlayer，@play 替换为当前曲名。
+mpris_name = ""
 
 keybind_search_box = "Ctrl+S"
 keybind_fullscreen = "Ctrl+F"
 keybind_settings = "T"
+# 全屏设置弹窗保留已展开的侧边栏；关闭弹窗后恢复侧栏操作。
 keybind_sidebar = "P"
 keybind_quit = "Q"
 keybind_page_up = "pageUP"

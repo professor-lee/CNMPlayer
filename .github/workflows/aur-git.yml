@@ -1,0 +1,29 @@
+name: Sync AUR development package
+
+on:
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-cnmplayer-git
+  cancel-in-progress: false
+
+jobs:
+  aur-git:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare AUR publishing environment
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: bash .github/scripts/aur_setup.sh
+
+      - name: Sync only changed development package metadata
+        run: sudo -u builder -H bash "$GITHUB_WORKSPACE/.github/scripts/aur_sync.sh" git false

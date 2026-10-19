@@ -6,6 +6,7 @@ pub mod author;
 pub mod home;
 pub mod loading;
 pub mod login;
+pub mod lyric_view;
 pub mod page_lyrics;
 pub mod player_bar;
 pub mod playlist;
@@ -22,6 +23,7 @@ pub fn draw_settings(frame: &mut Frame, app: &mut App) {
     if matches!(
         app.overlay,
         Some(Overlay::Settings)
+            | Some(Overlay::SettingsGeneral)
             | Some(Overlay::SettingsPlayback)
             | Some(Overlay::SettingsKeybinds)
             | Some(Overlay::SettingsLyrics)

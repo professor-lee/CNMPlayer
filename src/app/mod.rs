@@ -3,6 +3,7 @@ mod api;
 pub(crate) mod auth;
 mod author;
 mod browse_controller;
+mod cache_maintenance;
 mod cover_presentation;
 pub(crate) mod cover_state;
 pub(crate) mod download;
@@ -40,6 +41,7 @@ use self::api::ApiState;
 use self::auth::LoginMethod;
 use self::auth::LoginState;
 use self::browse_controller::BrowseController;
+use self::cache_maintenance::CacheMaintenance;
 use self::cover_presentation::CoverPresentation;
 use self::download::DownloadManager;
 use self::download::DownloadRowCache;
@@ -56,11 +58,11 @@ use self::metadata::LyricFetchRequest;
 use self::metadata::LyricFetchResult;
 use self::metadata::loop_cover_fetch;
 use self::metadata::loop_lyric_fetch;
+use self::mpris::MprisName;
 use self::mpris_bridge::MprisBridge;
 use self::playback_controller::PlaybackController;
 use self::playback_controller::PlaybackRuntimeState;
 use self::player::AudioPlayer;
-use self::player::cleanup_cache_dir;
 use self::player::resolve_cache_root;
 use self::playlist::PlaylistPageKind;
 use self::playlist::PlaylistState;
@@ -85,6 +87,7 @@ use crate::render::wake::WakeSignal;
 use crate::tmplayer::audio::spectrum::MINI_BARS;
 use crate::tmplayer::audio::spectrum::Spectrum;
 use crate::ui::theme::Theme;
+use crate::ui::theme::{ThemeTransition, start_theme_transition};
 use anyhow::Result;
 use anyhow::anyhow;
 use cyper::Client;
@@ -121,6 +124,7 @@ pub(crate) enum Page {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Overlay {
     Settings,
+    SettingsGeneral,
     SettingsPlayback,
     SettingsKeybinds,
     SettingsLyrics,
@@ -133,6 +137,7 @@ pub(crate) struct App {
     pub(crate) wake: WakeSignal,
     pub(crate) config: Config,
     pub(crate) theme: Theme,
+    pub(crate) lyric_render_cache: std::cell::RefCell<crate::ui::lyric_view::LyricRenderCache>,
     pub(crate) page: Page,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) login: LoginState,
@@ -141,6 +146,7 @@ pub(crate) struct App {
     stderr_trim_checked_at: Option<Instant>,
     stderr_trim_inflight: Option<Receiver<()>>,
     home_sidebar_anim_span_cells: u16,
+    theme_transition: Option<ThemeTransition>,
     pub(crate) search: SearchController,
     pub(crate) playback: PlaybackController,
     startup: StartupController,
@@ -199,6 +205,7 @@ pub(crate) struct App {
     last_content_click: Option<(Instant, Page, usize)>,
     mini_spectrum: Spectrum,
     cover_cache_dir: PathBuf,
+    cache_maintenance: CacheMaintenance,
     cover_fetch_tx: watch::Sender<Option<CoverFetchRequest>>,
     cover_fetch_rx: async_mpsc::Receiver<CoverFetchResult>,
     cover_fetch_inflight_url: Option<String>,
@@ -211,6 +218,7 @@ pub(crate) struct App {
     lyric_fetch_generation: u64,
     lyric_fetch_last_attempt_at: Option<Instant>,
     mpris_bridge: MprisBridge,
+    mpris_name: MprisName,
     mpris_last_sync_at: Instant,
     mpris_last_signature: Option<u64>,
     mpris_last_playback: PlaybackRuntimeState,
@@ -229,7 +237,8 @@ impl App {
     /// 构造 App 并启动后台初始化：本地设置同步完成，网络初始化交给
     /// [`StartupInit`]，加载页随即可以显示真实进度。
     pub(crate) async fn new(config: Config, theme: Theme) -> Result<Self> {
-        let audio_player = AudioPlayer::new(&config)?;
+        let cache_maintenance = CacheMaintenance::new(config.cache.clone());
+        let audio_player = AudioPlayer::new(&config, cache_maintenance.clone())?;
         let persistence = PersistenceWorker::spawn("cnmplayer-persistence")?;
         let saved_cookie = compio::runtime::spawn_blocking(session::load_cookie)
             .await
@@ -251,14 +260,11 @@ impl App {
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let download_root =
             crate::app::download::resolve_download_root(config.download_path.as_deref());
-        let mpris_bridge = MprisBridge::new(&cache_root, &config.cache, wake.clone());
+        let mpris_name = MprisName::new(&config.mpris_name, None);
+        let mpris_bridge =
+            MprisBridge::new(&cache_root, &config.cache, mpris_name.identity.clone());
         if config.cache.clean_on_startup {
-            let startup_dir = cover_cache_dir.clone();
-            let startup_policy = config.cache.clone();
-            compio::runtime::spawn_blocking(move || {
-                let _ = cleanup_cache_dir(&startup_dir, &startup_policy);
-            })
-            .detach();
+            cache_maintenance.request(cover_cache_dir.clone());
         }
 
         // One active request plus one replaceable latest request, not a FIFO backlog.
@@ -270,6 +276,7 @@ impl App {
             http_client.clone(),
             cover_cache_dir.clone(),
             persistence.handle(),
+            cache_maintenance.clone(),
             wake.clone(),
         );
         launch(worker);
@@ -286,6 +293,7 @@ impl App {
             wake: wake.clone(),
             config,
             theme,
+            lyric_render_cache: Default::default(),
             page: Page::Login,
             overlay: None,
             login: LoginState::default(),
@@ -293,6 +301,7 @@ impl App {
             stderr_trim_checked_at: None,
             stderr_trim_inflight: None,
             home_sidebar_anim_span_cells: 24,
+            theme_transition: None,
             search: SearchController::default(),
             playback: PlaybackController::new(audio_player),
             startup: StartupController::detached(),
@@ -338,6 +347,7 @@ impl App {
             last_content_click: None,
             mini_spectrum: Spectrum::new(MINI_BARS),
             cover_cache_dir,
+            cache_maintenance,
             cover_fetch_tx,
             cover_fetch_rx,
             cover_fetch_inflight_url: None,
@@ -350,6 +360,7 @@ impl App {
             lyric_fetch_generation: 0,
             lyric_fetch_last_attempt_at: None,
             mpris_bridge,
+            mpris_name,
             mpris_last_sync_at: Instant::now(),
             mpris_last_signature: None,
             mpris_last_playback: PlaybackRuntimeState::Stopped,
@@ -400,6 +411,32 @@ impl App {
         self.persistence.flush().map_err(anyhow::Error::msg)
     }
 
+    pub(crate) fn apply_theme(&mut self, next: Theme) {
+        start_theme_transition(
+            &mut self.theme,
+            &mut self.theme_transition,
+            next,
+            Instant::now(),
+        );
+    }
+
+    pub(crate) fn apply_theme_immediate(&mut self, next: Theme) {
+        self.theme = next;
+        self.theme_transition = None;
+    }
+
+    fn tick_theme_transition(&mut self, now: Instant) {
+        let Some(transition) = self.theme_transition.as_mut() else {
+            return;
+        };
+        let done = !transition.is_running();
+        self.theme.palette = transition.tick(now);
+        if done {
+            self.theme.palette = transition.target();
+            self.theme_transition = None;
+        }
+    }
+
     pub(crate) async fn tick(&mut self) {
         if let Some(error) = self.persistence.pending_error() {
             self.set_runtime_status(format!(
@@ -418,6 +455,7 @@ impl App {
         self.tick_vu_meter(now);
         self.tick_search_box_animation(now);
         self.tick_home_sidebar_animation(now);
+        self.tick_theme_transition(now);
         self.tick_home_sidebar_fetch();
         self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();

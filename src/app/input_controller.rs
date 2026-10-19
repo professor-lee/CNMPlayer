@@ -37,6 +37,12 @@ pub(crate) struct HitRect {
 }
 
 impl HitRect {
+    fn translated_clip(self, dx: i32, clip: Rect) -> Option<Self> {
+        let area = Rect::new(self.x, self.y, self.width, self.height);
+        let visible = crate::render::drawer::translated_clip(area, dx, clip);
+        (!visible.is_empty()).then(|| Self::from(visible))
+    }
+
     pub(crate) fn contains(self, col: u16, row: u16) -> bool {
         self.width > 0
             && self.height > 0
@@ -130,6 +136,14 @@ impl App {
             return;
         }
 
+        // Inline text owns input before global shortcuts (including Ctrl+K).
+        if self.settings.text_editing()
+            && let Some(overlay) = self.overlay
+        {
+            self.handle_overlay_key(overlay, key).await;
+            return;
+        }
+
         if self.page != Page::Login
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
@@ -207,6 +221,9 @@ impl App {
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
             self.input.player_bar_progress_drag = None;
             self.page_lyrics_release();
+            return;
+        }
+        if self.settings.text_editing() {
             return;
         }
 
@@ -501,6 +518,28 @@ impl App {
         self.home_sidebar_panel_hit = rect;
     }
 
+    /// Keep click and wheel regions on exactly the cells exposed by the drawer.
+    pub(crate) fn translate_home_sidebar_hits(&mut self, dx: i32, clip: Rect) {
+        let translate = |rect: HitRect| rect.translated_clip(dx, clip);
+        self.home_sidebar_panel_hit = self.home_sidebar_panel_hit.and_then(translate);
+        self.home_sidebar_playlist_hits.retain_mut(|(rect, _)| {
+            if let Some(visible) = translate(*rect) {
+                *rect = visible;
+                true
+            } else {
+                false
+            }
+        });
+        self.home_sidebar_section_hits.retain_mut(|(rect, _)| {
+            if let Some(visible) = translate(*rect) {
+                *rect = visible;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
     pub(crate) fn set_home_sidebar_anim_span_cells(&mut self, span_cells: u16) {
         self.home_sidebar_anim_span_cells = span_cells.max(1);
     }
@@ -544,6 +583,7 @@ impl App {
     async fn handle_overlay_key(&mut self, overlay: Overlay, key: KeyEvent) {
         match overlay {
             Overlay::Settings => self.handle_settings_root_key(key).await,
+            Overlay::SettingsGeneral => self.handle_settings_general_key(key).await,
             Overlay::SettingsPlayback => self.handle_settings_playback_key(key),
             Overlay::SettingsKeybinds => self.handle_settings_keybinds_key(key),
             Overlay::SettingsLyrics => self.handle_settings_lyrics_key(key),
@@ -832,6 +872,7 @@ impl App {
     pub(crate) fn close_overlay(&mut self) {
         self.overlay = None;
         self.settings.keybind_rebinding = None;
+        self.settings.mpris_name_edit = None;
         self.input.search_motion.set(
             false,
             Instant::now(),

@@ -1,10 +1,11 @@
 use crate::app::App;
 use crate::data::config::Language;
+use crate::ui::lyric_view;
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear};
 
 pub(crate) const PAGE_LYRICS_PANEL_HEIGHT: u16 = 4;
 
@@ -128,7 +129,7 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(app.theme.color_accent()))
+            .border_style(Style::default().fg(app.theme.color_subtext()))
             .style(base_bg_style(app)),
         area,
     );
@@ -141,42 +142,44 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let (current, next) = app.current_page_lyric_lines();
-    let (line1, line2) = if current.trim().is_empty() {
-        match app.config.language {
-            Language::Zh => ("暂无歌词".to_string(), String::new()),
-            Language::En => ("No lyrics".to_string(), String::new()),
+    let mut cache = app.lyric_render_cache.borrow_mut();
+    let fallback;
+    let lyric_rows = match app
+        .playback
+        .now_playing
+        .as_ref()
+        .and_then(|track| track.lyrics.as_ref())
+        .filter(|lines| !lines.is_empty())
+    {
+        Some(lines) => cache.pair(
+            lyric_view::LyricSurface::Overlay,
+            lines,
+            app.lyric_position_ms(),
+            app.is_seeking(),
+            inner.width,
+            &app.theme,
+            app.lyric_options(),
+        ),
+        None => {
+            let label = match app.config.language {
+                Language::Zh => "暂无歌词",
+                Language::En => "No lyrics",
+            };
+            fallback = ratatui::text::Text::from(vec![
+                Line::from(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(app.theme.color_accent2())
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::default(),
+            ])
+            .alignment(Alignment::Center);
+            &fallback
         }
-    } else {
-        (current, next)
     };
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            line1,
-            Style::default()
-                .fg(app.theme.color_accent2())
-                .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true }),
-        rows[0],
-    );
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            line2,
-            Style::default().fg(app.theme.color_subtext()),
-        )))
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true }),
-        rows[1],
-    );
+    frame.render_widget(lyric_rows, inner);
 }
 
 fn base_bg_style(app: &App) -> Style {

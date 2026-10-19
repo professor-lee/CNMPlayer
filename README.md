@@ -102,7 +102,7 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 - Like / unlike from the fullscreen page and from the collapsed player bar
 - Repeat modes: sequence → shuffle → loop all → loop one
 - Playlist playback prefetches the next page when entering the last three loaded tracks, and waits for an unfinished page instead of stopping or wrapping early
-- Linux media control (MPRIS, player name `cnmplayer`) with metadata and cover art
+- Linux media control (MPRIS, bus suffix `cnmplayer`) with metadata and cover art
 
 ### Downloads
 
@@ -234,8 +234,12 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `page_lyrics_snap` | `true` | Snap to the nearest edge (left/right/top/bottom, the other axis stays free; only editable while dragging is on) |
 | `page_lyrics_pos_x` | `1.0` | Normalized horizontal position of the overlay's top-left (0=left, 1=right) |
 | `page_lyrics_pos_y` | `1.0` | Normalized vertical position of the overlay's top-left (0=top, 1=bottom) |
+| `word_lyrics` | `true` | Per-character coloring: YRC word timings when available, otherwise line progress |
+| `lyric_translation` | `false` | Show lyric translations |
+| `lyric_frame_divisor` | `2` | Lyric animation sampling divisor on top of `ui_fps` (1–8); does not change the redraw rate |
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
+| `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer` |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
 | `audio_quality` | `exhigh` | `standard`, `higher`, `exhigh`, `lossless`, `hires`, `jyeffect`, `sky`, `dolby`, `jymaster`; clamped to `exhigh` without VIP |
 | `download_audio_quality` | `exhigh` | Download quality: same option set as `audio_quality`, VIP-aware as well |
@@ -246,7 +250,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `bar_channels` | `mono` | `stereo`, `mono` |
 | `bar_channel_reverse` | `false` | Draw the right channel on the left (fullscreen spectrum) |
 | `bars_gap` | `false` | Leave a gap between bars |
-| `ui_fps` | `60` | Positive integer UI submission cap for the host and the fullscreen page, including idle; clean frames may be skipped, and the actual FPS depends on terminal speed and processing cost |
+| `ui_fps` | `60` | Positive integer cap for continuous UI animation on the host and the fullscreen page. Dirty input/content updates are submitted immediately; idle surfaces wake on a one-second heartbeat. Actual FPS depends on terminal speed and processing cost |
 | `cache.path` | unset | Cache directory override (defaults to the OS cache directory) |
 | `cache.clean_strategy` | `both` | `size`, `age`, `both` |
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
@@ -321,7 +325,7 @@ Search, playlist and artist pages:
 Settings modal:
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` move, `Left` / `Right` / `Enter` change a value, `Esc` steps back
-- Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the lyrics subpage, where a single click flips the switch
+- Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the Lyrics Settings subpage, where a single click flips the switch
 - Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding.
 
 Fullscreen page:

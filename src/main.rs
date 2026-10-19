@@ -1,10 +1,12 @@
 mod app;
 mod data;
+mod lyrics;
 mod render;
 mod tmplayer;
 mod ui;
 
 use crate::render::frame_clock::FrameClock;
+use crate::render::mark_animation_end_frame;
 use anyhow::Result;
 use app::App;
 use compio::fs::{create_dir_all, remove_file};
@@ -437,6 +439,7 @@ fn input_event() -> impl Stream<Item = impl AsyncFn(&mut App)> {
 async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     let mut input = pin!(input_event());
     let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
+    let mut was_continuous = false;
 
     loop {
         let now = Instant::now();
@@ -444,10 +447,12 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         app.tick().await;
         app.prepare_page_transition(terminal)?;
         let continuous = app.should_continuous_redraw();
-        if app.covers.poll() || continuous {
+        mark_animation_end_frame(&mut clock, was_continuous, continuous);
+        if app.covers.poll() {
             clock.mark_dirty();
         }
         clock.set_continuous(continuous);
+        was_continuous = continuous;
 
         if app.consume_fullscreen_launch_request() {
             let bootstrap = app.build_fullscreen_bootstrap();
@@ -471,14 +476,8 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
             clock.presented(Instant::now());
         }
 
-        let wait_until = if clock.is_dirty() {
-            clock
-                .next_deadline()
-                .unwrap_or_else(|| Instant::now() + Duration::from_secs(1))
-        } else {
-            Instant::now() + Duration::from_secs(1)
-        };
-        let wait = wait_until.saturating_duration_since(Instant::now());
+        let wait = clock.next_deadline();
+
         select_biased! {
             f = input.next().fuse() => if let Some(f) = f {
                 f(app).await;

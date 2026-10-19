@@ -18,7 +18,7 @@ pub(in crate::tmplayer::ui::tui) fn render_lyrics_settings_modal(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(crate::tmplayer::ui::borders::SOLID_BORDER)
-        .title(lang_text(app, " 歌词浮窗 ", " Lyrics Overlay "))
+        .title(lang_text(app, " 歌词 ", " Lyrics "))
         .style(
             Style::default()
                 .fg(app.theme.color_subtext())
@@ -57,6 +57,16 @@ pub(in crate::tmplayer::ui::tui) fn render_lyrics_settings_modal(
             "{}: {}",
             lang_text(app, "歌词浮窗边缘吸附", "Lyrics Overlay Edge Snap"),
             lang_on_off(app, app.config.page_lyrics_snap)
+        ),
+        format!(
+            "{}: {}",
+            lang_text(app, "逐字歌词", "Word-by-word Lyrics"),
+            lang_on_off(app, app.config.word_lyrics)
+        ),
+        format!(
+            "{}: {}",
+            lang_text(app, "歌词翻译", "Lyrics Translation"),
+            lang_on_off(app, app.config.lyric_translation)
         ),
     ];
 

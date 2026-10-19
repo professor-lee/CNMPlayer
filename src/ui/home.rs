@@ -2,13 +2,15 @@ use crate::app::App;
 use crate::app::sidebar::HomeSidebarHit;
 use crate::app::sidebar::HomeSidebarSection;
 use crate::data::config::Language;
+use crate::render::drawer;
 use crate::ui::page_lyrics;
 use crate::ui::player_bar;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn draw_home(frame: &mut Frame, app: &mut App) -> Option<Rect> {
@@ -268,6 +270,13 @@ fn draw_home_hint(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Lay out once at the destination width; animation changes only the offset.
+fn home_sidebar_geometry(area: Rect, progress: f32) -> (Rect, i32) {
+    let width = (area.width / 3).max(24).min(area.width);
+    let dx = -(f32::from(width) * (1.0 - progress.clamp(0.0, 1.0))).round() as i32;
+    (Rect::new(area.x, area.y, width, area.height), dx)
+}
+
 fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width < 20 || area.height < 8 {
         return;
@@ -276,20 +285,22 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_width = (area.width / 3).max(24).min(area.width);
     app.set_home_sidebar_anim_span_cells(max_width);
     let progress = app.browse.home_sidebar.trail.value().clamp(0.0, 1.0);
-    let width = ((max_width as f32) * progress).round() as u16;
-    if width < 12 {
+    let (sidebar, dx) = home_sidebar_geometry(area, progress);
+    let visible = drawer::translated_clip(sidebar, dx, area);
+    if visible.is_empty() {
         return;
     }
 
-    let sidebar = Rect {
-        x: area.x,
-        y: area.y,
-        width,
-        height: area.height,
-    };
+    let mut buffer = std::mem::take(&mut app.browse.home_sidebar.buffer);
+    buffer.resize(sidebar);
+    buffer.reset();
+    render_home_sidebar(&mut buffer, app, sidebar);
+    drawer::paint(frame.buffer_mut(), &buffer, dx, area);
+    app.browse.home_sidebar.buffer = buffer;
+    app.translate_home_sidebar_hits(dx, area);
+}
 
-    frame.render_widget(Clear, sidebar);
-
+fn render_home_sidebar(buffer: &mut Buffer, app: &mut App, sidebar: Rect) {
     app.set_home_sidebar_panel_hit(Some(crate::app::input_controller::HitRect {
         x: sidebar.x,
         y: sidebar.y,
@@ -306,17 +317,15 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .fg(app.theme.color_subtext())
         .bg(app.theme.color_surface());
 
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(Span::styled(
-                title,
-                Style::default().fg(app.theme.color_subtext()),
-            )))
-            .border_style(Style::default().fg(app.theme.color_subtext()))
-            .style(panel_style),
-        sidebar,
-    );
+    Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(Span::styled(
+            title,
+            Style::default().fg(app.theme.color_subtext()),
+        )))
+        .border_style(Style::default().fg(app.theme.color_subtext()))
+        .style(panel_style)
+        .render(sidebar, buffer);
 
     let inner = sidebar.inner(ratatui::layout::Margin {
         horizontal: 1,
@@ -370,50 +379,43 @@ fn draw_home_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(app.theme.color_subtext()),
         )));
     }
-    frame.render_widget(
-        Paragraph::new(header_lines).wrap(Wrap { trim: true }),
-        chunks[0],
-    );
+    Paragraph::new(header_lines)
+        .wrap(Wrap { trim: true })
+        .render(chunks[0], buffer);
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
-    let created_items = app.browse.home_sidebar.created_playlists.clone();
-    let collected_items = app.browse.home_sidebar.collected_playlists.clone();
-
     draw_home_sidebar_section(
-        frame,
+        buffer,
         app,
         sections[0],
         match app.config.language {
             Language::Zh => "用户创建的歌单",
             Language::En => "Created Playlists",
         },
-        &created_items,
         HomeSidebarSection::Created,
     );
 
     draw_home_sidebar_section(
-        frame,
+        buffer,
         app,
         sections[1],
         match app.config.language {
             Language::Zh => "用户收藏的歌单",
             Language::En => "Collected Playlists",
         },
-        &collected_items,
         HomeSidebarSection::Collected,
     );
 }
 
 fn draw_home_sidebar_section(
-    frame: &mut Frame,
+    buffer: &mut Buffer,
     app: &mut App,
     area: Rect,
     title: &str,
-    items: &[crate::app::sidebar::HomeSidebarPlaylist],
     section: HomeSidebarSection,
 ) {
     if area.width < 6 || area.height < 3 {
@@ -441,10 +443,9 @@ fn draw_home_sidebar_section(
         Style::default().fg(app.theme.color_subtext())
     };
 
-    frame.render_widget(
-        Block::default().style(Style::default().bg(app.theme.color_surface())),
-        area,
-    );
+    Block::default()
+        .style(Style::default().bg(app.theme.color_surface()))
+        .render(area, buffer);
 
     let title_line_area = Rect {
         x: area.x.saturating_sub(1),
@@ -460,16 +461,14 @@ fn draw_home_sidebar_section(
         let dash_count = line_width.saturating_sub(used);
         let connector_style = Style::default().fg(app.theme.color_subtext());
 
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("├", connector_style),
-                Span::styled(clipped_title, section_title_style),
-                Span::styled("─".repeat(dash_count), connector_style),
-                Span::styled("┤", connector_style),
-            ]))
-            .style(Style::default().bg(app.theme.color_surface())),
-            title_line_area,
-        );
+        Paragraph::new(Line::from(vec![
+            Span::styled("├", connector_style),
+            Span::styled(clipped_title, section_title_style),
+            Span::styled("─".repeat(dash_count), connector_style),
+            Span::styled("┤", connector_style),
+        ]))
+        .style(Style::default().bg(app.theme.color_surface()))
+        .render(title_line_area, buffer);
     }
 
     let inner = Rect {
@@ -482,8 +481,12 @@ fn draw_home_sidebar_section(
         return;
     }
 
+    let total = match section {
+        HomeSidebarSection::Created => app.browse.home_sidebar.created_playlists.len(),
+        HomeSidebarSection::Collected => app.browse.home_sidebar.collected_playlists.len(),
+    };
     let mut lines = Vec::new();
-    if items.is_empty() {
+    if total == 0 {
         lines.push(Line::from(Span::styled(
             match app.config.language {
                 Language::Zh => "暂无歌单",
@@ -496,7 +499,6 @@ fn draw_home_sidebar_section(
         if max_rows == 0 {
             return;
         }
-        let total = items.len();
         let focus_idx = if section_focused {
             app.browse
                 .home_sidebar
@@ -526,6 +528,10 @@ fn draw_home_sidebar_section(
             .home_sidebar
             .set_section_scroll_offset(section, start);
 
+        let items = match section {
+            HomeSidebarSection::Created => &app.browse.home_sidebar.created_playlists,
+            HomeSidebarSection::Collected => &app.browse.home_sidebar.collected_playlists,
+        };
         for (visual_idx, item) in items.iter().skip(start).take(max_rows).enumerate() {
             let idx = start + visual_idx;
             let left = if item.creator.trim().is_empty() {
@@ -544,19 +550,6 @@ fn draw_home_sidebar_section(
             let used = display_width(&clipped_left) + display_width(&right);
             let spaces = usize::from(inner.width).saturating_sub(used).max(1);
             let is_focused = section_focused && idx == app.browse.home_sidebar.focused_index;
-
-            app.push_home_sidebar_playlist_hit(
-                crate::app::input_controller::HitRect {
-                    x: inner.x,
-                    y: inner.y + visual_idx as u16,
-                    width: inner.width,
-                    height: 1,
-                },
-                HomeSidebarHit {
-                    section,
-                    index: idx,
-                },
-            );
 
             let text_style = if is_focused {
                 Style::default()
@@ -581,12 +574,25 @@ fn draw_home_sidebar_section(
                 Span::styled(right, right_style),
             ]));
         }
+        for visual_idx in 0..lines.len() {
+            app.push_home_sidebar_playlist_hit(
+                crate::app::input_controller::HitRect {
+                    x: inner.x,
+                    y: inner.y + visual_idx as u16,
+                    width: inner.width,
+                    height: 1,
+                },
+                HomeSidebarHit {
+                    section,
+                    index: start + visual_idx,
+                },
+            );
+        }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(app.theme.color_surface())),
-        inner,
-    );
+    Paragraph::new(lines)
+        .style(Style::default().bg(app.theme.color_surface()))
+        .render(inner, buffer);
 }
 
 fn display_width(text: &str) -> usize {
@@ -616,5 +622,32 @@ fn base_bg_style(app: &App) -> Style {
         Style::default()
     } else {
         Style::default().bg(app.theme.color_base())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_sidebar_translates_full_width_even_at_the_first_visible_cell() {
+        for area in [Rect::new(0, 0, 120, 36), Rect::new(4, 3, 60, 20)] {
+            let (full, _) = home_sidebar_geometry(area, 1.0);
+            for progress in [0.0, 0.01, 0.1, 0.5, 0.9, 1.0, 0.5, 0.01, 0.0] {
+                let (panel, dx) = home_sidebar_geometry(area, progress);
+                assert_eq!(
+                    panel, full,
+                    "contents must never reflow during either direction"
+                );
+                let visible = drawer::translated_clip(panel, dx, area);
+                if progress == 0.0 {
+                    assert!(visible.is_empty());
+                } else if !visible.is_empty() {
+                    assert_eq!(visible.x, area.x);
+                    assert_eq!(visible.width as i32, i32::from(full.width) + dx);
+                    assert_eq!(visible.height, area.height);
+                }
+            }
+        }
     }
 }

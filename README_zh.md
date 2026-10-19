@@ -102,7 +102,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - 收藏 / 取消收藏：全屏页与折叠播放栏都可操作
 - 循环模式：顺序 → 随机 → 列表循环 → 单曲循环
 - 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷
-- Linux 媒体控制（MPRIS，播放器名 `cnmplayer`），包含元数据与封面
+- Linux 媒体控制（MPRIS，总线后缀 `cnmplayer`），包含元数据与封面
 
 ### 下载
 
@@ -234,8 +234,12 @@ sudo apt install -y build-essential cmake pkg-config \
 | `page_lyrics_snap` | `true` | 拖动结束后吸附到最近的边（左/右/上/下，另一轴保持自由；仅拖动开启时可改） |
 | `page_lyrics_pos_x` | `1.0` | 歌词浮窗左上角的归一化横坐标（0=左，1=右） |
 | `page_lyrics_pos_y` | `1.0` | 歌词浮窗左上角的归一化纵坐标（0=上，1=下） |
+| `word_lyrics` | `true` | 逐字着色：有 YRC 词时间时按词，否则按整行进度 |
+| `lyric_translation` | `false` | 显示歌词翻译 |
+| `lyric_frame_divisor` | `2` | 歌词动画采样倍率（基于 `ui_fps`，1–8）；不改变重绘频率 |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
+| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer` |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |
 | `download_audio_quality` | `exhigh` | 下载音质：与 `audio_quality` 同一套可选值，同样按 VIP 权限放开 |
@@ -246,7 +250,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `bar_channels` | `mono` | `stereo`、`mono` |
 | `bar_channel_reverse` | `false` | 左右声道反画（全屏频谱） |
 | `bars_gap` | `false` | 频谱条之间留出间隔 |
-| `ui_fps` | `60` | 正整数，控制主程序与全屏页（包括空闲时）的 UI 提交上限；无变化的帧可跳过，实际 FPS 取决于终端速度与处理开销 |
+| `ui_fps` | `60` | 正整数，控制主程序与全屏页连续动画的 UI 提交上限；输入/内容脏帧立即提交，空闲时按 1 秒心跳刷新。实际 FPS 取决于终端速度与处理开销 |
 | `cache.path` | 未设置 | 缓存目录覆盖（默认用系统缓存目录） |
 | `cache.clean_strategy` | `both` | `size`、`age`、`both` |
 | `cache.max_size_mb` | `500` | LRU 阶段的容量上限 |
@@ -321,7 +325,7 @@ sudo apt install -y build-essential cmake pkg-config \
 设置弹窗：
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` 移动，`Left` / `Right` / `Enter` 修改取值，`Esc` 逐级返回
-- 鼠标：滚轮移动选中行，单击聚焦、双击执行；「歌词浮窗」子页为单击直接改值
+- 鼠标：滚轮移动选中行，单击聚焦、双击执行；「歌词设置」子页为单击直接改值
 - 按键绑定页：`Enter` 开始重绑，等待输入时按 `Esc` 取消；`Ctrl+K` 关闭整窗并取消待输入的重绑，不修改原快捷键
 
 全屏播放页：

@@ -13,7 +13,7 @@ fn replacement_failure_keeps_existing_directory_and_cleans_temp() {
         fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-"))
+            .all(|entry| entry.path().extension().is_none_or(|ext| ext != "tmp"))
     );
     let _ = fs::remove_dir_all(dir);
 }
@@ -38,7 +38,7 @@ fn concurrent_replacements_use_unique_same_directory_temporaries() {
         fs::read_dir(&dir)
             .unwrap()
             .flatten()
-            .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-"))
+            .all(|entry| entry.path().extension().is_none_or(|ext| ext != "tmp"))
     );
     let _ = fs::remove_dir_all(dir);
 }

@@ -1,8 +1,7 @@
-use super::streaming::StreamingReader;
+use super::cache_maintenance::{CacheLease, CacheMaintenance, cleanup_orphan_streaming_temps};
 use super::streaming::StreamingReaderHandle;
-use super::streaming::reclaim_orphan_streaming_temp;
+use super::streaming::StreamingStatus;
 use crate::STORAGE;
-use crate::data::config::CacheCleanStrategy;
 use crate::data::config::Config;
 use crate::tmplayer::app::state::EQ_BANDS;
 use crate::tmplayer::app::state::EQ_FREQS_HZ;
@@ -10,7 +9,6 @@ use crate::tmplayer::app::state::EqSettings;
 use crate::tmplayer::audio::lufs_meter::LufsMeter;
 use crate::tmplayer::audio::pcm_tap::PcmRing;
 use crate::tmplayer::audio::pcm_tap::PcmTap;
-use anyhow::Context;
 use anyhow::Result;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
@@ -19,12 +17,10 @@ use rodio::MixerDeviceSink;
 use rodio::Player;
 use rodio::Source;
 use rodio::cpal::Error;
-use rodio::decoder::DecoderBuilder;
+use rodio::cpal::ErrorKind;
 use rodio::source::SeekError;
 use see::sync::Receiver;
 use std::fs;
-use std::fs::File;
-use std::io::BufReader;
 use std::num::NonZero;
 use std::path::Path;
 use std::path::PathBuf;
@@ -33,7 +29,6 @@ use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use std::time::SystemTime;
 pub(super) struct AudioPlayer {
     _device_sink: MixerDeviceSink,
     player: Arc<Player>,
@@ -44,11 +39,32 @@ pub(super) struct AudioPlayer {
     progress_rx: Option<Receiver<(u64, u64)>>,
     seek_worker: SeekWorker,
     stream_handle: Option<StreamingReaderHandle>,
+    cache_maintenance: CacheMaintenance,
+    cache_lease: Option<CacheLease>,
     /// PCM 时域抽头：`EqSource` 逐样本写入，全屏页示波器读取。
     /// 环的寿命长于单个 `EqSource`，故切歌与跳转时必须显式重置。
     pcm_ring: Arc<PcmRing>,
     /// 400ms Momentary LUFS 计量器；`EqSource` 按批写入，小窗口窄窗读取。
     lufs_meter: Arc<LufsMeter>,
+}
+
+pub(super) struct PreparedSource {
+    source: Box<dyn Source<Item = f32> + Send + 'static>,
+}
+
+pub(super) fn make_prepared_source<S>(
+    decoder: S,
+    eq_params: Arc<EqParams>,
+    pcm_ring: Arc<PcmRing>,
+    lufs_meter: Arc<LufsMeter>,
+) -> PreparedSource
+where
+    S: Source<Item = f32> + Send + 'static,
+{
+    let source = EqSource::new(decoder, eq_params, pcm_ring, lufs_meter);
+    PreparedSource {
+        source: Box::new(source),
+    }
 }
 
 #[derive(Default)]
@@ -180,6 +196,11 @@ type MaybeError = Arc<Mutex<Option<Error>>>;
 
 fn error_cb(error: MaybeError) -> impl Fn(Error) {
     move |e| {
+        // CPAL has already rerouted this active stream; stopping would discard
+        // the current source and position. Leave any pending real failure intact.
+        if e.kind() == ErrorKind::DeviceChanged {
+            return;
+        }
         let mut error = error.lock();
         *error = Some(e)
     }
@@ -209,7 +230,11 @@ impl AudioPlayer {
         Ok(())
     }
 
-    fn clear_and_play(&mut self, src: impl Source + Send + 'static) -> Result<()> {
+    fn clear_and_play(
+        &mut self,
+        src: impl Source + Send + 'static,
+        start_paused: bool,
+    ) -> Result<()> {
         // Invalidate before stopping/appending: an old worker completion must not
         // consume a new track's intent, and queued work must be admitted again.
         self.seek_worker.invalidate();
@@ -220,6 +245,9 @@ impl AudioPlayer {
         if let Some(handle) = self.stream_handle.take() {
             handle.cancel();
         }
+        if let Some(lease) = self.cache_lease.take() {
+            drop(lease);
+        }
         let old_player = self.player.clone();
         let volume = old_player.volume();
         old_player.stop();
@@ -227,15 +255,20 @@ impl AudioPlayer {
         // against old_player can finish there, but can never seek the new source.
         let new_player = Arc::new(Player::connect_new(self._device_sink.mixer()));
         new_player.set_volume(volume);
+        if start_paused {
+            new_player.pause();
+        }
         self.player = new_player;
         // 环内还是上一首的样本；不清掉的话示波器会先画一段前一首的波形。
         self.pcm_ring.reset();
         self.player.append(src);
-        self.player.play();
+        if !start_paused {
+            self.player.play();
+        }
         Ok(())
     }
 
-    pub(super) fn new(config: &Config) -> Result<Self> {
+    pub(super) fn new(config: &Config, cache_maintenance: CacheMaintenance) -> Result<Self> {
         let error = Arc::new(Mutex::new(None));
         let (player, sink) = build_player(error.clone())?;
         let cache_root = resolve_cache_root(config);
@@ -247,12 +280,13 @@ impl AudioPlayer {
         eq_params.set_from(eq.clamp());
 
         let startup_dir = cache_dir.clone();
-        let cache_policy = config.cache.clone();
+        let maintenance = cache_maintenance.clone();
+        let clean_on_startup = config.cache.clean_on_startup;
         compio::runtime::spawn_blocking(move || {
             let _ = fs::create_dir_all(&startup_dir);
             let _ = cleanup_orphan_streaming_temps(&startup_dir);
-            if cache_policy.clean_on_startup {
-                let _ = cleanup_cache_dir(&startup_dir, &cache_policy);
+            if clean_on_startup {
+                maintenance.request(startup_dir);
             }
         })
         .detach();
@@ -270,6 +304,8 @@ impl AudioPlayer {
             seek_worker,
             stream_handle: None,
             pcm_ring: Arc::new(PcmRing::new()),
+            cache_maintenance,
+            cache_lease: None,
             lufs_meter: Arc::new(LufsMeter::new()),
         };
 
@@ -291,61 +327,61 @@ impl AudioPlayer {
         self.lufs_meter.clone()
     }
 
-    pub(super) async fn play_from_file(&mut self, file_path: &Path) -> Result<()> {
-        let file_path = file_path.to_path_buf();
-        let decoder = compio::runtime::spawn_blocking(move || -> Result<_> {
-            let file = File::open(file_path)?;
-            let builder = DecoderBuilder::new().with_byte_len(file.metadata()?.len());
-            Ok(builder.with_data(BufReader::new(file)).build()?)
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("audio decoder task panicked"))??;
-        let total_duration = decoder.total_duration();
-        let source = EqSource::new(
-            decoder,
-            self.eq_params.clone(),
-            self.pcm_ring.clone(),
-            self.lufs_meter.clone(),
-        );
-        self.clear_and_play(source)?;
-        self.stream_handle = None;
+    pub(super) fn play_prepared(
+        &mut self,
+        source: PreparedSource,
+        stream_handle: Option<StreamingReaderHandle>,
+        total_duration: Option<Duration>,
+        progress_rx: Option<Receiver<(u64, u64)>>,
+        cache_lease: CacheLease,
+        start_paused: bool,
+    ) -> Result<()> {
+        let PreparedSource { source } = source;
+        self.clear_and_play(source, start_paused)?;
+        self.stream_handle = stream_handle;
         self.total_duration = total_duration;
-        self.progress_rx = None;
+        self.progress_rx = progress_rx;
+        self.cache_lease = Some(cache_lease);
         Ok(())
     }
 
-    pub(super) async fn play_streaming(
-        &mut self,
-        reader: StreamingReader,
-        progress_rx: Receiver<(u64, u64)>,
-    ) -> Result<()> {
-        struct PendingDecode(Option<StreamingReaderHandle>);
-        impl Drop for PendingDecode {
-            fn drop(&mut self) {
-                if let Some(handle) = self.0.take() {
-                    handle.cancel();
-                }
-            }
-        }
-        let mut pending = PendingDecode(Some(StreamingReaderHandle::from(&reader)));
-        let builder = DecoderBuilder::new().with_byte_len(reader.total());
-        let f = move || builder.with_data(BufReader::new(reader)).build();
-        let decoder = compio::runtime::spawn_blocking(f)
-            .await
-            .map_err(|_| anyhow::anyhow!("streaming decoder task panicked"))??;
-        let stream_handle = pending.0.take();
-        let total_duration = decoder.total_duration();
-        let source = EqSource::new(
-            decoder,
+    pub(super) fn cache_maintenance(&self) -> CacheMaintenance {
+        self.cache_maintenance.clone()
+    }
+
+    pub(super) fn source_context(&self) -> (Arc<EqParams>, Arc<PcmRing>, Arc<LufsMeter>) {
+        (
             self.eq_params.clone(),
             self.pcm_ring.clone(),
             self.lufs_meter.clone(),
-        );
-        self.clear_and_play(source)?;
-        self.stream_handle = stream_handle;
-        self.total_duration = total_duration;
-        self.progress_rx = Some(progress_rx);
-        Ok(())
+        )
+    }
+
+    pub(super) fn stream_status(&self) -> StreamingStatus {
+        self.stream_handle
+            .as_ref()
+            .map(StreamingReaderHandle::status)
+            .unwrap_or(StreamingStatus::Complete)
+    }
+
+    pub(super) fn stream_has_complete_body(&self) -> bool {
+        match self.stream_handle.as_ref() {
+            Some(handle) => handle.has_complete_body(),
+            None => true,
+        }
+    }
+
+    pub(super) fn playback_failure(&self) -> Option<String> {
+        let mut failures = Vec::new();
+        if let Some(error) = self.error.lock().as_ref() {
+            failures.push(error.to_string());
+        }
+        if let Some(handle) = self.stream_handle.as_ref()
+            && let Some(message) = handle.error_message()
+        {
+            failures.push(message);
+        }
+        (!failures.is_empty()).then(|| failures.join("; "))
     }
 
     pub(super) fn set_eq(&mut self, eq: EqSettings) -> Result<()> {
@@ -384,6 +420,9 @@ impl AudioPlayer {
         // Cancel wakes a reader blocked inside the one in-flight seek; invalidate
         // also drops any latest target waiting behind it.
         self.seek_worker.invalidate();
+        if let Some(lease) = self.cache_lease.take() {
+            drop(lease);
+        }
         self.player.stop();
         // 这里刻意不清 PCM 环：停止后示波器要靠这段残留把波形缓动收回中线。
         // 换歌不会漏看上一首——所有播放入口都经 clear_and_play，那里会清。
@@ -459,7 +498,7 @@ impl Drop for AudioPlayer {
     }
 }
 
-struct EqParams {
+pub(super) struct EqParams {
     bands_db_x10: [AtomicI32; EQ_BANDS],
 }
 
@@ -694,114 +733,8 @@ pub(super) fn resolve_cache_root(config: &Config) -> PathBuf {
     STORAGE.cache.clone()
 }
 
-#[derive(Debug, Clone)]
-struct CacheEntry {
-    path: PathBuf,
-    size: u64,
-    modified: SystemTime,
-}
-
-pub(super) fn cleanup_orphan_streaming_temps(cache_dir: &Path) -> Result<()> {
-    if !cache_dir.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(cache_dir)
-        .with_context(|| format!("read cache dir failed: {}", cache_dir.display()))?
-    {
-        let path = entry?.path();
-        if path.extension().is_some_and(|ext| ext == "part") {
-            reclaim_orphan_streaming_temp(&path);
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn cleanup_cache_dir(
-    cache_dir: &Path,
-    policy: &crate::data::config::CacheConfig,
-) -> Result<()> {
-    cleanup_orphan_streaming_temps(cache_dir)?;
-    let mut entries = list_cache_entries(cache_dir)?;
-
-    if matches!(
-        policy.clean_strategy,
-        CacheCleanStrategy::Age | CacheCleanStrategy::Both
-    ) && policy.max_age_days > 0
-    {
-        let now = SystemTime::now();
-        let ttl = Duration::from_secs(policy.max_age_days.saturating_mul(24 * 60 * 60));
-        entries.retain(|entry| {
-            let expired = now
-                .duration_since(entry.modified)
-                .map(|elapsed| elapsed > ttl)
-                .unwrap_or(false);
-            if expired {
-                let _ = fs::remove_file(&entry.path);
-                return false;
-            }
-            true
-        });
-    }
-
-    if matches!(
-        policy.clean_strategy,
-        CacheCleanStrategy::Size | CacheCleanStrategy::Both
-    ) && policy.max_size_mb > 0
-    {
-        let limit_bytes = policy.max_size_mb.saturating_mul(1024 * 1024);
-        let mut total_bytes = entries.iter().map(|entry| entry.size).sum::<u64>();
-
-        if total_bytes > limit_bytes {
-            entries.sort_by_key(|entry| entry.modified);
-            for entry in entries {
-                if total_bytes <= limit_bytes {
-                    break;
-                }
-                if fs::remove_file(&entry.path).is_ok() {
-                    total_bytes = total_bytes.saturating_sub(entry.size);
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn list_cache_entries(cache_dir: &Path) -> Result<Vec<CacheEntry>> {
-    let mut out = Vec::new();
-
-    if !cache_dir.is_dir() {
-        return Ok(out);
-    }
-
-    for entry in fs::read_dir(cache_dir)
-        .with_context(|| format!("read cache dir failed: {}", cache_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        // Streaming orphan files were handled by the dedicated pass above;
-        // ordinary download `.part` files are never cache entries.
-        if path.extension().is_some_and(|ext| ext == "part") {
-            continue;
-        }
-
-        let metadata = entry
-            .metadata()
-            .with_context(|| format!("read cache metadata failed: {}", path.display()))?;
-        if !metadata.is_file() {
-            continue;
-        }
-        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-
-        out.push(CacheEntry {
-            path,
-            size: metadata.len(),
-            modified,
-        });
-    }
-
-    Ok(out)
-}
+#[cfg(test)]
+mod error_callback_tests;
 
 #[cfg(test)]
 mod seek_worker_tests;

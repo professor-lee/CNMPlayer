@@ -24,6 +24,7 @@ pub enum Action {
     TogglePlaylist,
     Confirm,
     CloseOverlay,
+    CloseSettings,
 
     OpenSettingsModal,
     ToggleHelpModal,
@@ -49,8 +50,11 @@ pub enum Action {
 
     SeekToFraction(f32),
 
-    PathChar(char),
-    PathBackspace,
+    TextChar(char),
+    TextBackspace,
+    TextDelete,
+    TextHome,
+    TextEnd,
 
     MouseClick {
         col: u16,
@@ -85,6 +89,23 @@ pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
             KeyCode::Enter => Action::Confirm,
             KeyCode::Up => Action::ModalUp,
             KeyCode::Down => Action::ModalDown,
+            KeyCode::Left => Action::ModalLeft,
+            KeyCode::Right => Action::ModalRight,
+            _ => Action::None,
+        };
+    }
+
+    if overlay == Overlay::GeneralSettingsModal {
+        return match ev.code {
+            KeyCode::Esc => Action::CloseOverlay,
+            KeyCode::Char('t') | KeyCode::Char('T')
+                if ev.modifiers.is_empty() || ev.modifiers == KeyModifiers::SHIFT =>
+            {
+                Action::CloseSettings
+            }
+            KeyCode::Enter => Action::Confirm,
+            KeyCode::Up | KeyCode::BackTab => Action::ModalUp,
+            KeyCode::Down | KeyCode::Tab => Action::ModalDown,
             KeyCode::Left => Action::ModalLeft,
             KeyCode::Right => Action::ModalRight,
             _ => Action::None,
@@ -127,18 +148,28 @@ pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
         };
     }
 
-    if overlay == Overlay::DownloadPathEditModal {
+    if matches!(
+        overlay,
+        Overlay::DownloadPathEditModal | Overlay::MprisNameEditModal
+    ) {
         return match ev.code {
             KeyCode::Esc => Action::CloseOverlay,
             KeyCode::Enter => Action::Confirm,
-            KeyCode::Backspace => Action::PathBackspace,
+            KeyCode::Backspace => Action::TextBackspace,
+            KeyCode::Delete => Action::TextDelete,
+            KeyCode::Home => Action::TextHome,
+            KeyCode::End => Action::TextEnd,
             KeyCode::Left => Action::ModalLeft,
             KeyCode::Right => Action::ModalRight,
             KeyCode::Char(ch) => {
-                if ev.modifiers.contains(KeyModifiers::CONTROL) || ch.is_control() {
+                if ev
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    || ch.is_control()
+                {
                     Action::None
                 } else {
-                    Action::PathChar(ch)
+                    Action::TextChar(ch)
                 }
             }
             _ => Action::None,

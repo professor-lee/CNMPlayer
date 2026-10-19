@@ -59,6 +59,10 @@ pub(super) struct Core {
     memory: [f64; MAX_BARS * 2],
     peak: [f64; MAX_BARS * 2],
     previous: [f64; MAX_BARS * 2],
+    // Band magnitudes before sensitivity and temporal smoothing. The FFT and
+    // aggregation are only needed after the history or band mapping changes.
+    raw: [f64; MAX_BARS * 2],
+    raw_valid: bool,
     sensitivity: f64,
     sensitivity_initial: bool,
     framerate: f64,
@@ -103,6 +107,8 @@ impl Core {
             memory: [0.0; MAX_BARS * 2],
             peak: [0.0; MAX_BARS * 2],
             previous: [0.0; MAX_BARS * 2],
+            raw: [0.0; MAX_BARS * 2],
+            raw_valid: false,
             sensitivity: 1.0,
             sensitivity_initial: true,
             framerate: 75.0,
@@ -113,6 +119,7 @@ impl Core {
     }
 
     fn map_bands(&mut self, low: u32, high: u32) -> Result<(), SpectrumError> {
+        self.raw_valid = false;
         let normal = self.treble.input.len();
         let bass = self.bass.input.len();
         // C computes the ratio and denominator in float, then calls double log10.
@@ -199,6 +206,7 @@ impl Core {
             history.fill(0.0);
         }
         self.nonzero_samples = 0;
+        self.raw_valid = false;
     }
 
     pub(super) fn reset(&mut self) {
@@ -257,25 +265,33 @@ impl Core {
                     }
                 }
             }
+            // Inserted zero samples still change the FFT window.
+            self.raw_valid = false;
         } else {
             self.frame_skip = self.frame_skip.saturating_add(1);
         }
-        for channel in 0..2 {
-            self.bass.transform(&self.history[channel])?;
-            self.treble.transform(&self.history[channel])?;
-            for n in 0..self.bars {
-                let fft = if n < self.bass_bars {
-                    &self.bass.output
-                } else {
-                    &self.treble.output
-                };
-                let mut sum = 0.0;
-                for bin in self.lower[n] as i32..=self.upper[n] {
-                    let value = fft[bin as usize];
-                    sum += value.re.hypot(value.im);
+        if !self.raw_valid {
+            for channel in 0..2 {
+                self.bass.transform(&self.history[channel])?;
+                self.treble.transform(&self.history[channel])?;
+                for n in 0..self.bars {
+                    let fft = if n < self.bass_bars {
+                        &self.bass.output
+                    } else {
+                        &self.treble.output
+                    };
+                    let mut sum = 0.0;
+                    for bin in self.lower[n] as i32..=self.upper[n] {
+                        let value = fft[bin as usize];
+                        sum += value.re.hypot(value.im);
+                    }
+                    self.raw[channel * self.bars + n] = sum * self.eq[n];
                 }
-                self.output[channel * self.bars + n] = sum * self.eq[n] * self.sensitivity;
             }
+            self.raw_valid = true;
+        }
+        for n in 0..self.bars * 2 {
+            self.output[n] = self.raw[n] * self.sensitivity;
         }
         let framerate_mod = 66.0 / self.framerate;
         let gravity_mod = framerate_mod.powf(2.5) * 2.0 / NOISE;

@@ -1,4 +1,6 @@
+use crate::render::motion::{Curve, Transition};
 use ratatui::style::Color;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorCapability {
@@ -7,7 +9,7 @@ pub enum ColorCapability {
     NoColor,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThemePalette {
     pub text: (u8, u8, u8),
     pub subtext: (u8, u8, u8),
@@ -27,6 +29,74 @@ pub struct Theme {
     pub name: String,
     pub palette: ThemePalette,
     pub capability: ColorCapability,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ThemeTransition {
+    from: ThemePalette,
+    to: ThemePalette,
+    motion: Transition,
+}
+
+impl ThemeTransition {
+    pub(crate) fn new(from: ThemePalette, to: ThemePalette, now: Instant) -> Self {
+        let mut motion = Transition::new(0.0);
+        motion.retarget(1.0, now, Duration::from_millis(200), Curve::EaseInOut);
+        Self { from, to, motion }
+    }
+
+    pub(crate) fn tick(&mut self, now: Instant) -> ThemePalette {
+        self.motion.tick(now);
+        ThemePalette::mix(self.from, self.to, self.motion.value())
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.motion.is_running()
+    }
+
+    pub(crate) fn target(&self) -> ThemePalette {
+        self.to
+    }
+}
+
+pub(crate) fn start_theme_transition(
+    current: &mut Theme,
+    transition: &mut Option<ThemeTransition>,
+    next: Theme,
+    now: Instant,
+) {
+    let from = current.palette;
+    if next.capability == ColorCapability::NoColor || from == next.palette {
+        *current = next;
+        *transition = None;
+        return;
+    }
+
+    let to = next.palette;
+    *current = next;
+    current.palette = from;
+    *transition = Some(ThemeTransition::new(from, to, now));
+}
+
+impl ThemePalette {
+    fn mix(from: Self, to: Self, amount: f32) -> Self {
+        Self {
+            text: mix_rgb(from.text, to.text, amount),
+            subtext: mix_rgb(from.subtext, to.subtext, amount),
+            base: mix_rgb(from.base, to.base, amount),
+            surface: mix_rgb(from.surface, to.surface, amount),
+            buff: mix_rgb(from.buff, to.buff, amount),
+            accent: mix_rgb(from.accent, to.accent, amount),
+            accent2: mix_rgb(from.accent2, to.accent2, amount),
+            accent3: mix_rgb(from.accent3, to.accent3, amount),
+        }
+    }
+}
+
+fn mix_rgb(from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> (u8, u8, u8) {
+    let amount = amount.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
+    (mix(from.0, to.0), mix(from.1, to.1), mix(from.2, to.2))
 }
 
 impl Theme {
@@ -62,12 +132,14 @@ impl Theme {
         map_color(self.capability, self.palette.accent3)
     }
 
-    /// 将主题色向白色方向提亮 amount∈[0,1]：脉冲动画“稍浅一点”的效果，
-    /// 基础颜色来自主题，明暗主题均自适应（不硬编码颜色）。
     pub fn lighten(&self, color: (u8, u8, u8), amount: f32) -> Color {
         let amount = amount.clamp(0.0, 1.0);
         let mix = |x: u8| (x as f32 + (255.0 - x as f32) * amount).round() as u8;
         map_color(self.capability, (mix(color.0), mix(color.1), mix(color.2)))
+    }
+
+    pub(crate) fn mix(&self, from: (u8, u8, u8), to: (u8, u8, u8), amount: f32) -> Color {
+        map_color(self.capability, mix_rgb(from, to, amount))
     }
 }
 
@@ -115,7 +187,6 @@ fn map_color(cap: ColorCapability, rgb: (u8, u8, u8)) -> Color {
 }
 
 fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
-    // 6x6x6 color cube, 16..231
     let r6 = (r as u16 * 5 / 255) as u8;
     let g6 = (g as u16 * 5 / 255) as u8;
     let b6 = (b as u16 * 5 / 255) as u8;

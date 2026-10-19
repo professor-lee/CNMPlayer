@@ -122,19 +122,45 @@ fn braille_from_two_bars(left: u8, right: u8) -> char {
     }
 }
 
+/// The mini spectrum animates while playing or while its decay tail is live.
+/// A paused track without a tail must not keep the host at the UI FPS cap.
+fn mini_spectrum_needs_redraw(
+    enabled: bool,
+    has_track: bool,
+    playing: bool,
+    has_tail: bool,
+) -> bool {
+    enabled && has_track && (playing || has_tail)
+}
+
+/// Small-window playback still needs progress/lyric updates, and the narrow
+/// VU meter needs frames while its attack/release animation is running.
+fn small_window_needs_redraw(
+    mode: Option<SmallWindowMode>,
+    playing: bool,
+    vu_animating: bool,
+) -> bool {
+    match mode {
+        Some(SmallWindowMode::Flat) => playing,
+        Some(SmallWindowMode::Narrow) => playing || vu_animating,
+        None => false,
+    }
+}
+
 impl App {
     /// 是否有进行中的动画需要高频重绘（进度条脉冲、搜索框滑出、侧边栏
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
     pub(crate) fn should_continuous_redraw(&self) -> bool {
-        if self.page_transition_active() {
+        if self.theme_transition.is_some() || self.page_transition_active() {
             return true;
         }
-        if self.mini_spectrum_enabled()
-            && self.playback.now_playing.is_some()
-            && (self.playback.playback_state == PlaybackRuntimeState::Playing
-                || self.mini_spectrum.has_tail())
-        {
+        if mini_spectrum_needs_redraw(
+            self.mini_spectrum_enabled(),
+            self.playback.now_playing.is_some(),
+            self.playback.playback_state == PlaybackRuntimeState::Playing,
+            self.mini_spectrum.has_tail(),
+        ) {
             return true;
         }
         if self.is_seeking() || self.page_lyrics_grab.is_some() {
@@ -142,7 +168,7 @@ impl App {
         }
         if self.input.search_motion.is_running()
             || self.browse.home_sidebar.motion.is_running()
-            || self.browse.home_sidebar.trail.value() > 0.0
+            || self.browse.home_sidebar.trail.is_running()
         {
             return true;
         }
@@ -155,14 +181,11 @@ impl App {
         {
             return true;
         }
-        if self.small_window_mode == Some(SmallWindowMode::Flat)
-            && self.playback.playback_state == PlaybackRuntimeState::Playing
-        {
-            return true;
-        }
-        if self.small_window_mode == Some(SmallWindowMode::Narrow)
-            && (self.playback.playback_state == PlaybackRuntimeState::Playing || self.vu_animating)
-        {
+        if small_window_needs_redraw(
+            self.small_window_mode,
+            self.playback.playback_state == PlaybackRuntimeState::Playing,
+            self.vu_animating,
+        ) {
             return true;
         }
         #[cfg(feature = "easter-egg")]
@@ -448,3 +471,6 @@ impl App {
         self.mini_spectrum.clear();
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,9 +1,12 @@
 use super::playback_controller::PlaybackRuntimeState;
 use super::playback_controller::PlaybackTrack;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub(super) struct MprisSyncPayload {
+    // Every latest-value snapshot retains Identity, even when updates coalesce.
+    pub(super) identity: Arc<String>,
     pub(super) playback: PlaybackRuntimeState,
     pub(super) position: Duration,
     pub(super) track: Option<PlaybackTrack>,
@@ -23,14 +26,12 @@ pub(super) enum MprisControlEvent {
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use super::super::player::cleanup_cache_dir;
+    use super::super::cache_maintenance::cleanup_cache_dir;
     use super::MprisControlEvent;
     use super::MprisSyncPayload;
     use crate::data::config::CacheConfig;
     use crate::launch;
 
-    const MPRIS_IDENTITY: &str = "CNMPlayer";
-    use crate::render::wake::WakeSignal;
     use mpris_server::Metadata;
     use mpris_server::PlaybackStatus;
     use mpris_server::Player;
@@ -54,7 +55,11 @@ mod imp {
     }
 
     impl MprisBridge {
-        pub fn new(cache_root: &Path, cache_policy: &CacheConfig, wake: WakeSignal) -> Self {
+        pub fn new(
+            cache_root: &Path,
+            cache_policy: &CacheConfig,
+            identity: std::sync::Arc<String>,
+        ) -> Self {
             let art_dir = cache_root.join("mpris_art");
 
             let (tx, mut rx) = see::unsync::channel(None);
@@ -74,7 +79,7 @@ mod imp {
                     log::warn!("mpris cache initialization task panicked");
                 }
                 let player = match Player::builder("cnmplayer")
-                    .identity(MPRIS_IDENTITY)
+                    .identity(identity.as_str())
                     .can_play(true)
                     .can_pause(true)
                     .can_seek(true)
@@ -90,7 +95,7 @@ mod imp {
                     }
                 };
 
-                bind_control_callbacks(&player, &event_tx, &wake);
+                bind_control_callbacks(&player, &event_tx);
 
                 launch(player.run());
 
@@ -124,65 +129,45 @@ mod imp {
         }
     }
 
-    fn bind_control_callbacks(
-        player: &Player,
-        event_tx: &Sender<MprisControlEvent>,
-        wake: &WakeSignal,
-    ) {
+    fn bind_control_callbacks(player: &Player, event_tx: &Sender<MprisControlEvent>) {
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_play(move |_| {
             let _ = tx.send(MprisControlEvent::Play);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_pause(move |_| {
             let _ = tx.send(MprisControlEvent::Pause);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_play_pause(move |_| {
             let _ = tx.send(MprisControlEvent::PlayPause);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_stop(move |_| {
             let _ = tx.send(MprisControlEvent::Stop);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_next(move |_| {
             let _ = tx.send(MprisControlEvent::Next);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_previous(move |_| {
             let _ = tx.send(MprisControlEvent::Previous);
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_seek(move |_, offset| {
             let _ = tx.send(MprisControlEvent::SeekRelativeMicros(offset.as_micros()));
-            signal.notify();
         });
 
         let tx = event_tx.clone();
-        let signal = wake.clone();
         player.connect_set_position(move |_, _, position| {
             let _ = tx.send(MprisControlEvent::SeekAbsoluteMicros(position.as_micros()));
-            signal.notify();
         });
     }
 
@@ -192,6 +177,10 @@ mod imp {
         cache_policy: &CacheConfig,
         payload: MprisSyncPayload,
     ) -> zbus::Result<()> {
+        if player.identity().as_str() != payload.identity.as_str() {
+            player.set_identity(payload.identity.as_str()).await?;
+        }
+
         player
             .set_playback_status(match payload.playback {
                 super::PlaybackRuntimeState::Playing => PlaybackStatus::Playing,
@@ -352,13 +341,16 @@ mod imp {
     use super::MprisControlEvent;
     use super::MprisSyncPayload;
     use crate::data::config::CacheConfig;
-    use crate::render::wake::WakeSignal;
     use std::path::Path;
 
     pub struct MprisBridge;
 
     impl MprisBridge {
-        pub fn new(_cache_root: &Path, _cache_policy: &CacheConfig, _wake: WakeSignal) -> Self {
+        pub fn new(
+            _cache_root: &Path,
+            _cache_policy: &CacheConfig,
+            _identity: std::sync::Arc<String>,
+        ) -> Self {
             Self
         }
 

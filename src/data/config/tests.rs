@@ -100,21 +100,42 @@ fn partial_user_configuration_preserves_overrides_and_completes_nested_fields() 
     let path = dir.join("default.toml");
     std::fs::write(
         &path,
-        "ui_fps = 144\ntransparent_background = false\n[cache]\nmax_age_days = 11\n",
+        "ui_fps = 144\ntransparent_background = false\nmpris_name = '播放器 · @play'\n[cache]\nmax_age_days = 11\n",
     )
     .unwrap();
     let loaded = super::Config::load_from_path(&path).unwrap();
     assert_eq!(loaded.ui_fps, 144);
     assert!(!loaded.transparent_background);
     assert_eq!(loaded.cache.max_age_days, 11);
+    assert_eq!(loaded.mpris_name, "播放器 · @play");
     let saved = std::fs::read_to_string(&path).unwrap();
     let reparsed: super::Config = toml::from_str(&saved).unwrap();
     assert_eq!(reparsed.ui_fps, 144);
     assert_eq!(reparsed.cache.max_age_days, 11);
+    assert_eq!(reparsed.mpris_name, "播放器 · @play");
     assert_eq!(
         toml::to_string(&loaded).unwrap(),
         toml::to_string(&reparsed).unwrap()
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn lyric_frame_divisor_is_clamped_to_supported_range() {
+    let dir = std::env::temp_dir().join(format!(
+        "cnmplayer-lyric-divisor-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("default.toml");
+    for (raw, expected) in [
+        ("lyric_frame_divisor = 0\n", 1),
+        ("lyric_frame_divisor = 99\n", 8),
+    ] {
+        std::fs::write(&path, raw).unwrap();
+        let loaded = super::Config::load_from_path(&path).unwrap();
+        assert_eq!(loaded.lyric_frame_divisor, expected);
+    }
     let _ = std::fs::remove_dir_all(dir);
 }
 

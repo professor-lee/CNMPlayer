@@ -1,7 +1,6 @@
 pub mod app;
 pub mod audio;
 pub mod data;
-pub mod playback;
 pub mod render;
 pub mod ui;
 pub mod utils;
@@ -33,7 +32,7 @@ pub struct FullscreenTrackSeed {
     pub duration: Duration,
     pub liked: bool,
     pub cover: Option<Arc<[u8]>>,
-    pub lyrics: Option<Vec<app::state::LyricLine>>,
+    pub lyrics: Option<Vec<crate::lyrics::LyricLine>>,
 }
 
 #[derive(Debug, Clone, Default)]

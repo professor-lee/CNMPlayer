@@ -1,6 +1,7 @@
 use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
+use crate::render::mark_animation_end_frame;
 use crate::tmplayer::app::state::{AppState, Overlay, PlaybackState, RepeatMode};
 use crate::tmplayer::ui::tui::Tui;
 use crate::tmplayer::ui::tui::layout::UiLayout;
@@ -19,16 +20,17 @@ use std::time::{Duration, Instant};
 /// 子页的上一级：挂在设置弹窗下面的这些弹窗，Esc 应该回到设置弹窗，
 /// 而不是直接关掉整个弹窗。`None` 表示没有上一级。
 fn settings_parent(overlay: Overlay) -> Option<Overlay> {
-    matches!(
-        overlay,
-        Overlay::BarSettingsModal
-            | Overlay::LyricsSettingsModal
-            | Overlay::DownloadSettingsModal
-            | Overlay::DownloadPathEditModal
-            | Overlay::HelpModal
-            | Overlay::AboutModal
-    )
-    .then_some(Overlay::SettingsModal)
+    match overlay {
+        Overlay::MprisNameEditModal => Some(Overlay::GeneralSettingsModal),
+        Overlay::DownloadPathEditModal => Some(Overlay::DownloadSettingsModal),
+        Overlay::GeneralSettingsModal
+        | Overlay::BarSettingsModal
+        | Overlay::LyricsSettingsModal
+        | Overlay::DownloadSettingsModal
+        | Overlay::HelpModal
+        | Overlay::AboutModal => Some(Overlay::SettingsModal),
+        _ => None,
+    }
 }
 
 fn clear_spectrum(app: &mut AppState) {
@@ -102,9 +104,11 @@ async fn apply_host_config_sync(app: &mut AppState, config: Config, vip_audio_un
         .clamp_for_vip(vip_audio_unlocked);
     app.eq.bands_db = app.config.eq_bands_db;
     if theme_changed {
-        app.theme = ThemeLoader::load_async(&app.config.theme)
-            .await
-            .unwrap_or_default();
+        app.apply_theme(
+            ThemeLoader::load_async(&app.config.theme)
+                .await
+                .unwrap_or_default(),
+        );
     }
     app.refresh_download_root();
 }
@@ -154,6 +158,7 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
         app.player.repeat_mode = map_host_repeat(snapshot.repeat_mode);
         app.player.liked = false;
         app.player.position = snapshot.position;
+        app.position_anchor_at = Instant::now();
         app.player.track = empty_track_metadata();
         return;
     }
@@ -219,7 +224,7 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
     playlist.selected = current;
     playlist.clamp_selected();
 
-    let keep_selected = app.overlay == Overlay::Playlist
+    let keep_selected = app.playlist_is_open()
         && app.playlist_view.len() <= queue_len
         && app
             .playlist_view
@@ -254,6 +259,7 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
     app.player.repeat_mode = map_host_repeat(snapshot.repeat_mode);
     app.player.liked = snapshot.current_liked;
     app.player.position = snapshot.position;
+    app.position_anchor_at = Instant::now();
     let track_changed = identity_changed
         || previous_index != Some(current)
         || app.player.track.title != current_track.title
@@ -339,6 +345,9 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         }
     }
 
+    // Refresh the extrapolation origin on every snapshot, even when the host
+    // position is unchanged (buffering/stall), so lyrics cannot drift ahead.
+    app.position_anchor_at = Instant::now();
     changed
 }
 
@@ -376,7 +385,9 @@ async fn sync_from_host_bridge(
 fn tick_visual_state(app: &mut AppState, now: Instant) -> bool {
     let scope_before = app.scope_gain.value();
     app.tick(now);
-    scope_before != app.scope_gain.value() || app.should_continuous_redraw()
+    // Continuous animation is paced by the frame clock, not by dirty frames.
+    // Only report actual state changes here.
+    scope_before != app.scope_gain.value()
 }
 
 pub async fn run<B: Backend>(
@@ -399,6 +410,7 @@ where
     let mut last_host_sync = Instant::now() - Duration::from_millis(50);
     let wake = host_bridge.wake_signal();
     let mut clock = FrameClock::new(app.render_fps(), Instant::now());
+    let mut was_continuous = false;
 
     let _ = sync_from_host_bridge(
         app,
@@ -449,11 +461,13 @@ where
             state_changed |= tick_visual_state(app, frame_start);
             state_changed |= tui.poll_cover_frames();
             let continuous = app.should_continuous_redraw();
-            if state_changed || continuous {
+            mark_animation_end_frame(&mut clock, was_continuous, continuous);
+            if state_changed {
                 clock.mark_dirty();
             }
             clock.set_fps(app.render_fps(), frame_start);
             clock.set_continuous(continuous);
+            was_continuous = continuous;
             if clock.due(frame_start) {
                 update_spectrum(app, &last_layout, frame_start)?;
                 last_layout = tui.draw(app)?;
@@ -461,10 +475,7 @@ where
             }
             let maintenance_wait =
                 Duration::from_millis(50).saturating_sub(last_host_sync.elapsed());
-            let frame_wait = clock
-                .next_deadline()
-                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
-                .unwrap_or(Duration::from_secs(1));
+            let frame_wait = clock.next_deadline();
             let wait = maintenance_wait.min(frame_wait);
             if !wait.is_zero() {
                 compio::time::sleep(wait).await;
@@ -477,10 +488,8 @@ where
     }
     .await;
 
-    // The close animation is a visual handoff, not a fullscreen toast frame.
-    // Clear the exit/status toast before both the fresh Host snapshot and the
-    // sliding page are rendered; otherwise "Bye" remains accent-red at top.
-    app.toast = None;
+    // The host applies fullscreen theme changes immediately, so this fresh
+    // snapshot is rendered with the target palette instead of the old frame.
     let transition_result = if loop_result.is_ok() {
         async {
             let snapshot = host_bridge.host_snapshot(tui.terminal_mut())?;
@@ -521,6 +530,10 @@ where
     let mut motion = Transition::new(start_value);
     let mut started = false;
     let mut clock = FrameClock::new(app.config.ui_fps, Instant::now());
+    // The transition is an animation: dirty is cleared after every submission,
+    // so the local clock must stay in continuous mode or `next_deadline()` falls
+    // back to the one-second idle heartbeat.
+    clock.set_continuous(true);
     let mut metadata = None;
     let mut previous_layout = UiLayout::default();
     let layout = loop {
@@ -537,8 +550,9 @@ where
         let now = Instant::now();
         app.tick(now);
         motion.tick(now);
-        tui.poll_cover_frames();
-        clock.mark_dirty();
+        if tui.poll_cover_frames() {
+            clock.mark_dirty();
+        }
         if clock.due(now) {
             update_spectrum(app, &previous_layout, now)?;
             let layout = tui.draw_reveal(app, &host_snapshot, motion.value())?;
@@ -559,10 +573,7 @@ where
                 break layout;
             }
         }
-        let wait = clock
-            .next_deadline()
-            .unwrap_or(now)
-            .saturating_duration_since(Instant::now());
+        let wait = clock.next_deadline();
         compio::time::sleep(wait).await;
     };
     // Snapshot ownership ends here, before stable Fullscreen or Host resumes.
@@ -579,15 +590,28 @@ async fn handle_action(
         app.volume_drag = false;
         app.progress_drag = false;
     }
+    if matches!(
+        app.overlay,
+        Overlay::DownloadPathEditModal | Overlay::MprisNameEditModal
+    ) && matches!(
+        action,
+        Action::MouseClick { .. }
+            | Action::MouseScroll { .. }
+            | Action::MouseDrag { .. }
+            | Action::MouseUp
+            | Action::ModalSelect(_)
+    ) {
+        return Ok(());
+    }
     match action {
         Action::Quit => {}
         Action::OpenSettingsModal => {
-            app.settings_selected = app.settings_selected.min(12);
-            app.overlay = Overlay::SettingsModal;
+            app.open_modal(Overlay::SettingsModal);
+            app.settings_selected = app.settings_selected.min(8);
         }
         Action::ToggleHelpModal => app.toggle_help_modal(),
         Action::OpenEqModal => {
-            app.overlay = Overlay::EqModal;
+            app.open_modal(Overlay::EqModal);
             app.eq_selected = 0;
         }
         Action::EqSetBandDb { band, db } => {
@@ -607,16 +631,37 @@ async fn handle_action(
                 sync_eq_config(app, host_bridge).await;
             }
         }
-        Action::PathChar(c) => {
-            if app.overlay == Overlay::DownloadPathEditModal {
-                download_path_edit_insert(app, c);
+        Action::TextChar(ch) => {
+            let max_chars = if app.overlay == Overlay::MprisNameEditModal {
+                256
+            } else {
+                4096
+            };
+            if let Some(edit) = settings_text_edit(app) {
+                edit.insert(ch, max_chars);
             }
         }
-        Action::PathBackspace => {
-            if app.overlay == Overlay::DownloadPathEditModal {
-                download_path_edit_backspace(app);
+        Action::TextBackspace => {
+            if let Some(edit) = settings_text_edit(app) {
+                edit.backspace();
             }
         }
+        Action::TextDelete => {
+            if let Some(edit) = settings_text_edit(app) {
+                edit.delete();
+            }
+        }
+        Action::TextHome => {
+            if let Some(edit) = settings_text_edit(app) {
+                edit.home();
+            }
+        }
+        Action::TextEnd => {
+            if let Some(edit) = settings_text_edit(app) {
+                edit.end();
+            }
+        }
+        Action::CloseSettings => app.close_overlay(),
         Action::CloseOverlay => {
             if app.overlay == Overlay::Playlist {
                 // 面板状态立即关闭，滑出动画由 tick 推进到位。
@@ -626,6 +671,9 @@ async fn handle_action(
                 // 路径编辑中的 Esc = 取消编辑（丢弃输入），回下载设置页。
                 app.download_path_edit = None;
                 app.overlay = Overlay::DownloadSettingsModal;
+            } else if app.overlay == Overlay::MprisNameEditModal {
+                app.mpris_name_edit = None;
+                app.overlay = Overlay::GeneralSettingsModal;
             } else if let Some(parent) = settings_parent(app.overlay) {
                 // 设置类子页：回上一级，而不是直接退出全屏页。
                 app.overlay = parent;
@@ -664,45 +712,63 @@ async fn handle_action(
                 return Ok(());
             }
             Overlay::SettingsModal => match app.settings_selected {
-                0..=3 => {
-                    apply_settings_delta(app, host_bridge, 1).await;
+                0..=1 => apply_settings_delta(app, host_bridge, 1).await,
+                2 => {
+                    app.general_settings_selected = 0;
+                    app.general_settings_scroll = 0;
+                    app.overlay = Overlay::GeneralSettingsModal;
                 }
-                4 => {
+                3 => {
                     app.bar_settings_selected = 0;
                     app.overlay = Overlay::BarSettingsModal;
                 }
-                5 => {
+                4 => {
                     app.help_keybind_scroll = 0;
                     app.overlay = Overlay::HelpModal;
                 }
-                6 => {
-                    app.lyrics_settings_selected = app.lyrics_settings_selected.min(2);
+                5 => {
+                    app.lyrics_settings_selected = app.lyrics_settings_selected.min(4);
+                    if !app.config.page_lyrics_drag && app.lyrics_settings_selected == 2 {
+                        app.lyrics_settings_selected = 1;
+                    }
                     app.overlay = Overlay::LyricsSettingsModal;
                 }
-                7 => {
-                    apply_settings_delta(app, host_bridge, 1).await;
-                }
-                8 => {
-                    apply_settings_delta(app, host_bridge, 1).await;
-                }
-                9 => {
-                    apply_settings_delta(app, host_bridge, 1).await;
-                }
-                10 => {
+                6 => {
                     app.download_settings_selected =
                         download_selectable_rows(app).first().copied().unwrap_or(1);
                     app.download_reset_armed = false;
                     app.download_path_edit = None;
                     app.overlay = Overlay::DownloadSettingsModal;
                 }
-                11 => {
-                    app.set_toast("Logout is unavailable in fullscreen");
-                }
-                12 => {
-                    app.overlay = Overlay::AboutModal;
-                }
+                7 => app.set_toast("Logout is unavailable in fullscreen"),
+                8 => app.overlay = Overlay::AboutModal,
                 _ => {}
             },
+            Overlay::GeneralSettingsModal => {
+                if app.general_settings_selected == 5 {
+                    app.mpris_name_edit =
+                        Some(crate::app::settings_controller::SettingsTextEdit::new(
+                            app.config.mpris_name.clone(),
+                        ));
+                    app.overlay = Overlay::MprisNameEditModal;
+                } else {
+                    apply_general_settings_delta(app, host_bridge, 1).await;
+                }
+            }
+            Overlay::MprisNameEditModal => {
+                if let Some(edit) = app.mpris_name_edit.take() {
+                    let name = if edit.buffer.trim().is_empty() {
+                        String::new()
+                    } else {
+                        edit.buffer
+                    };
+                    app.overlay = Overlay::GeneralSettingsModal;
+                    if app.config.mpris_name != name {
+                        app.config.mpris_name = name;
+                        save_and_sync_host_config(app, host_bridge).await;
+                    }
+                }
+            }
             Overlay::DownloadSettingsModal => {
                 activate_download_settings_item(app, host_bridge).await;
             }
@@ -779,12 +845,14 @@ async fn handle_action(
         }
         Action::ModalUp => {
             if app.overlay == Overlay::SettingsModal {
-                let count = 13;
+                let count = 9;
                 if app.settings_selected == 0 {
                     app.settings_selected = count - 1;
                 } else {
                     app.settings_selected -= 1;
                 }
+            } else if app.overlay == Overlay::GeneralSettingsModal {
+                app.general_settings_selected = (app.general_settings_selected + 5) % 6;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, -1);
             } else if app.overlay == Overlay::BarSettingsModal {
@@ -795,12 +863,12 @@ async fn handle_action(
                     app.bar_settings_selected -= 1;
                 }
             } else if app.overlay == Overlay::LyricsSettingsModal {
-                let count = 3;
-                if app.lyrics_settings_selected == 0 {
-                    app.lyrics_settings_selected = count - 1;
-                } else {
-                    app.lyrics_settings_selected -= 1;
-                }
+                app.lyrics_settings_selected =
+                    crate::app::settings_controller::step_lyrics_settings(
+                        app.lyrics_settings_selected,
+                        false,
+                        app.config.page_lyrics_drag,
+                    );
             } else if app.overlay == Overlay::EqModal {
                 let step = 1.0;
                 if app.eq_selected < crate::tmplayer::app::state::EQ_BANDS {
@@ -822,16 +890,22 @@ async fn handle_action(
         }
         Action::ModalDown => {
             if app.overlay == Overlay::SettingsModal {
-                let count = 13;
+                let count = 9;
                 app.settings_selected = (app.settings_selected + 1) % count;
+            } else if app.overlay == Overlay::GeneralSettingsModal {
+                app.general_settings_selected = (app.general_settings_selected + 1) % 6;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, 1);
             } else if app.overlay == Overlay::BarSettingsModal {
                 let count = 7;
                 app.bar_settings_selected = (app.bar_settings_selected + 1) % count;
             } else if app.overlay == Overlay::LyricsSettingsModal {
-                let count = 3;
-                app.lyrics_settings_selected = (app.lyrics_settings_selected + 1) % count;
+                app.lyrics_settings_selected =
+                    crate::app::settings_controller::step_lyrics_settings(
+                        app.lyrics_settings_selected,
+                        true,
+                        app.config.page_lyrics_drag,
+                    );
             } else if app.overlay == Overlay::EqModal {
                 let step = 1.0;
                 if app.eq_selected < crate::tmplayer::app::state::EQ_BANDS {
@@ -849,10 +923,12 @@ async fn handle_action(
         Action::ModalLeft => {
             if app.overlay == Overlay::SettingsModal {
                 apply_settings_delta(app, host_bridge, -1).await;
+            } else if app.overlay == Overlay::GeneralSettingsModal {
+                apply_general_settings_delta(app, host_bridge, -1).await;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 apply_download_settings_delta(app, host_bridge, -1).await;
-            } else if app.overlay == Overlay::DownloadPathEditModal {
-                download_path_edit_move(app, -1);
+            } else if let Some(edit) = settings_text_edit(app) {
+                edit.move_cursor(-1);
             } else if app.overlay == Overlay::BarSettingsModal {
                 match app.bar_settings_selected {
                     0 => {
@@ -900,10 +976,16 @@ async fn handle_action(
         Action::ModalRight => {
             if app.overlay == Overlay::SettingsModal {
                 apply_settings_delta(app, host_bridge, 1).await;
+            } else if app.overlay == Overlay::GeneralSettingsModal {
+                if app.general_settings_selected == 5 {
+                    return Box::pin(handle_action(app, host_bridge, Action::Confirm, layout))
+                        .await;
+                }
+                apply_general_settings_delta(app, host_bridge, 1).await;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 apply_download_settings_delta(app, host_bridge, 1).await;
-            } else if app.overlay == Overlay::DownloadPathEditModal {
-                download_path_edit_move(app, 1);
+            } else if let Some(edit) = settings_text_edit(app) {
+                edit.move_cursor(1);
             } else if app.overlay == Overlay::BarSettingsModal {
                 match app.bar_settings_selected {
                     0 => {
@@ -1084,10 +1166,22 @@ async fn handle_action(
 
             match app.overlay {
                 Overlay::SettingsModal => app.settings_selected = idx,
+                Overlay::GeneralSettingsModal => {
+                    app.general_settings_selected = idx.min(5);
+                    return Box::pin(handle_action(app, host_bridge, Action::Confirm, layout))
+                        .await;
+                }
                 Overlay::BarSettingsModal => app.bar_settings_selected = idx,
                 Overlay::LyricsSettingsModal => {
                     // 开关行：左键直接改值（与宿主一致），不走双击。
-                    app.lyrics_settings_selected = idx.min(2);
+                    // 拖动关闭时「边缘吸附」灰置，点击也不选中。
+                    if !crate::app::settings_controller::lyrics_settings_row_enabled(
+                        idx,
+                        app.config.page_lyrics_drag,
+                    ) {
+                        return Ok(());
+                    }
+                    app.lyrics_settings_selected = idx;
                     apply_lyrics_settings_delta(app, host_bridge, 1).await;
                     return Ok(());
                 }
@@ -1135,7 +1229,7 @@ async fn apply_settings_delta(
             let next = (cur + delta).rem_euclid(themes.len() as i32) as usize;
             let key = &themes[next];
             if let Ok(theme) = ThemeLoader::load_async(key).await {
-                app.theme = theme;
+                app.apply_theme(theme);
                 app.config.theme = key.clone();
                 save_and_sync_host_config(app, host_bridge).await;
             } else {
@@ -1143,51 +1237,46 @@ async fn apply_settings_delta(
             }
         }
         // Transparent background
-        1 => {
-            if delta != 0 {
-                app.config.transparent_background = !app.config.transparent_background;
-                save_and_sync_host_config(app, host_bridge).await;
-            }
-        }
-        // Language
-        2 => {
-            if delta != 0 {
-                app.language = match app.language {
-                    crate::data::config::Language::Zh => crate::data::config::Language::En,
-                    crate::data::config::Language::En => crate::data::config::Language::Zh,
-                };
-                save_and_sync_host_config(app, host_bridge).await;
-            }
-        }
-        // Color halfblocks / ASCII cover display
-        3 => {
-            if delta != 0 {
-                app.config.graphics_protocol = app.config.graphics_protocol.cycle(delta);
-                save_and_sync_host_config(app, host_bridge).await;
-            }
-        }
-        // “歌词浮窗...”是可进入项：左右键不改变配置。
-        6 => {}
-        // Show hints
-        7 => {
-            if delta != 0 {
-                app.config.show_hints = !app.config.show_hints;
-                save_and_sync_host_config(app, host_bridge).await;
-            }
-        }
-        // Small window display
-        8 => {
-            if delta != 0 {
-                app.config.small_window_display = !app.config.small_window_display;
-                save_and_sync_host_config(app, host_bridge).await;
-            }
-        }
-        // Home more recommendations
-        9 if delta != 0 => {
-            app.config.home_more_recommend = !app.config.home_more_recommend;
+        1 if delta != 0 => {
+            app.config.transparent_background = !app.config.transparent_background;
             save_and_sync_host_config(app, host_bridge).await;
         }
         _ => {}
+    }
+}
+
+async fn apply_general_settings_delta(
+    app: &mut AppState,
+    host_bridge: &mut impl HostPlaybackBridge,
+    delta: i32,
+) {
+    if delta == 0 {
+        return;
+    }
+    match app.general_settings_selected {
+        0 => {
+            app.language = match app.language {
+                crate::data::config::Language::Zh => crate::data::config::Language::En,
+                crate::data::config::Language::En => crate::data::config::Language::Zh,
+            };
+            app.config.language = app.language;
+        }
+        1 => app.config.graphics_protocol = app.config.graphics_protocol.cycle(delta),
+        2 => app.config.show_hints = !app.config.show_hints,
+        3 => app.config.small_window_display = !app.config.small_window_display,
+        4 => app.config.home_more_recommend = !app.config.home_more_recommend,
+        _ => return,
+    }
+    save_and_sync_host_config(app, host_bridge).await;
+}
+
+fn settings_text_edit(
+    app: &mut AppState,
+) -> Option<&mut crate::app::settings_controller::SettingsTextEdit> {
+    match app.overlay {
+        Overlay::DownloadPathEditModal => app.download_path_edit.as_mut(),
+        Overlay::MprisNameEditModal => app.mpris_name_edit.as_mut(),
+        _ => None,
     }
 }
 
@@ -1271,51 +1360,10 @@ fn begin_download_path_edit(app: &mut AppState) {
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| app.download_display_path());
-    app.download_path_edit = Some(crate::app::settings_controller::DownloadPathEdit {
-        cursor: current.chars().count(),
-        buffer: current,
-        window_col: 0,
-    });
+    app.download_path_edit = Some(crate::app::settings_controller::SettingsTextEdit::new(
+        current,
+    ));
     app.overlay = Overlay::DownloadPathEditModal;
-}
-
-fn char_to_byte_index(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map(|(index, _)| index)
-        .unwrap_or(text.len())
-}
-
-fn download_path_edit_insert(app: &mut AppState, ch: char) {
-    let Some(edit) = app.download_path_edit.as_mut() else {
-        return;
-    };
-    if edit.cursor >= 4096 {
-        return;
-    }
-    let index = char_to_byte_index(&edit.buffer, edit.cursor);
-    edit.buffer.insert(index, ch);
-    edit.cursor += 1;
-}
-
-fn download_path_edit_backspace(app: &mut AppState) {
-    let Some(edit) = app.download_path_edit.as_mut() else {
-        return;
-    };
-    if edit.cursor == 0 {
-        return;
-    }
-    let index = char_to_byte_index(&edit.buffer, edit.cursor - 1);
-    edit.buffer.remove(index);
-    edit.cursor -= 1;
-}
-
-fn download_path_edit_move(app: &mut AppState, delta: i32) {
-    let Some(edit) = app.download_path_edit.as_mut() else {
-        return;
-    };
-    let last = edit.buffer.chars().count() as i32;
-    edit.cursor = (edit.cursor as i32 + delta).clamp(0, last) as usize;
 }
 
 /// 回车确认：非法（空 / 非绝对 / 不可写）就保留修改前的值，只弹一次 toast。
@@ -1362,6 +1410,14 @@ async fn apply_lyrics_settings_delta(
         }
         2 if app.config.page_lyrics_drag => {
             app.config.page_lyrics_snap = !app.config.page_lyrics_snap;
+            save_and_sync_host_config(app, host_bridge).await;
+        }
+        3 => {
+            app.config.word_lyrics = !app.config.word_lyrics;
+            save_and_sync_host_config(app, host_bridge).await;
+        }
+        4 => {
+            app.config.lyric_translation = !app.config.lyric_translation;
             save_and_sync_host_config(app, host_bridge).await;
         }
         _ => {}

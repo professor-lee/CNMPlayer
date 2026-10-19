@@ -116,3 +116,20 @@ jobs:
 
       - name: cargo test --locked (ncm-api)
         run: cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
+
+  aur-packaging:
+    name: AUR packaging integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging check dependencies
+        run: |
+          pacman -Syu --noconfirm git python
+          useradd -m builder
+
+      - name: Exercise packaging with isolated local remotes
+        run: sudo -u builder -H python "$GITHUB_WORKSPACE/.github/scripts/test_aur_sync.py"

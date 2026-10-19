@@ -9,6 +9,8 @@ fn settings_close_releases_overlay_immediately() {
     );
     for overlay in [
         Overlay::SettingsModal,
+        Overlay::GeneralSettingsModal,
+        Overlay::MprisNameEditModal,
         Overlay::BarSettingsModal,
         Overlay::LyricsSettingsModal,
         Overlay::DownloadSettingsModal,
@@ -18,7 +20,15 @@ fn settings_close_releases_overlay_immediately() {
         Overlay::EqModal,
     ] {
         app.overlay = overlay;
+        app.mpris_name_edit = Some(crate::app::settings_controller::SettingsTextEdit::new(
+            "draft".into(),
+        ));
+        app.download_path_edit = Some(crate::app::settings_controller::SettingsTextEdit::new(
+            "/draft".into(),
+        ));
         app.close_overlay();
+        assert!(app.mpris_name_edit.is_none());
+        assert!(app.download_path_edit.is_none());
         assert_eq!(
             app.overlay,
             Overlay::None,

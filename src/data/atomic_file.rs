@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// Replace a file without ever truncating the previous contents.
 ///
 /// The temporary is created in the destination directory with `create_new`,
@@ -82,7 +81,7 @@ impl TempFile {
             .unwrap_or(0);
         for _ in 0..64 {
             let n = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!(".{base}.tmp-{pid}-{now}-{n}"));
+            let path = parent.join(format!(".{base}-{pid}-{now}-{n}.tmp"));
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]

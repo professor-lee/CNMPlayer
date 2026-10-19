@@ -1,6 +1,6 @@
 [package]
 name = "cnmplayer"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 rust-version = "1.95"
 description = "A Rust TUI client for NetEase Cloud Music"
@@ -39,10 +39,11 @@ parking_lot = "0.12"
 realfft = "3.5"
 cyper = { version = "0.9", features = ["json", "cookies", "stream", "http2"] }
 compio = { version = "0.19", features = ["macros", "time"] }
-http = "1.4"
-see = { git = "https://github.com/compio-rs/see" }
+http = "1.5"
+see = "0.1"
 unicode-width = "0.2"
-rodio = { git = "https://github.com/RustAudio/rodio", default-features = false, features = ["playback", "symphonia", "pipewire"] }
+rodio = { version = "0.23", default-features = false, features = ["playback", "symphonia"] }
+cpal = { version = "0.18", features = ["pipewire"] }
 
 # 标准 较高 极高 mp3
 # 无损 Hi-Res 高清环绕声 flac !VIP

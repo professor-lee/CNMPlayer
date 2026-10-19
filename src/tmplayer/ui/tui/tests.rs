@@ -5,7 +5,7 @@ use super::layout::ModalRows;
 use super::modals::download::render_download_settings_modal;
 use super::modals::help::{help_item_count, help_items, render_help_modal};
 use super::modals::lyrics::render_lyrics_settings_modal;
-use super::modals::settings::render_settings_modal;
+use super::modals::settings::{render_general_settings_modal, render_settings_modal};
 use super::page::{cover_key, slide_page_from_bottom};
 use super::*;
 use crate::data::icons::UiIcons;
@@ -278,6 +278,8 @@ fn modal_overlays_swallow_page_clicks() {
 
     for overlay in [
         Overlay::SettingsModal,
+        Overlay::GeneralSettingsModal,
+        Overlay::MprisNameEditModal,
         Overlay::BarSettingsModal,
         Overlay::AboutModal,
         Overlay::HelpModal,
@@ -312,7 +314,7 @@ fn playlist_overlay_keeps_the_page_clickable() {
 fn download_path_edit_paints_only_the_value_area() {
     let mut app = state(Overlay::DownloadSettingsModal);
     app.download_root = Some(std::path::PathBuf::from("/tmp/cnmplayer"));
-    app.download_path_edit = Some(crate::app::settings_controller::DownloadPathEdit {
+    app.download_path_edit = Some(crate::app::settings_controller::SettingsTextEdit {
         buffer: "/tmp/cnmplayer".to_string(),
         cursor: 5,
         window_col: 0,
@@ -641,7 +643,15 @@ fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
             } else {
                 -(closed_layout.left.width as i16)
             };
-            for dx in [-(closed_layout.left.width as i16), -17, -8, -1, 0] {
+            for dx in [
+                -(closed_layout.left.width as i16),
+                -(closed_layout.left.width as i16) + 1,
+                -(closed_layout.left.width as i16) + 2,
+                -17,
+                -8,
+                -1,
+                0,
+            ] {
                 app.playlist_slide_x = dx;
                 let frame =
                     draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
@@ -650,9 +660,21 @@ fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
                     for x in closed_layout.left.left()..closed_layout.left.right() {
                         if contains(frame.playlist_rect, x, y) {
                             let source_x = (i32::from(x) - i32::from(dx)) as u16;
+                            let mut expected = fully_open[(source_x, y)].clone();
+                            if x == closed_layout.left.left() {
+                                // The fixed frame uses the drawer's surface, never
+                                // the selected row or the moving cover's pixel color.
+                                expected = background[(x, y)].clone();
+                                expected.bg = app.theme.color_surface();
+                                if frame.playlist_rect.width > 1
+                                    && y == final_layout.separator_area.y
+                                {
+                                    expected.set_symbol("├");
+                                }
+                            }
                             assert_eq!(
                                 actual[(x, y)],
-                                fully_open[(source_x, y)],
+                                expected,
                                 "drawer cell must translate, not rescale: opening={opening}, dx={dx}"
                             );
                         } else {
@@ -713,7 +735,8 @@ fn drawer_failed_cover_is_blank_without_ascii_or_retry_loop() {
         let exposed = translated_clip(cover, i32::from(dx), frame.playlist_rect);
         for y in exposed.top()..exposed.bottom() {
             for x in exposed.left()..exposed.right() {
-                assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), " ");
+                let expected = if x == frame.left.x { "│" } else { " " };
+                assert_eq!(terminal.backend().buffer()[(x, y)].symbol(), expected);
             }
         }
     }
@@ -1259,13 +1282,98 @@ fn render_to_buffer_sized(
 /// 歌词浮窗弹窗：命中行必须落在真正画着该条目的那一行上
 /// （否则就是"看得见点不动"或"点到的不是看到的"）。
 #[test]
+fn fullscreen_lyrics_use_word_colors_and_translation() {
+    use crate::data::config::VisualizeMode;
+    use crate::lyrics::{LyricLine, LyricWord};
+    use crate::tmplayer::app::state::PlaybackState;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    let mut app = state(Overlay::None);
+    app.config.show_hints = false;
+    app.config.small_window_display = false;
+    app.config.visualize = VisualizeMode::Lyrics;
+    app.config.word_lyrics = true;
+    app.config.lyric_translation = true;
+    app.language = crate::data::config::Language::En;
+    app.player.playback = PlaybackState::Playing;
+    app.player.position = Duration::from_millis(1_700);
+    app.position_anchor_at = Instant::now();
+    app.player.track.lyrics = Some(vec![
+        LyricLine {
+            start_ms: 1_000,
+            end_ms: Some(2_000),
+            text: "你好".into(),
+            words: vec![
+                LyricWord {
+                    text: "你".into(),
+                    start_ms: 1_000,
+                    end_ms: 1_400,
+                },
+                LyricWord {
+                    text: "好".into(),
+                    start_ms: 1_400,
+                    end_ms: 2_000,
+                },
+            ],
+            translation: Some("hello".into()),
+        },
+        LyricLine {
+            start_ms: 3_000,
+            end_ms: Some(4_000),
+            text: "下一句".into(),
+            words: Vec::new(),
+            translation: None,
+        },
+    ]);
+
+    let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    let mut covers = CoverPipeline::new(WakeSignal::default());
+    let mut drawer = PlaylistDrawer::default();
+    draw_page(&mut terminal, &mut app, &mut covers, &mut drawer).unwrap();
+    let buffer = terminal.backend().buffer();
+
+    let cell = |symbol: &str| {
+        (0..24)
+            .find_map(|y| {
+                (0..80).find_map(|x| (buffer[(x, y)].symbol() == symbol).then_some((x, y)))
+            })
+            .unwrap_or_else(|| panic!("{symbol:?} not drawn"))
+    };
+
+    let current = cell("你");
+    let future = cell("下");
+    assert_ne!(
+        buffer[current].fg,
+        ratatui::style::Color::Rgb(128, 128, 128),
+        "current word must not use the inactive color"
+    );
+    assert_eq!(
+        buffer[future].fg,
+        ratatui::style::Color::Rgb(128, 128, 128),
+        "future line uses subtext"
+    );
+    let translation = cell("h");
+    assert!(
+        buffer[translation].fg != ratatui::style::Color::Reset,
+        "translation row is painted"
+    );
+}
+
+#[test]
 fn lyrics_modal_hit_rows_sit_on_the_drawn_rows() {
     let mut app = state(Overlay::LyricsSettingsModal);
     let (rows, buf) = render_to_buffer(&mut app, |f, app, rows| {
         render_lyrics_settings_modal(f, f.area(), app, rows)
     });
 
-    let expected = ["歌词浮窗:", "歌词浮窗拖动:", "歌词浮窗边缘吸附:"];
+    let expected = [
+        "歌词浮窗:",
+        "歌词浮窗拖动:",
+        "歌词浮窗边缘吸附:",
+        "逐字歌词:",
+        "歌词翻译:",
+    ];
     assert_eq!(rows.len(), expected.len());
 
     for (idx, label) in expected.iter().enumerate() {
@@ -1310,28 +1418,27 @@ fn help_modal_hit_rows_sit_on_the_drawn_rows() {
     assert!(saw_hint, "“小窗口切换显示”应出现在按键提示弹窗里");
 }
 
-/// 矮终端下设置弹窗的条目区放不下全部条目，但 about 行仍要按条目序号 12
-/// 登记——否则单击它会选中别的条目、双击会执行别的条目。
+/// 矮终端下 about 仍按条目序号 8 登记，不能映射到被截断的其他条目。
 #[test]
 fn settings_modal_about_row_keeps_its_item_index_when_items_are_truncated() {
     let mut app = state(Overlay::SettingsModal);
-    let (rows, buf) = render_to_buffer_sized(80, 18, &mut app, |f, app, rows| {
+    let (rows, buf) = render_to_buffer_sized(80, 12, &mut app, |f, app, rows| {
         render_settings_modal(f, f.area(), app, rows)
     });
 
-    let about = rows.get(12).expect("about 行按条目序号 12 登记");
+    let about = rows.get(8).expect("about 行按条目序号 8 登记");
     assert!(
         compact(&line_text(&buf, about.y)).contains("about"),
-        "12 号条目行画的是 about"
+        "8 号条目行画的是 about"
     );
-    assert!(rows.len() < 13, "18 行终端下条目区放不下 12 条");
+    assert!(rows.len() < 9, "12 行终端下条目区放不下 8 条");
 
     let mut layout = page_layout();
     layout.modal_rows = rows;
     assert_eq!(
         hit_test(&layout, &app, about.x, about.y),
-        Some(Action::ModalSelect(12)),
-        "点 about 行要回条目序号 12"
+        Some(Action::ModalSelect(8)),
+        "点 about 行要回条目序号 8"
     );
 }
 
@@ -1404,4 +1511,119 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
     progress: f32,
 ) -> std::result::Result<UiLayout, B::Error> {
     draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, None, progress)
+}
+
+#[test]
+fn general_modal_scrolling_preserves_viewport_and_drawn_hit_rows() {
+    let mut app = state(Overlay::GeneralSettingsModal);
+    app.config.mpris_name = " \t ".into();
+    app.general_settings_selected = 5;
+    let (rows, buf) = render_to_buffer_sized(80, 10, &mut app, |f, app, rows| {
+        render_general_settings_modal(f, f.area(), app, rows)
+    });
+    let name_row = rows.get(5).expect("focused name remains visible");
+    assert!(compact(&line_text(&buf, name_row.y)).contains("MPRIS服务名称:CNMPlayer"));
+    let scroll = app.general_settings_scroll;
+    assert!(scroll > 0);
+    let layout = UiLayout {
+        modal_rows: rows,
+        ..UiLayout::default()
+    };
+    assert_eq!(
+        hit_test(&layout, &app, name_row.x, name_row.y),
+        Some(Action::ModalSelect(5))
+    );
+    app.general_settings_selected = 4;
+    render_to_buffer_sized(80, 10, &mut app, |f, app, rows| {
+        render_general_settings_modal(f, f.area(), app, rows)
+    });
+    assert_eq!(app.general_settings_scroll, scroll);
+    app.general_settings_selected = 0;
+    render_to_buffer_sized(80, 10, &mut app, |f, app, rows| {
+        render_general_settings_modal(f, f.area(), app, rows)
+    });
+    assert_eq!(app.general_settings_scroll, 0);
+}
+
+#[test]
+fn empty_name_edit_draws_value_only_caret_and_ignores_row_clicks() {
+    for language in [
+        crate::data::config::Language::Zh,
+        crate::data::config::Language::En,
+    ] {
+        let mut app = state(Overlay::MprisNameEditModal);
+        app.language = language;
+        app.general_settings_selected = 5;
+        app.mpris_name_edit = Some(crate::app::settings_controller::SettingsTextEdit::new(
+            String::new(),
+        ));
+        let (rows, buf) = render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
+            render_general_settings_modal(f, f.area(), app, rows)
+        });
+        let row = rows.get(5).unwrap();
+        let prefix = if language == crate::data::config::Language::Zh {
+            "  MPRIS服务名称: "
+        } else {
+            "  MPRIS Service Name: "
+        };
+        let caret_x = row.x + crate::ui::settings::display_width(prefix) as u16;
+        assert_eq!(
+            buf[(row.x + 2, row.y)].style().bg,
+            Some(app.theme.color_surface())
+        );
+        let caret = &buf[(caret_x, row.y)];
+        assert_eq!(caret.symbol(), " ");
+        assert_eq!(caret.style().bg, Some(app.theme.color_buff()));
+        assert!(
+            caret
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        let layout = UiLayout {
+            modal_rows: rows,
+            ..UiLayout::default()
+        };
+        assert_eq!(hit_test(&layout, &app, row.x, row.y), None);
+    }
+}
+
+#[test]
+fn long_chinese_name_edit_scrolls_only_when_caret_crosses_value_boundary() {
+    let mut app = state(Overlay::MprisNameEditModal);
+    app.general_settings_selected = 5;
+    app.mpris_name_edit = Some(crate::app::settings_controller::SettingsTextEdit::new(
+        "当前曲名".repeat(30),
+    ));
+    let (rows, buf) = render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
+        render_general_settings_modal(f, f.area(), app, rows)
+    });
+    let row = rows.get(5).unwrap();
+    let value_x = row.x + crate::ui::settings::display_width("  MPRIS服务名称: ") as u16;
+    let scroll = app.mpris_name_edit.as_ref().unwrap().window_col;
+    assert!(scroll > 0);
+    assert!((value_x..row.x + row.width).any(|x| {
+        buf[(x, row.y)]
+            .style()
+            .add_modifier
+            .contains(ratatui::style::Modifier::REVERSED)
+    }));
+    app.mpris_name_edit.as_mut().unwrap().move_cursor(-1);
+    render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
+        render_general_settings_modal(f, f.area(), app, rows)
+    });
+    assert_eq!(app.mpris_name_edit.as_ref().unwrap().window_col, scroll);
+    app.mpris_name_edit.as_mut().unwrap().home();
+    let (rows, buf) = render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
+        render_general_settings_modal(f, f.area(), app, rows)
+    });
+    assert_eq!(app.mpris_name_edit.as_ref().unwrap().window_col, 0);
+    let row = rows.get(5).unwrap();
+    assert_eq!(buf[(value_x, row.y)].symbol(), "当");
+    assert!(
+        buf[(value_x, row.y)]
+            .style()
+            .add_modifier
+            .contains(ratatui::style::Modifier::REVERSED)
+    );
 }

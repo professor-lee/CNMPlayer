@@ -1,13 +1,13 @@
 use super::App;
 use super::api::ApiState;
+use super::cache_maintenance::CacheMaintenance;
 use super::latest_fetch;
 use super::playback_controller::PlaybackTrack;
 use crate::data::atomic_file::write_atomic;
 use crate::data::persistence::PersistenceHandle;
+use crate::lyrics::LyricLine;
+use crate::lyrics::parse_lyric_response;
 use crate::render::wake::WakeSignal;
-use crate::tmplayer::app::state::LyricLine;
-use crate::tmplayer::playback::metadata::parse_lrc;
-use crate::tmplayer::playback::metadata::parse_plain_lyrics;
 use cyper::Client;
 use futures::channel::mpsc as async_mpsc;
 use see::unsync as watch;
@@ -65,13 +65,21 @@ pub(super) fn validate_cached_cover(bytes: &[u8]) -> bool {
 /// FIFO job until completion, then recover ownership without copying its data.
 async fn persist_fetched_cover(
     persistence: &PersistenceHandle,
+    maintenance: &CacheMaintenance,
     path: PathBuf,
     bytes: Arc<[u8]>,
 ) -> Arc<[u8]> {
     let job_bytes = bytes.clone();
+    let maintenance = maintenance.clone();
     let (done_tx, done_rx) = futures::channel::oneshot::channel();
     let queued = persistence.enqueue(move || {
+        let _write_lease = maintenance.protect(path.clone());
         let result = write_atomic(&path, &job_bytes);
+        if result.is_ok()
+            && let Some(directory) = path.parent()
+        {
+            maintenance.request(directory.to_path_buf());
+        }
         drop(job_bytes);
         let _ = done_tx.send(());
         result
@@ -95,6 +103,8 @@ pub(super) struct LyricFetchRequest {
 pub(super) struct LyricFetchResult {
     pub(super) song_id: String,
     pub(super) generation: u64,
+    /// `None` is retryable; `Some(empty)` records confirmed absence in both
+    /// the current track and queue, suppressing subsequent lyric requests.
     pub(super) lyrics: Option<Vec<LyricLine>>,
 }
 
@@ -104,6 +114,7 @@ pub(super) async fn loop_cover_fetch(
     client: Client,
     cache_dir: PathBuf,
     persistence: PersistenceHandle,
+    maintenance: CacheMaintenance,
     wake: WakeSignal,
 ) {
     let Ok(api) = ApiState::new(None, client) else {
@@ -127,7 +138,7 @@ pub(super) async fn loop_cover_fetch(
         }
         let bytes = api.fetch_display_cover_bytes(&req.url).await.ok()?;
         let path = cover_cache_path_for_dir(&cache_dir, &req.url)?;
-        Some(persist_fetched_cover(&persistence, path, Arc::from(bytes)).await)
+        Some(persist_fetched_cover(&persistence, &maintenance, path, Arc::from(bytes)).await)
     };
     latest_fetch::run_latest(
         rx,
@@ -146,6 +157,132 @@ pub(super) async fn loop_cover_fetch(
     .await;
 }
 
+enum LyricResponse {
+    Present(Vec<LyricLine>),
+    Absent,
+    Retryable,
+}
+
+fn classify_lyric_response(response: anyhow::Result<ncm_api::ApiResponse>) -> LyricResponse {
+    let Ok(response) = response else {
+        return LyricResponse::Retryable;
+    };
+    let code = response.body.get("code").and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|code| code.parse().ok()))
+    });
+    // The API normalizes some error statuses to 200, so inspect the body code
+    // before either accepting lyrics or recording a negative cache entry.
+    if response.status != 200 || code != Some(200) {
+        return LyricResponse::Retryable;
+    }
+    if let Some(lines) = parse_lyric_response(&response.body) {
+        return LyricResponse::Present(lines);
+    }
+
+    // Empty successful documents (including nolyric/uncollected responses)
+    // confirm absence. Nonempty unparseable or wrongly typed lyric fields do
+    // not: a later request must still be allowed to recover their contents.
+    let empty = ["yrc", "lrc", "ytlrc", "tlyric", "romalrc"]
+        .iter()
+        .all(|key| {
+            let field = &response.body[*key];
+            let text = match field {
+                serde_json::Value::Null => return true,
+                serde_json::Value::String(text) => return text.trim().is_empty(),
+                serde_json::Value::Object(fields) if fields.is_empty() => return true,
+                serde_json::Value::Object(fields) => fields.get("lyric"),
+                _ => return false,
+            };
+            match text {
+                Some(serde_json::Value::Null) => true,
+                Some(serde_json::Value::String(text)) => text.trim().is_empty(),
+                _ => false,
+            }
+        });
+    if empty {
+        LyricResponse::Absent
+    } else {
+        LyricResponse::Retryable
+    }
+}
+
+async fn fetch_lyrics_from(
+    mut fetch: impl AsyncFnMut(bool) -> anyhow::Result<ncm_api::ApiResponse>,
+) -> Option<Vec<LyricLine>> {
+    let first = classify_lyric_response(fetch(true).await);
+    if let LyricResponse::Present(lines) = first {
+        return Some(lines);
+    }
+    match classify_lyric_response(fetch(false).await) {
+        LyricResponse::Present(lines) => Some(lines),
+        LyricResponse::Absent if matches!(first, LyricResponse::Absent) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+/// Fetch the complete lyric document, including YRC word timings and
+/// translations, regardless of `word_lyrics` / `lyric_translation`. Those
+/// settings are display-only and must never gate this path. `Some(empty)` is
+/// confirmed absence from both endpoints; `None` remains eligible for retry.
+pub(super) async fn fetch_lyrics(api: &mut ApiState, song_id: &str) -> Option<Vec<LyricLine>> {
+    fetch_lyrics_from(async |new_endpoint| {
+        if new_endpoint {
+            api.lyric_new(song_id).await
+        } else {
+            api.lyric(song_id).await
+        }
+    })
+    .await
+}
+
+fn apply_lyric_result(
+    result: LyricFetchResult,
+    generation: u64,
+    inflight_song_id: &mut Option<String>,
+    now_playing: &mut Option<PlaybackTrack>,
+    queue: &mut [PlaybackTrack],
+    index: Option<usize>,
+) {
+    if result.generation != generation {
+        return;
+    }
+    if inflight_song_id.as_deref() == Some(result.song_id.as_str()) {
+        *inflight_song_id = None;
+    }
+    let Some(now) = now_playing.as_mut() else {
+        return;
+    };
+    if now.song_id != result.song_id || now.lyrics.is_some() {
+        return;
+    }
+    let Some(lyrics) = result.lyrics else {
+        return;
+    };
+    now.lyrics = Some(lyrics.clone());
+    if let Some(slot) = index.and_then(|index| queue.get_mut(index))
+        && slot.song_id == result.song_id
+    {
+        slot.lyrics = Some(lyrics);
+    }
+}
+
+fn lyric_fetch_due(
+    now_playing: Option<&PlaybackTrack>,
+    inflight_song_id: Option<&str>,
+    last_attempt_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    now_playing.is_some_and(|track| {
+        track.lyrics.is_none()
+            && inflight_song_id != Some(track.song_id.as_str())
+            && last_attempt_at.is_none_or(|last| {
+                now.duration_since(last) >= Duration::from_millis(LYRICS_FETCH_RETRY_MS)
+            })
+    })
+}
+
 pub(super) async fn loop_lyric_fetch(
     rx: watch::Receiver<Option<LyricFetchRequest>>,
     tx: async_mpsc::Sender<LyricFetchResult>,
@@ -157,9 +294,7 @@ pub(super) async fn loop_lyric_fetch(
             api.set_cookie(cookie.to_string());
         }
 
-        let lyric = api.lyric(&req.song_id).await.ok()?;
-        let lrc = lyric.body.pointer("/lrc/lyric")?.as_str()?;
-        parse_lrc(lrc).or_else(|| parse_plain_lyrics(lrc))
+        fetch_lyrics(&mut api, &req.song_id).await
     };
     latest_fetch::run_latest(
         rx,
@@ -178,38 +313,20 @@ pub(super) async fn loop_lyric_fetch(
 }
 
 impl App {
-    fn cover_cache_path_for_url(&self, url: &str) -> Option<PathBuf> {
-        cover_cache_path_for_dir(&self.cover_cache_dir, url)
-    }
-
-    async fn load_cover_from_disk_cache(&self, url: &str) -> Option<Arc<[u8]>> {
-        let path = self.cover_cache_path_for_url(url)?;
-        compio::runtime::spawn_blocking(move || {
-            let bytes = std::fs::read(path).ok()?;
-            validate_cached_cover(&bytes).then(|| Arc::<[u8]>::from(bytes))
-        })
-        .await
-        .ok()
-        .flatten()
-    }
-
-    async fn persist_cover_to_disk_cache(&self, url: &str, bytes: Arc<[u8]>) -> Arc<[u8]> {
-        let Some(path) = self.cover_cache_path_for_url(url) else {
-            return bytes;
-        };
-        persist_fetched_cover(&self.persistence.handle(), path, bytes).await
-    }
-
-    async fn fetch_cover_with_disk_cache(&self, url: &str) -> Option<Arc<[u8]>> {
-        if let Some(bytes) = self.load_cover_from_disk_cache(url).await {
-            return Some(bytes);
-        }
-
-        let bytes = self.api.fetch_display_cover_bytes(url).await.ok()?;
-        Some(
-            self.persist_cover_to_disk_cache(url, Arc::from(bytes))
-                .await,
+    /// Playback position quantized to the global frame grid / lyric divisor.
+    pub(crate) fn lyric_position_ms(&self) -> u64 {
+        crate::lyrics::quantized_position_ms(
+            self.playback_position().as_millis() as u64,
+            self.config.ui_fps,
+            self.config.lyric_frame_divisor,
         )
+    }
+
+    pub(crate) fn lyric_options(&self) -> crate::ui::lyric_view::LyricOptions {
+        crate::ui::lyric_view::LyricOptions {
+            word_lyrics: self.config.word_lyrics,
+            translation: self.config.lyric_translation,
+        }
     }
 
     fn apply_cover_fetch_result(&mut self, result: CoverFetchResult) {
@@ -345,35 +462,14 @@ impl App {
     }
 
     fn apply_lyric_fetch_result(&mut self, result: LyricFetchResult) {
-        if result.generation != self.lyric_fetch_generation {
-            return;
-        }
-        if self.lyric_fetch_inflight_song_id.as_deref() == Some(result.song_id.as_str()) {
-            self.lyric_fetch_inflight_song_id = None;
-        }
-
-        let Some(now) = self.playback.now_playing.as_ref() else {
-            return;
-        };
-        if now.song_id != result.song_id {
-            return;
-        }
-        if now.lyrics.is_some() {
-            return;
-        }
-
-        let Some(lyrics) = result.lyrics else {
-            return;
-        };
-
-        if let Some(now_mut) = self.playback.now_playing.as_mut() {
-            now_mut.lyrics = Some(lyrics.clone());
-        }
-        if let Some(index) = self.playback.playback_index
-            && let Some(slot) = self.playback.playback_queue.get_mut(index)
-        {
-            slot.lyrics = Some(lyrics);
-        }
+        apply_lyric_result(
+            result,
+            self.lyric_fetch_generation,
+            &mut self.lyric_fetch_inflight_song_id,
+            &mut self.playback.now_playing,
+            &mut self.playback.playback_queue,
+            self.playback.playback_index,
+        );
     }
 
     pub(super) fn maybe_schedule_now_playing_lyric_fetch(&mut self) {
@@ -388,14 +484,13 @@ impl App {
             }
         };
 
-        if self.lyric_fetch_inflight_song_id.as_deref() == Some(song_id.as_str()) {
-            return;
-        }
-
         let now_at = Instant::now();
-        if let Some(last) = self.lyric_fetch_last_attempt_at
-            && now_at.duration_since(last) < Duration::from_millis(LYRICS_FETCH_RETRY_MS)
-        {
+        if !lyric_fetch_due(
+            self.playback.now_playing.as_ref(),
+            self.lyric_fetch_inflight_song_id.as_deref(),
+            self.lyric_fetch_last_attempt_at,
+            now_at,
+        ) {
             return;
         }
 
@@ -437,6 +532,7 @@ impl App {
     pub(super) fn trim_non_current_cover_memory(&mut self, current_index: usize) {
         let cover_cache_dir = &self.cover_cache_dir;
         let persistence = &self.persistence;
+        let maintenance = &self.cache_maintenance;
         for (idx, track) in self.playback.playback_queue.iter_mut().enumerate() {
             if idx == current_index {
                 continue;
@@ -444,88 +540,24 @@ impl App {
 
             if let (Some(bytes), Some(url)) = (track.cover.take(), track.cover_url.as_deref())
                 && let Some(path) = cover_cache_path_for_dir(cover_cache_dir, url)
-                && let Err(error) = persistence.enqueue(move || {
+            {
+                let maintenance = maintenance.clone();
+                if let Err(error) = persistence.enqueue(move || {
                     if validate_cached_cover(&bytes) {
+                        let _write_lease = maintenance.protect(path.clone());
                         write_atomic(&path, &bytes)?;
+                        if let Some(directory) = path.parent() {
+                            maintenance.request(directory.to_path_buf());
+                        }
                     }
                     Ok(())
-                })
-            {
-                log::warn!("cover cache write not admitted: {error:#}");
+                }) {
+                    log::warn!("cover cache write not admitted: {error:#}");
+                }
             }
         }
-    }
-
-    pub(super) async fn enrich_track_metadata(
-        &mut self,
-        track: &mut PlaybackTrack,
-        allow_network: bool,
-    ) {
-        // Queue switches hydrate through the cover worker after the new track is
-        // installed. Neither disk IO nor image decoding delays the transition.
-        if allow_network
-            && track.cover.is_none()
-            && let Some(url) = track.cover_url.as_deref()
-        {
-            track.cover = self.fetch_cover_with_disk_cache(url).await;
-        }
-
-        if allow_network
-            && track.cover.is_none()
-            && let Ok(detail) = self.api.song_detail(&track.song_id).await
-            && let Some(song) = detail
-                .body
-                .get("songs")
-                .and_then(|value| value.as_array())
-                .and_then(|items| items.first())
-            && let Some(cover_url) = song.pointer("/al/picUrl").and_then(|value| value.as_str())
-            && let Some(bytes) = self.fetch_cover_with_disk_cache(cover_url).await
-        {
-            track.cover = Some(bytes);
-        }
-
-        if allow_network
-            && track.lyrics.is_none()
-            && let Ok(lyric) = self.api.lyric(&track.song_id).await
-            && let Some(raw_lrc) = lyric
-                .body
-                .pointer("/lrc/lyric")
-                .and_then(|value| value.as_str())
-        {
-            track.lyrics = crate::tmplayer::playback::metadata::parse_lrc(raw_lrc)
-                .or_else(|| crate::tmplayer::playback::metadata::parse_plain_lyrics(raw_lrc));
-        }
-    }
-
-    pub(crate) fn current_page_lyric_lines(&self) -> (String, String) {
-        let Some(track) = self.playback.now_playing.as_ref() else {
-            return (String::new(), String::new());
-        };
-        let Some(lines) = track.lyrics.as_ref() else {
-            return (String::new(), String::new());
-        };
-        if lines.is_empty() {
-            return (String::new(), String::new());
-        }
-
-        let pos_ms = self.playback_position().as_millis() as u64;
-        let mut idx = 0usize;
-        for (line_idx, line) in lines.iter().enumerate() {
-            if line.start_ms <= pos_ms {
-                idx = line_idx;
-            } else {
-                break;
-            }
-        }
-
-        let current = lines
-            .get(idx)
-            .map(|line| line.text.clone())
-            .unwrap_or_default();
-        let next = lines
-            .get(idx + 1)
-            .map(|line| line.text.clone())
-            .unwrap_or_default();
-        (current, next)
     }
 }
+
+#[cfg(test)]
+mod tests;

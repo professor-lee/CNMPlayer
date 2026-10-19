@@ -5,7 +5,7 @@ use super::modals::download::render_download_settings_modal;
 use super::modals::equalizer::render_eq_modal;
 use super::modals::help::render_help_modal;
 use super::modals::lyrics::render_lyrics_settings_modal;
-use super::modals::settings::render_settings_modal;
+use super::modals::settings::{render_general_settings_modal, render_settings_modal};
 use super::text::lang_text;
 use crate::render::cover_pipeline::{CoverKey, CoverPipeline, ImagePhase};
 use crate::render::drawer::{self, translated_clip};
@@ -246,7 +246,7 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
 
         let pl_layout = playlist_panel::compute_layout(left, app);
 
-        if app.overlay == Overlay::Playlist || app.playlist_slide_x != app.playlist_slide_target_x {
+        if app.playlist_is_open() || app.playlist_slide_x != app.playlist_slide_target_x {
             let dx = app.playlist_slide_x.clamp(-(left.width as i16), 0);
             let visible = translated_clip(left, i32::from(dx), left);
             layout_out.playlist_rect = visible;
@@ -266,7 +266,20 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
                         cover_key(pl_layout.cover_rect, hash),
                     );
                 }
-                drawer::paint(f.buffer_mut(), &sidebar.buffer, i32::from(dx), visible);
+                // Keep the left frame above moving content, on the drawer's surface color.
+                let content =
+                    Rect::new(visible.x + 1, visible.y, visible.width - 1, visible.height);
+                drawer::paint(f.buffer_mut(), &sidebar.buffer, i32::from(dx), content);
+                for y in visible.top()..visible.bottom() {
+                    let cell = &mut f.buffer_mut()[(visible.x, y)];
+                    cell.set_style(surface);
+                    if visible.width > 1
+                        && !pl_layout.separator_area.is_empty()
+                        && y == pl_layout.separator_area.y
+                    {
+                        cell.set_symbol("├");
+                    }
+                }
                 layout_out.playlist_inner =
                     translated_clip(pl_layout.inner, i32::from(dx), visible);
                 layout_out.playlist_list_inner =
@@ -297,6 +310,9 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
         match app.overlay {
             Overlay::SettingsModal => {
                 render_settings_modal(f, size, app, &mut layout_out.modal_rows)
+            }
+            Overlay::GeneralSettingsModal | Overlay::MprisNameEditModal => {
+                render_general_settings_modal(f, size, app, &mut layout_out.modal_rows)
             }
             Overlay::BarSettingsModal => {
                 render_bar_settings_modal(f, size, app, &mut layout_out.modal_rows)

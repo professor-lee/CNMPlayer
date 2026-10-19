@@ -1,9 +1,12 @@
 use super::App;
+use super::cache_maintenance::CacheLease;
 use super::home::HOME_PRIVATE_ROAM_TILE_ID;
 use super::likes::LikeMachine;
 use super::player::AudioPlayer;
 use super::player::AudioPlayerState;
+use super::player::PreparedSource;
 use super::player::is_nonempty_file;
+use super::player::make_prepared_source;
 use super::playlist_pagination::PlaylistPagination;
 use super::roam::bound_private_roam_queue;
 use super::roam::private_roam_continuation_start;
@@ -11,17 +14,54 @@ use super::roam::private_roam_restored_index;
 use super::roam::private_roam_window;
 use super::search_controller::SearchItem;
 use super::streaming::StreamingReader;
+use super::streaming::StreamingReaderHandle;
+use super::streaming::StreamingStatus;
 use super::tracks::PlaylistTrack;
 use super::tracks::PlaylistTrackKind;
 use super::tracks::format_duration;
 use crate::data::persistence::PersistenceKey;
 use crate::data::playback_session;
-use crate::tmplayer::app::state::LyricLine;
+use crate::lyrics::LyricLine;
 use crate::tmplayer::audio::pcm_tap::PcmRing;
+use anyhow::Result;
+use rodio::Source;
+use rodio::decoder::DecoderBuilder;
+use std::fs::File;
+use std::io::BufReader;
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+
+enum PrepareEvent {
+    ReaderReady(StreamingReaderHandle),
+    Ready(Result<PreparedPlayback, String>),
+}
+
+struct PreparedPlayback {
+    source: PreparedSource,
+    stream_handle: Option<StreamingReaderHandle>,
+    total_duration: Option<Duration>,
+    progress_rx: Option<see::sync::Receiver<(u64, u64)>>,
+    cache_lease: CacheLease,
+}
+
+struct PendingPlayback {
+    generation: u64,
+    track: PlaybackTrack,
+    rx: Receiver<PrepareEvent>,
+    _task: compio::runtime::JoinHandle<()>,
+    cancel: Option<StreamingReaderHandle>,
+    start_paused: bool,
+}
+impl Drop for PendingPlayback {
+    fn drop(&mut self) {
+        if let Some(handle) = self.cancel.take() {
+            handle.cancel();
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlaybackRepeatMode {
@@ -170,7 +210,11 @@ fn pick_shuffle_index(len: usize, current: usize) -> usize {
 
 impl App {
     pub(crate) fn playback_position(&self) -> Duration {
-        self.playback.audio_player.display_position()
+        if self.playback.has_pending_start() {
+            Duration::ZERO
+        } else {
+            self.playback.audio_player.display_position()
+        }
     }
 
     /// 是否正在后台加载跳转目标（进度条据此显示脉冲加载动画）。
@@ -210,7 +254,7 @@ impl App {
     }
 
     pub(crate) fn seek_to_ratio(&mut self, ratio: f32) {
-        if self.playback.now_playing.is_none() {
+        if self.playback.now_playing.is_none() || self.playback.has_pending_start() {
             return;
         }
 
@@ -227,7 +271,11 @@ impl App {
     }
 
     pub(super) async fn toggle_play_pause_hotkey(&mut self) {
-        self.playback.page_advance = None;
+        self.playback.cancel_deferred_advance();
+        if self.playback.has_pending_start() {
+            self.playback.toggle_pending_pause();
+            return;
+        }
         if self.playback.now_playing.is_none() {
             self.set_runtime_status(
                 self.lang_text("当前没有可控制的播放", "No controllable playback right now"),
@@ -286,6 +334,16 @@ impl App {
             .playback_index
             .unwrap_or(0)
             .min(self.playback.playback_queue.len() - 1);
+        if matches!(
+            self.playback.playback_repeat_mode,
+            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll
+        ) && current + 1 >= self.playback.playback_queue.len()
+            && self.playback_queue_is_roam()
+            && self.playback.roam_append.is_some()
+        {
+            self.playback.roam_advance = Some(true);
+            return;
+        }
         if self.defer_playlist_advance(current, true) {
             return;
         }
@@ -336,6 +394,34 @@ impl App {
     pub(super) async fn tick_audio(&mut self) {
         self.tick_playlist_page_fetch();
         self.maybe_prefetch_playback_page();
+        self.poll_pending_start();
+        self.tick_playback_roam_append();
+        if self.playback.has_pending_start() {
+            return;
+        }
+        if let Some(announce) = self.playback.roam_advance {
+            if self.playback.roam_append.is_some() {
+                return;
+            }
+            self.playback.roam_advance = None;
+            if announce {
+                self.play_next_hotkey().await;
+            } else {
+                self.play_next_after_finish().await;
+            }
+            return;
+        }
+        if self.playback.playback_state != PlaybackRuntimeState::Stopped
+            && let Some(error) = self.playback.audio_player.playback_failure()
+        {
+            self.playback.audio_player.stop();
+            self.playback.playback_state = PlaybackRuntimeState::Stopped;
+            self.set_runtime_status(format!(
+                "{}: {error}",
+                self.lang_text("播放失败", "Playback failed")
+            ));
+            return;
+        }
         if let Some(announce) = self.playback.page_advance {
             let current = self.playback.playback_index.unwrap_or(0);
             if current + 1 < self.playback.playback_queue.len() {
@@ -357,7 +443,19 @@ impl App {
         if self.playback.playback_state == PlaybackRuntimeState::Playing
             && runtime == PlaybackRuntimeState::Stopped
         {
-            self.play_next_after_finish().await;
+            if self.playback.audio_player.stream_status() == StreamingStatus::Complete
+                || (self.playback.audio_player.stream_status() == StreamingStatus::Active
+                    && self.playback.audio_player.stream_has_complete_body())
+            {
+                self.play_next_after_finish().await;
+            } else {
+                self.playback.audio_player.stop();
+                self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                self.set_runtime_status(self.lang_text(
+                    "音频解码在下载完成前结束，已停止",
+                    "Audio decoder ended before the stream completed; stopped",
+                ));
+            }
             return;
         }
 
@@ -375,6 +473,16 @@ impl App {
             .playback_index
             .unwrap_or(0)
             .min(self.playback.playback_queue.len() - 1);
+        if matches!(
+            self.playback.playback_repeat_mode,
+            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll
+        ) && current + 1 >= self.playback.playback_queue.len()
+            && self.playback_queue_is_roam()
+            && self.playback.roam_append.is_some()
+        {
+            self.playback.roam_advance = Some(false);
+            return;
+        }
         if self.defer_playlist_advance(current, false) {
             return;
         }
@@ -451,16 +559,12 @@ impl App {
             return;
         };
         self.playback.page_advance = None;
-
-        // 记录私人漫游播放位置/封面；播放到列表末尾时追加新歌
-        // Appending roam songs may evict a played prefix, including before this target.
+        self.playback.cancel_pending_start();
+        self.playback.audio_player.stop();
         self.playback.playback_index = Some(index);
-        self.track_private_roam_playback(&track).await;
-        let index = self.playback.playback_index.unwrap_or(index);
+        self.track_private_roam_playback(&track);
 
-        let mut enriched = track.clone();
-        // Switch UI state immediately and avoid blocking network fetches here.
-        self.enrich_track_metadata(&mut enriched, false).await;
+        let enriched = track.clone();
         if let Some(slot) = self.playback.playback_queue.get_mut(index) {
             slot.cover = enriched.cover.clone();
         }
@@ -477,73 +581,216 @@ impl App {
         self.maybe_schedule_now_playing_lyric_fetch();
         self.persist_playback_memory();
 
-        let quality = self.config.audio_quality.as_api_level();
-        let fail = |err, app: &mut Self| {
-            app.playback.now_playing_liked = false;
-            app.playback.playback_state = PlaybackRuntimeState::Stopped;
-            app.set_runtime_status(format!(
-                "{}: {err}",
-                app.lang_text("播放失败", "Playback failed"),
-            ));
-        };
-        let ok = |app: &mut Self| {
-            app.playback.playback_state = PlaybackRuntimeState::Playing;
-            if announce {
-                app.set_runtime_status(format!(
-                    "{}: {} - {}",
-                    app.lang_text("正在播放", "Now Playing"),
-                    enriched.title,
-                    enriched.artist
-                ));
+        let generation = self.playback.playback_generation.wrapping_add(1);
+        self.playback.playback_generation = generation;
+        let quality = self.config.audio_quality.as_api_level().to_string();
+        let path = self
+            .playback
+            .audio_player
+            .cached_song_path(&track.song_id, &quality);
+        let cache_maintenance = self.playback.audio_player.cache_maintenance();
+        let cache_lease = cache_maintenance.protect(path.clone());
+        let api = self.api.clone();
+        let cookie = self.api.session_cookie().map(str::to_owned);
+        let (eq_params, pcm_ring, lufs_meter) = self.playback.audio_player.source_context();
+        let (progress_tx, progress_rx) = see::sync::channel((0, 0));
+        let (tx, rx) = mpsc::channel();
+        let wake = self.api.wake_signal();
+        let song_id = track.song_id.clone();
+        let task = compio::runtime::spawn(async move {
+            let preparation = async {
+                if is_nonempty_file(&path).await {
+                    let cached_path = path.clone();
+                    let decoded = compio::runtime::spawn_blocking(move || -> Result<_> {
+                        let file = File::open(cached_path)?;
+                        let builder = DecoderBuilder::new().with_byte_len(file.metadata()?.len());
+                        Ok(builder.with_data(BufReader::new(file)).build()?)
+                    })
+                    .await;
+                    if let Ok(Ok(decoder)) = decoded {
+                        let total_duration = decoder.total_duration();
+                        let source = make_prepared_source(decoder, eq_params, pcm_ring, lufs_meter);
+                        return Ok(PreparedPlayback {
+                            source,
+                            stream_handle: None,
+                            total_duration,
+                            progress_rx: None,
+                            cache_lease,
+                        });
+                    }
+                    // A removed or undecodable cache entry is a cache miss,
+                    // as before background preparation was introduced.
+                }
+                let mut api = api;
+                let url = api
+                    .song_stream_url_with_quality(&song_id, &quality)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                let reader = StreamingReader::new(
+                    api.http_client(),
+                    &url,
+                    path,
+                    cookie.as_deref(),
+                    progress_tx,
+                    cache_maintenance.clone(),
+                )
+                .await
+                .map_err(|err| err.to_string())?;
+                let stream_handle = StreamingReaderHandle::from(&reader);
+                struct DecodeCancellation(Option<StreamingReaderHandle>);
+                impl Drop for DecodeCancellation {
+                    fn drop(&mut self) {
+                        if let Some(handle) = self.0.take() {
+                            handle.cancel();
+                        }
+                    }
+                }
+                let mut cancellation = DecodeCancellation(Some(stream_handle.clone()));
+                let _ = tx.send(PrepareEvent::ReaderReady(stream_handle.clone()));
+                wake.notify();
+                let total = reader.total();
+                let decoder = compio::runtime::spawn_blocking(move || {
+                    DecoderBuilder::new()
+                        .with_byte_len(total)
+                        .with_data(BufReader::new(reader))
+                        .build()
+                })
+                .await
+                .map_err(|_| "streaming decoder task panicked".to_string())?
+                .map_err(|err| err.to_string())?;
+                cancellation.0 = None;
+                let total_duration = decoder.total_duration();
+                let source = make_prepared_source(decoder, eq_params, pcm_ring, lufs_meter);
+                Ok(PreparedPlayback {
+                    source,
+                    stream_handle: Some(stream_handle),
+                    total_duration,
+                    progress_rx: Some(progress_rx),
+                    cache_lease,
+                })
             };
-        };
+            let result: Result<PreparedPlayback, String> =
+                match compio::time::timeout(Duration::from_secs(30), preparation).await {
+                    Ok(result) => result,
+                    Err(_) => Err("playback preparation timed out after 30s".to_string()),
+                };
+            let _ = tx.send(PrepareEvent::Ready(result));
+            wake.notify();
+        });
 
-        let id = &track.song_id;
-        let path = self.playback.audio_player.cached_song_path(id, quality);
-
-        if is_nonempty_file(&path).await {
-            // Startup cache cleanup runs in the background. The existence check and
-            // decoder open are intentionally not one atomic operation; if cleanup
-            // wins that race, treat the cache as stale and use the normal stream path.
-            if let Ok(()) = self.playback.audio_player.play_from_file(&path).await {
-                return ok(self);
-            }
-        }
-
-        // Song not cached - start streaming playback while prefetching in background.
-        self.playback.audio_player.stop();
+        self.playback.pending_start = Some(PendingPlayback {
+            generation,
+            start_paused: false,
+            track: enriched,
+            rx,
+            _task: task,
+            cancel: None,
+        });
+        self.playback.playback_state = PlaybackRuntimeState::Stopped;
         self.set_runtime_status(format!(
             "{}: {} - {}",
             self.lang_text("正在缓冲", "Buffering"),
-            enriched.title,
-            enriched.artist
+            self.playback
+                .now_playing
+                .as_ref()
+                .map(|track| track.title.as_str())
+                .unwrap_or_default(),
+            self.playback
+                .now_playing
+                .as_ref()
+                .map(|track| track.artist.as_str())
+                .unwrap_or_default(),
         ));
+        if announce {
+            self.set_runtime_status(format!(
+                "{}: {} - {}",
+                self.lang_text("正在缓冲", "Buffering"),
+                track.title,
+                track.artist
+            ));
+        }
+    }
 
-        match self.api.song_stream_url_with_quality(id, quality).await {
-            Ok(url) => {
-                let (progress_tx, progress_rx) = see::sync::channel((0, 0));
-                match StreamingReader::new(
-                    self.api.http_client(),
-                    &url,
-                    path.clone(),
-                    self.api.session_cookie(),
-                    progress_tx,
-                )
-                .await
-                {
-                    Ok(reader) => match self
+    fn poll_pending_start(&mut self) {
+        let Some(mut pending) = self.playback.pending_start.take() else {
+            return;
+        };
+        let event = match pending.rx.try_recv() {
+            Ok(event) => event,
+            Err(TryRecvError::Empty) => {
+                self.playback.pending_start = Some(pending);
+                return;
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.set_runtime_status(
+                    self.lang_text("播放准备失败", "Playback preparation failed"),
+                );
+                self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                return;
+            }
+        };
+        match event {
+            PrepareEvent::ReaderReady(handle) => {
+                pending.cancel = Some(handle);
+                self.playback.pending_start = Some(pending);
+            }
+            PrepareEvent::Ready(result) => {
+                let current = pending.generation == self.playback.playback_generation
+                    && self
                         .playback
-                        .audio_player
-                        .play_streaming(reader, progress_rx)
-                        .await
-                    {
-                        Ok(()) => ok(self),
-                        Err(err) => fail(err, self),
-                    },
-                    Err(err) => fail(err, self),
+                        .now_playing
+                        .as_ref()
+                        .is_some_and(|track| track.song_id == pending.track.song_id)
+                    && self
+                        .playback
+                        .playback_index
+                        .and_then(|index| self.playback.playback_queue.get(index))
+                        .is_some_and(|track| track.song_id == pending.track.song_id);
+                if !current {
+                    drop(result);
+                    return;
+                }
+                if result.is_ok() {
+                    pending.cancel = None;
+                }
+                match result {
+                    Ok(prepared) => {
+                        if let Err(err) = self.playback.audio_player.play_prepared(
+                            prepared.source,
+                            prepared.stream_handle,
+                            prepared.total_duration,
+                            prepared.progress_rx,
+                            prepared.cache_lease,
+                            pending.start_paused,
+                        ) {
+                            self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                            self.set_runtime_status(format!(
+                                "{}: {err}",
+                                self.lang_text("播放失败", "Playback failed")
+                            ));
+                        } else {
+                            self.playback.playback_state = if pending.start_paused {
+                                PlaybackRuntimeState::Paused
+                            } else {
+                                PlaybackRuntimeState::Playing
+                            };
+                            self.set_runtime_status(format!(
+                                "{}: {} - {}",
+                                self.lang_text("正在播放", "Now Playing"),
+                                pending.track.title,
+                                pending.track.artist
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        self.playback.playback_state = PlaybackRuntimeState::Stopped;
+                        self.set_runtime_status(format!(
+                            "{}: {err}",
+                            self.lang_text("播放失败", "Playback failed")
+                        ));
+                    }
                 }
             }
-            Err(err) => fail(err, self),
         }
     }
 
@@ -847,6 +1094,10 @@ pub(crate) struct PlaybackController {
     pub(super) pagination: Option<PlaylistPagination>,
     /// End-of-page advance waits for the shared page instead of stopping or wrapping early.
     pub(super) page_advance: Option<bool>,
+    roam_advance: Option<bool>,
+    pending_start: Option<PendingPlayback>,
+    playback_generation: u64,
+    pub(super) roam_append: Option<super::owned_task::SharedTask<Vec<PlaylistTrack>>>,
 }
 
 impl PlaybackController {
@@ -866,6 +1117,10 @@ impl PlaybackController {
             restoring_memory: false,
             pagination: None,
             page_advance: None,
+            roam_advance: None,
+            pending_start: None,
+            playback_generation: 0,
+            roam_append: None,
         }
     }
 
@@ -894,7 +1149,41 @@ impl PlaybackController {
         self.like_machine.clear();
     }
 
+    pub(super) fn has_pending_start(&self) -> bool {
+        self.pending_start.is_some()
+    }
+
+    pub(super) fn cancel_deferred_advance(&mut self) {
+        self.page_advance = None;
+        self.roam_advance = None;
+    }
+
+    pub(super) fn set_pending_paused(&mut self, paused: bool) {
+        if let Some(pending) = &mut self.pending_start {
+            pending.start_paused = paused;
+            self.playback_state = if paused {
+                PlaybackRuntimeState::Paused
+            } else {
+                PlaybackRuntimeState::Stopped
+            };
+        }
+    }
+
+    fn toggle_pending_pause(&mut self) {
+        if let Some(pending) = &self.pending_start {
+            self.set_pending_paused(!pending.start_paused);
+        }
+    }
+
+    pub(super) fn cancel_pending_start(&mut self) {
+        self.pending_start = None;
+        self.roam_advance = None;
+        self.playback_generation = self.playback_generation.wrapping_add(1);
+    }
+
     pub(super) fn clear_queue(&mut self) {
+        self.cancel_pending_start();
+        self.roam_append = None;
         self.playback_queue.clear();
         self.playback_index = None;
         self.playback_state = PlaybackRuntimeState::Stopped;
@@ -915,6 +1204,8 @@ impl PlaybackController {
         source_id: Option<String>,
         pagination: Option<PlaylistPagination>,
     ) {
+        self.cancel_pending_start();
+        self.roam_append = None;
         self.playback_queue = queue;
         self.playback_index = index;
         self.playback_queue_cover_url = cover_url;

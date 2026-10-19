@@ -1,6 +1,7 @@
 use crate::app::sidebar::SIDEBAR_ANIM_DURATION;
 use crate::data::config::Language;
 use crate::data::config::{Config, VisualizeMode};
+use crate::lyrics::LyricLine;
 use crate::render::motion::{Curve, Transition};
 use crate::tmplayer::app::scope::ScopeGain;
 use crate::tmplayer::audio::spectrum::Spectrum;
@@ -9,6 +10,7 @@ use crate::tmplayer::render::cover_cache::CoverCache;
 use crate::tmplayer::render::cover_cache::CoverKey;
 use crate::tmplayer::render::cover_renderer::render_cover_ascii;
 use crate::ui::theme::Theme;
+use crate::ui::theme::{ThemeTransition, start_theme_transition};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -58,12 +60,6 @@ impl EqSettings {
         }
         out
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct LyricLine {
-    pub start_ms: u64,
-    pub text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +175,8 @@ pub enum Overlay {
     None,
     Playlist,
     SettingsModal,
+    GeneralSettingsModal,
+    MprisNameEditModal,
     BarSettingsModal,
     LyricsSettingsModal,
     /// 「下载设置」页：音质 / 路径 / 恢复默认。
@@ -194,6 +192,7 @@ pub enum Overlay {
 pub struct AppState {
     pub config: Config,
     pub theme: Theme,
+    theme_transition: Option<ThemeTransition>,
     pub language: Language,
 
     pub player: PlayerState,
@@ -215,6 +214,7 @@ pub struct AppState {
     pub vector: crate::tmplayer::render::vector_renderer::VectorState,
 
     pub cover_cache: RefCell<CoverCache>,
+    pub(crate) lyric_render_cache: RefCell<crate::ui::lyric_view::LyricRenderCache>,
 
     cover_render_tx: Sender<CoverRenderRequest>,
     cover_render_rx: Receiver<CoverRenderResult>,
@@ -223,6 +223,9 @@ pub struct AppState {
     pub overlay: Overlay,
 
     pub settings_selected: usize,
+    pub general_settings_selected: usize,
+    pub general_settings_scroll: usize,
+    pub mpris_name_edit: Option<crate::app::settings_controller::SettingsTextEdit>,
     pub bar_settings_selected: usize,
     pub lyrics_settings_selected: usize,
     pub help_keybind_selected: usize,
@@ -238,7 +241,7 @@ pub struct AppState {
     /// 「下载设置」页的选中行 / 待确认态 / 路径行编辑状态。
     pub download_settings_selected: usize,
     pub download_reset_armed: bool,
-    pub download_path_edit: Option<crate::app::settings_controller::DownloadPathEdit>,
+    pub download_path_edit: Option<crate::app::settings_controller::SettingsTextEdit>,
     /// 解析后的下载目录（`None` = 不可用，设置页除路径行外全部灰置）。
     pub download_root: Option<PathBuf>,
 
@@ -276,8 +279,13 @@ pub struct AppState {
     pub playlist_slide_target_x: i16,
     playlist_slide_from_x: i16,
     playlist_slide_motion: Transition,
+    playlist_under_modal: bool,
 
     pub last_frame: Instant,
+    /// Wall-clock anchor for the last host position snapshot. Between the
+    /// host's ~20 Hz syncs the lyric layer extrapolates playback time so word
+    /// animation still follows the global frame rate.
+    pub position_anchor_at: Instant,
 }
 
 #[derive(Debug)]
@@ -323,6 +331,7 @@ impl AppState {
         Self {
             config,
             theme,
+            theme_transition: None,
             language,
             player: PlayerState::default(),
             api_tracks: Vec::new(),
@@ -335,11 +344,15 @@ impl AppState {
             scope_gain: ScopeGain::default(),
             vector: Default::default(),
             cover_cache: RefCell::new(CoverCache::new(20)),
+            lyric_render_cache: RefCell::new(crate::ui::lyric_view::LyricRenderCache::default()),
             cover_render_tx,
             cover_render_rx,
             cover_render_inflight: RefCell::new(HashSet::new()),
             overlay: Overlay::None,
             settings_selected: 0,
+            general_settings_selected: 0,
+            general_settings_scroll: 0,
+            mpris_name_edit: None,
             bar_settings_selected: 0,
             lyrics_settings_selected: 0,
             help_keybind_selected: 0,
@@ -372,7 +385,9 @@ impl AppState {
             playlist_slide_target_x: 0,
             playlist_slide_from_x: 0,
             playlist_slide_motion: Transition::new(0.0),
+            playlist_under_modal: false,
             last_frame: Instant::now(),
+            position_anchor_at: Instant::now(),
         }
     }
 
@@ -419,6 +434,51 @@ impl AppState {
         });
     }
 
+    /// Extrapolate the host's last position snapshot to `now`, then quantize
+    /// it to the global frame grid / lyric divisor.
+    pub fn lyric_position_ms(&self, now: Instant) -> u64 {
+        let mut position = self.player.position;
+        if self.player.playback == PlaybackState::Playing && !self.player.seeking {
+            position += now.saturating_duration_since(self.position_anchor_at);
+        }
+        if self.player.track.duration > Duration::ZERO {
+            position = position.min(self.player.track.duration);
+        }
+        crate::lyrics::quantized_position_ms(
+            position.as_millis() as u64,
+            self.config.ui_fps,
+            self.config.lyric_frame_divisor,
+        )
+    }
+
+    pub fn lyric_options(&self) -> crate::ui::lyric_view::LyricOptions {
+        crate::ui::lyric_view::LyricOptions {
+            word_lyrics: self.config.word_lyrics,
+            translation: self.config.lyric_translation,
+        }
+    }
+
+    pub fn apply_theme(&mut self, next: Theme) {
+        start_theme_transition(
+            &mut self.theme,
+            &mut self.theme_transition,
+            next,
+            Instant::now(),
+        );
+    }
+
+    fn tick_theme_transition(&mut self, now: Instant) {
+        let Some(transition) = self.theme_transition.as_mut() else {
+            return;
+        };
+        let done = !transition.is_running();
+        self.theme.palette = transition.tick(now);
+        if done {
+            self.theme.palette = transition.target();
+            self.theme_transition = None;
+        }
+    }
+
     pub fn tick(&mut self, now: Instant) {
         // 必须在覆盖 last_frame 之前取，否则帧间隔恒为 0。
         let dt = now.saturating_duration_since(self.last_frame);
@@ -457,6 +517,7 @@ impl AppState {
         }
 
         self.tick_playlist_slide(now);
+        self.tick_theme_transition(now);
         if self.config.visualize == VisualizeMode::Oscilloscope {
             let activity = self.pcm_ring.as_ref().map(|ring| ring.activity());
             self.scope_gain.tick(
@@ -514,6 +575,13 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
+        if self.theme_transition.is_some() {
+            return true;
+        }
+        // Lyrics are intentionally not a continuous animation. During playback
+        // the host runtime snapshot advances playback position about every 50ms;
+        // that dirty update drives the lyric samples (~20Hz), which is well below
+        // the UI FPS cap and avoids repainting identical lyric frames at 60Hz.
         if self.player.playback == PlaybackState::Playing
             && !matches!(
                 self.config.visualize,
@@ -599,20 +667,39 @@ impl AppState {
         });
     }
 
+    pub fn playlist_is_open(&self) -> bool {
+        self.overlay == Overlay::Playlist || self.playlist_under_modal
+    }
+
+    pub fn open_modal(&mut self, overlay: Overlay) {
+        let playlist_open = self.playlist_is_open();
+        self.close_overlay();
+        self.playlist_under_modal = playlist_open;
+        self.overlay = overlay;
+    }
+
     pub fn toggle_help_modal(&mut self) {
         if self.overlay == Overlay::HelpModal {
             self.close_overlay();
         } else {
+            self.open_modal(Overlay::HelpModal);
             self.help_keybind_selected = self.help_keybind_selected.min(
                 crate::tmplayer::ui::tui::modals::help::help_item_count(self).saturating_sub(1),
             );
             self.help_keybind_scroll = 0;
-            self.overlay = Overlay::HelpModal;
         }
     }
 
     pub fn close_overlay(&mut self) {
-        self.overlay = Overlay::None;
+        self.overlay = if std::mem::take(&mut self.playlist_under_modal) {
+            Overlay::Playlist
+        } else {
+            Overlay::None
+        };
+        self.download_path_edit = None;
+        self.mpris_name_edit = None;
+        self.download_reset_armed = false;
+        self.last_mouse_click = None;
     }
 }
 
