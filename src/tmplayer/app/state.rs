@@ -10,6 +10,7 @@ use crate::tmplayer::render::cover_cache::CoverCache;
 use crate::tmplayer::render::cover_cache::CoverKey;
 use crate::tmplayer::render::cover_renderer::render_cover_ascii;
 use crate::ui::theme::Theme;
+use crate::ui::theme::{ThemeTransition, start_theme_transition};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -191,6 +192,7 @@ pub enum Overlay {
 pub struct AppState {
     pub config: Config,
     pub theme: Theme,
+    theme_transition: Option<ThemeTransition>,
     pub language: Language,
 
     pub player: PlayerState,
@@ -328,6 +330,7 @@ impl AppState {
         Self {
             config,
             theme,
+            theme_transition: None,
             language,
             player: PlayerState::default(),
             api_tracks: Vec::new(),
@@ -453,6 +456,27 @@ impl AppState {
         }
     }
 
+    pub fn apply_theme(&mut self, next: Theme) {
+        start_theme_transition(
+            &mut self.theme,
+            &mut self.theme_transition,
+            next,
+            Instant::now(),
+        );
+    }
+
+    fn tick_theme_transition(&mut self, now: Instant) {
+        let Some(transition) = self.theme_transition.as_mut() else {
+            return;
+        };
+        let done = !transition.is_running();
+        self.theme.palette = transition.tick(now);
+        if done {
+            self.theme.palette = transition.target();
+            self.theme_transition = None;
+        }
+    }
+
     pub fn tick(&mut self, now: Instant) {
         // 必须在覆盖 last_frame 之前取，否则帧间隔恒为 0。
         let dt = now.saturating_duration_since(self.last_frame);
@@ -491,6 +515,7 @@ impl AppState {
         }
 
         self.tick_playlist_slide(now);
+        self.tick_theme_transition(now);
         if self.config.visualize == VisualizeMode::Oscilloscope {
             let activity = self.pcm_ring.as_ref().map(|ring| ring.activity());
             self.scope_gain.tick(
@@ -548,6 +573,9 @@ impl AppState {
     }
 
     pub fn should_continuous_redraw(&self) -> bool {
+        if self.theme_transition.is_some() {
+            return true;
+        }
         // Lyrics are intentionally not a continuous animation. During playback
         // the host runtime snapshot advances playback position about every 50ms;
         // that dirty update drives the lyric samples (~20Hz), which is well below

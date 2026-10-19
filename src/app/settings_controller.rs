@@ -861,7 +861,7 @@ impl App {
                 let next = (current as i32 + delta).rem_euclid(themes.len() as i32) as usize;
                 let next_name = &themes[next];
                 if let Ok(theme) = ThemeLoader::load_async(next_name).await {
-                    self.theme = theme;
+                    self.apply_theme(theme);
                     self.config.theme = next_name.clone();
                     self.persist_config();
                 }

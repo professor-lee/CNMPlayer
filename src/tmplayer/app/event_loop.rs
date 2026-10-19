@@ -104,9 +104,11 @@ async fn apply_host_config_sync(app: &mut AppState, config: Config, vip_audio_un
         .clamp_for_vip(vip_audio_unlocked);
     app.eq.bands_db = app.config.eq_bands_db;
     if theme_changed {
-        app.theme = ThemeLoader::load_async(&app.config.theme)
-            .await
-            .unwrap_or_default();
+        app.apply_theme(
+            ThemeLoader::load_async(&app.config.theme)
+                .await
+                .unwrap_or_default(),
+        );
     }
     app.refresh_download_root();
 }
@@ -1231,7 +1233,7 @@ async fn apply_settings_delta(
             let next = (cur + delta).rem_euclid(themes.len() as i32) as usize;
             let key = &themes[next];
             if let Ok(theme) = ThemeLoader::load_async(key).await {
-                app.theme = theme;
+                app.apply_theme(theme);
                 app.config.theme = key.clone();
                 save_and_sync_host_config(app, host_bridge).await;
             } else {

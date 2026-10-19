@@ -87,6 +87,7 @@ use crate::render::wake::WakeSignal;
 use crate::tmplayer::audio::spectrum::MINI_BARS;
 use crate::tmplayer::audio::spectrum::Spectrum;
 use crate::ui::theme::Theme;
+use crate::ui::theme::{ThemeTransition, start_theme_transition};
 use anyhow::Result;
 use anyhow::anyhow;
 use cyper::Client;
@@ -145,6 +146,7 @@ pub(crate) struct App {
     stderr_trim_checked_at: Option<Instant>,
     stderr_trim_inflight: Option<Receiver<()>>,
     home_sidebar_anim_span_cells: u16,
+    theme_transition: Option<ThemeTransition>,
     pub(crate) search: SearchController,
     pub(crate) playback: PlaybackController,
     startup: StartupController,
@@ -299,6 +301,7 @@ impl App {
             stderr_trim_checked_at: None,
             stderr_trim_inflight: None,
             home_sidebar_anim_span_cells: 24,
+            theme_transition: None,
             search: SearchController::default(),
             playback: PlaybackController::new(audio_player),
             startup: StartupController::detached(),
@@ -408,6 +411,27 @@ impl App {
         self.persistence.flush().map_err(anyhow::Error::msg)
     }
 
+    pub(crate) fn apply_theme(&mut self, next: Theme) {
+        start_theme_transition(
+            &mut self.theme,
+            &mut self.theme_transition,
+            next,
+            Instant::now(),
+        );
+    }
+
+    fn tick_theme_transition(&mut self, now: Instant) {
+        let Some(transition) = self.theme_transition.as_mut() else {
+            return;
+        };
+        let done = !transition.is_running();
+        self.theme.palette = transition.tick(now);
+        if done {
+            self.theme.palette = transition.target();
+            self.theme_transition = None;
+        }
+    }
+
     pub(crate) async fn tick(&mut self) {
         if let Some(error) = self.persistence.pending_error() {
             self.set_runtime_status(format!(
@@ -426,6 +450,7 @@ impl App {
         self.tick_vu_meter(now);
         self.tick_search_box_animation(now);
         self.tick_home_sidebar_animation(now);
+        self.tick_theme_transition(now);
         self.tick_home_sidebar_fetch();
         self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
