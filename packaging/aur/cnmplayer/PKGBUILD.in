@@ -7,6 +7,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/professor-lee/CNMPlayer"
 license=('AGPL-3.0-only')
 depends=('alsa-lib' 'chafa' 'glib2' 'openssl' 'pipewire')
+conflicts=('cnmplayer-bin' 'cnmplayer-git')
 optdepends=(
   'ttf-nerd-fonts-symbols: For icons and spectrum visualizer'
   'ttf-jetbrains-mono-nerd: Recommended monospace font'
