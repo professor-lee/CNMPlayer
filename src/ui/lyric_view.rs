@@ -189,6 +189,7 @@ fn render_pair<'a>(
     theme: &Theme,
     options: LyricOptions,
 ) -> Vec<Line<'a>> {
+    let options = effective_options(lines, options);
     let mut rows = vec![Line::default(), Line::default()];
     if lines.is_empty() || width == 0 {
         return rows;
@@ -262,6 +263,7 @@ fn render_window<'a>(
     theme: &Theme,
     options: LyricOptions,
 ) -> Vec<Line<'a>> {
+    let options = effective_options(lines, options);
     let rows = rows.max(1);
     let mut output = vec![Line::default(); rows];
     if lines.is_empty() || width == 0 {
@@ -374,6 +376,18 @@ fn render_window<'a>(
         output[center + 1 + offset] = line;
     }
     output
+}
+
+fn effective_options(lines: &[LyricLine], options: LyricOptions) -> LyricOptions {
+    LyricOptions {
+        translation: options.translation
+            && lines.iter().any(|line| {
+                line.translation
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+            }),
+        ..options
+    }
 }
 
 fn translation_text(line: &LyricLine, options: LyricOptions) -> Option<&str> {

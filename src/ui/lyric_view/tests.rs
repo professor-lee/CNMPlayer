@@ -238,6 +238,55 @@ fn translation_toggle_restores_original_current_and_next_line_layout() {
 }
 
 #[test]
+fn translation_toggle_without_translation_keeps_original_layout() {
+    let lines = vec![
+        LyricLine {
+            start_ms: 0,
+            end_ms: Some(1_000),
+            text: "first".into(),
+            words: Vec::new(),
+            translation: None,
+        },
+        LyricLine {
+            start_ms: 1_000,
+            end_ms: Some(2_000),
+            text: "second".into(),
+            words: Vec::new(),
+            translation: None,
+        },
+    ];
+    let theme = theme();
+    let mut cache = LyricRenderCache::default();
+    let without = cache
+        .pair(
+            LyricSurface::Compact,
+            &lines,
+            1_500,
+            false,
+            40,
+            &theme,
+            LyricOptions {
+                word_lyrics: false,
+                translation: false,
+            },
+        )
+        .clone();
+    let with = cache.pair(
+        LyricSurface::Compact,
+        &lines,
+        1_500,
+        false,
+        40,
+        &theme,
+        LyricOptions {
+            word_lyrics: false,
+            translation: true,
+        },
+    );
+    assert_eq!(with, &without);
+}
+
+#[test]
 fn translated_pair_does_not_mix_an_untranslated_line_with_the_next_original() {
     let mut lines = bilingual_gap_lyrics();
     lines.retain(|line| !line.text.is_empty());
