@@ -41,8 +41,9 @@ pub(in crate::tmplayer::ui::tui) fn render_settings_modal(
         .split(inner);
     f.render_widget(Paragraph::new(""), rows[0]);
 
+    let theme_label = lang_text(app, "主题", "Theme");
     let items = vec![
-        format!("{}: {}", lang_text(app, "主题", "Theme"), app.config.theme),
+        format!("{theme_label}:   {}", app.config.theme),
         format!(
             "{}: {}",
             lang_text(app, "背景透明", "Transparent Background"),
@@ -84,7 +85,7 @@ pub(in crate::tmplayer::ui::tui) fn render_settings_modal(
             rect,
         );
         if idx == 0 {
-            crate::ui::settings::draw_theme_preview(f, &app.theme, rect);
+            crate::ui::settings::draw_theme_preview(f, &app.theme, rect, theme_label);
         }
         modal_rows.push(rect, idx);
     }

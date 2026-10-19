@@ -63,19 +63,27 @@ pub fn draw_settings_modal(frame: &mut Frame, app: &mut App) {
     }
 }
 
-/// 用原有的两列缩进显示 2×2 色板，不改变文字布局和鼠标命中区。
-pub(crate) fn draw_theme_preview(frame: &mut Frame, theme: &Theme, row: Rect) {
+/// 在主题标签后、名称前显示两列 2×2 色板，保留原有缩进和鼠标命中区。
+pub(crate) fn draw_theme_preview(frame: &mut Frame, theme: &Theme, row: Rect, label: &str) {
     if row.is_empty() || theme.capability == ColorCapability::NoColor {
+        return;
+    }
+    // 两列缩进 + 标签的终端列宽 + ": "；中英文均按显示列定位。
+    let prefix_width = (display_width(label) + 4) as u16;
+    if row.width <= prefix_width {
         return;
     }
 
     let bottom = theme.color_accent3();
     for (offset, top) in [theme.color_accent(), theme.color_accent2()]
         .into_iter()
-        .take(usize::from(row.width))
+        .take(usize::from(row.width - prefix_width))
         .enumerate()
     {
-        if let Some(cell) = frame.buffer_mut().cell_mut((row.x + offset as u16, row.y)) {
+        if let Some(cell) = frame
+            .buffer_mut()
+            .cell_mut((row.x + prefix_width + offset as u16, row.y))
+        {
             cell.set_symbol("▀")
                 .set_style(Style::reset().fg(top).bg(bottom));
         }
@@ -96,8 +104,9 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         rows[0],
     );
 
+    let theme_label = l(app, "主题", "Theme");
     let items = vec![
-        format!("{}: {}", l(app, "主题", "Theme"), app.config.theme),
+        format!("{theme_label}:   {}", app.config.theme),
         format!(
             "{}: {}",
             l(app, "背景透明", "Transparent Background"),
@@ -135,7 +144,7 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         Paragraph::new(lines).style(Style::default().bg(app.theme.color_surface())),
         rows[1],
     );
-    draw_theme_preview(frame, &app.theme, rows[1]);
+    draw_theme_preview(frame, &app.theme, rows[1], theme_label);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
