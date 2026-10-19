@@ -643,7 +643,15 @@ fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
             } else {
                 -(closed_layout.left.width as i16)
             };
-            for dx in [-(closed_layout.left.width as i16), -17, -8, -1, 0] {
+            for dx in [
+                -(closed_layout.left.width as i16),
+                -(closed_layout.left.width as i16) + 1,
+                -(closed_layout.left.width as i16) + 2,
+                -17,
+                -8,
+                -1,
+                0,
+            ] {
                 app.playlist_slide_x = dx;
                 let frame =
                     draw_page(&mut terminal, &mut app, &mut song_covers, &mut drawer).unwrap();
@@ -658,6 +666,11 @@ fn drawer_prewarms_cover_and_translates_fixed_content_in_both_directions() {
                                 // its background still moves with the original panel.
                                 expected = background[(x, y)].clone();
                                 expected.bg = fully_open[(source_x, y)].bg;
+                                if frame.playlist_rect.width > 1
+                                    && y == final_layout.separator_area.y
+                                {
+                                    expected.set_symbol("├");
+                                }
                             }
                             assert_eq!(
                                 actual[(x, y)],
