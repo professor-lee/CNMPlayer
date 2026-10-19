@@ -163,6 +163,7 @@ Maintain the three package recipes under `packaging/aur/`; the AUR repositories 
 - `cnmplayer/PKGBUILD.in` and `cnmplayer-bin/PKGBUILD.in` are rendered from the release tag. The sync downloads the source archive and both binary archives, computes their SHA-256 checksums, then generates complete `PKGBUILD` and `.SRCINFO` files. CI does not write release metadata back to this repository.
 - `release.yml` checks out the release tag for packaging as well as compilation. Tags published before these templates were introduced do not contain this packaging setup. The normal release path syncs stable packages only after successful publication; `workflow_dispatch` with `sync_aur=true` requires the release assets to exist already.
 - `aur-git.yml` runs on every push to `develop`. It compares the repository's `cnmplayer-git/PKGBUILD` and freshly generated `.SRCINFO` with AUR, and commits/pushes only when either differs. Ordinary source commits do not cause VCS version-only updates.
+- `cnmplayer-git` uses `_basever` as the AUR display and version-ordering base; bump it when a new release tag is published.
 - New upstream releases normally use `pkgrel=1`. For a packaging fix to an already released version, increment `pkgrel` in the relevant template/recipe before republishing. Keep any emergency AUR-side recipe correction in the main repository as well.
 - Publishing jobs use the `AUR_SSH_KEY` repository secret. Pull request packaging checks need no secret and use isolated local Git remotes; they never contact AUR or download release assets.
 

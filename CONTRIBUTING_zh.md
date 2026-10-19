@@ -130,6 +130,7 @@ cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 - `cnmplayer/PKGBUILD.in` 与 `cnmplayer-bin/PKGBUILD.in` 从 release tag 渲染。同步时下载源码归档和两种架构的二进制归档，计算实际 SHA-256，再生成完整的 `PKGBUILD` 与 `.SRCINFO`。CI 不将发布元数据回写主仓库。
 - `release.yml` 的打包与编译均 checkout 对应 release tag。引入模板之前的旧 tag 不含这套打包配置。正常发版仅在发布成功后同步稳定包；`workflow_dispatch` 的 `sync_aur=true` 要求 release 资产已经存在。
 - `aur-git.yml` 在每次推送 `develop` 时触发，将仓库中的 `cnmplayer-git/PKGBUILD` 和新生成的 `.SRCINFO` 与 AUR 比较，仅在任一文件不同时提交和推送。普通源码提交不会导致只更新 VCS 版本号的 AUR 提交。
+- `cnmplayer-git` 以 `_basever` 作为 AUR 展示与版本排序基准；发布新 tag 时同步递增。
 - 新上游版本通常使用 `pkgrel=1`；修复已经发布版本的打包问题时，应先递增对应模板或配方的 `pkgrel` 再发布。AUR 端的紧急配方修正也必须带回主仓库。
 - 发布 job 使用仓库 secret `AUR_SSH_KEY`。PR 的打包检查不需要密钥，使用隔离的本地 Git 远端，不访问 AUR 或下载 release 资产。
 
