@@ -314,9 +314,10 @@ impl App {
         let memory_changed = self.config.playback_memory != config.playback_memory;
         let recommendations_changed = self.config.home_more_recommend != config.home_more_recommend;
         if theme_changed {
-            self.theme = ThemeLoader::load_async(&config.theme)
+            let theme = ThemeLoader::load_async(&config.theme)
                 .await
                 .unwrap_or_default();
+            self.apply_theme(theme);
         }
         self.playback
             .audio_player

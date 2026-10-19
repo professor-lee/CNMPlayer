@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn paused_theme_transition_keeps_redrawing_until_the_exact_target_frame() {
+    use crate::ui::theme::{ColorCapability, Theme};
+    let config = Config {
+        visualize: VisualizeMode::Hidden,
+        ..Config::default()
+    };
+    let mut theme = Theme::default();
+    theme.capability = ColorCapability::TrueColor;
+    let mut app = AppState::new(config, theme.clone(), crate::data::config::Language::En);
+    assert!(!app.should_continuous_redraw());
+    let mut next = theme.clone();
+    next.palette.base = (200, 120, 60);
+    app.apply_theme(next.clone());
+    let now = Instant::now();
+    assert!(app.should_continuous_redraw());
+    app.tick(now + Duration::from_millis(100));
+    assert_ne!(app.theme.palette.base, theme.palette.base);
+    assert_ne!(app.theme.palette.base, next.palette.base);
+    assert!(app.should_continuous_redraw());
+    app.tick(now + Duration::from_millis(250));
+    assert_eq!(app.theme.palette, next.palette);
+    app.tick(now + Duration::from_millis(266));
+    assert!(!app.should_continuous_redraw());
+
+    next.capability = ColorCapability::NoColor;
+    next.palette.base = (12, 34, 56);
+    app.apply_theme(next.clone());
+    assert_eq!(app.theme.palette, next.palette);
+    assert!(!app.should_continuous_redraw());
+}
+
+#[test]
 fn paused_oscilloscope_schedules_the_exact_flat_frame_without_input() {
     let config = Config {
         visualize: VisualizeMode::Oscilloscope,

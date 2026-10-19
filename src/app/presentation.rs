@@ -152,7 +152,7 @@ impl App {
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
     /// 到 ~30fps 重绘。
     pub(crate) fn should_continuous_redraw(&self) -> bool {
-        if self.page_transition_active() {
+        if self.theme_transition.is_some() || self.page_transition_active() {
             return true;
         }
         if mini_spectrum_needs_redraw(

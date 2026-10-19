@@ -1,4 +1,5 @@
 # 主题名称前的两列半块色板：上排 accent / accent2，下排均为 accent3；无彩色终端不显示。
+# 彩色主题切换使用 200ms RGB 渐变；无彩色终端直接切换。
 theme = "frappe"
 ui_fps = 60
 visualize = "bars"
