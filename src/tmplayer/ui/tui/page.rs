@@ -246,7 +246,7 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
 
         let pl_layout = playlist_panel::compute_layout(left, app);
 
-        if app.overlay == Overlay::Playlist || app.playlist_slide_x != app.playlist_slide_target_x {
+        if app.playlist_is_open() || app.playlist_slide_x != app.playlist_slide_target_x {
             let dx = app.playlist_slide_x.clamp(-(left.width as i16), 0);
             let visible = translated_clip(left, i32::from(dx), left);
             layout_out.playlist_rect = visible;

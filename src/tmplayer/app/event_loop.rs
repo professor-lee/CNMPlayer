@@ -224,7 +224,7 @@ fn sync_from_host_snapshot(app: &mut AppState, snapshot: HostPlaybackSnapshot) {
     playlist.selected = current;
     playlist.clamp_selected();
 
-    let keep_selected = app.overlay == Overlay::Playlist
+    let keep_selected = app.playlist_is_open()
         && app.playlist_view.len() <= queue_len
         && app
             .playlist_view
@@ -608,14 +608,12 @@ async fn handle_action(
     match action {
         Action::Quit => {}
         Action::OpenSettingsModal => {
-            app.close_overlay();
+            app.open_modal(Overlay::SettingsModal);
             app.settings_selected = app.settings_selected.min(8);
-            app.overlay = Overlay::SettingsModal;
         }
         Action::ToggleHelpModal => app.toggle_help_modal(),
         Action::OpenEqModal => {
-            app.close_overlay();
-            app.overlay = Overlay::EqModal;
+            app.open_modal(Overlay::EqModal);
             app.eq_selected = 0;
         }
         Action::EqSetBandDb { band, db } => {

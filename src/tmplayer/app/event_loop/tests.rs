@@ -413,6 +413,147 @@ fn runtime_snapshot_resets_position_anchor_when_position_is_unchanged() {
 }
 
 #[compio::test]
+async fn settings_preserve_sidebar_visibility_focus_and_modal_input() {
+    use crate::data::config::GraphicsProtocol;
+    use crate::tmplayer::utils::input::map_key;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+
+    let snapshot = |count| HostPlaybackSnapshot {
+        playlist: (0..count)
+            .map(|i| crate::tmplayer::FullscreenPlaylistItemSeed {
+                id: Some(i.to_string()),
+                title: format!("Track {i}"),
+                artist: String::new(),
+                album: String::new(),
+                duration: Duration::from_secs(60),
+            })
+            .collect(),
+        current_index: Some(0),
+        ..Default::default()
+    };
+
+    for sidebar_open in [false, true] {
+        let config = Config {
+            small_window_display: false,
+            show_hints: false,
+            graphics_protocol: GraphicsProtocol::Off,
+            visualize: VisualizeMode::Lyrics,
+            ..Config::default()
+        };
+        let mut app = AppState::new(
+            config,
+            crate::ui::theme::Theme::default(),
+            crate::data::config::Language::En,
+        );
+        let mut host = TransitionHost {
+            wake: crate::render::wake::WakeSignal::default(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let mut tui = Tui::new(&mut terminal, host.wake.clone());
+        sync_from_host_snapshot(&mut app, snapshot(5));
+        let layout = tui.draw(&mut app).unwrap();
+        if sidebar_open {
+            handle_action(&mut app, &mut host, Action::TogglePlaylist, &layout)
+                .await
+                .unwrap();
+            app.tick(Instant::now() + Duration::from_millis(250));
+            app.playlist_view.selected = 2;
+        }
+        let layout = tui.draw(&mut app).unwrap();
+        let sidebar_title = tui.terminal_mut().backend().buffer()[(1, 0)].clone();
+        let action = map_key(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            app.overlay,
+            &app.config,
+        );
+        handle_action(&mut app, &mut host, action, &layout)
+            .await
+            .unwrap();
+        let modal_layout = tui.draw(&mut app).unwrap();
+        assert_eq!(app.overlay, Overlay::SettingsModal);
+        assert_eq!(modal_layout.playlist_rect, layout.playlist_rect);
+        assert_eq!(
+            tui.terminal_mut().backend().buffer()[(1, 0)],
+            sidebar_title,
+            "opening settings must not remove the sidebar underneath"
+        );
+        assert!(!modal_layout.modal_rows.get(0).unwrap().is_empty());
+        assert!(!app.should_continuous_redraw());
+
+        sync_from_host_snapshot(&mut app, snapshot(6));
+        let selected = if sidebar_open { 2 } else { 0 };
+        assert_eq!(app.playlist_view.selected, selected);
+        handle_action(
+            &mut app,
+            &mut host,
+            Action::MouseClick { col: 2, row: 2 },
+            &modal_layout,
+        )
+        .await
+        .unwrap();
+        handle_action(
+            &mut app,
+            &mut host,
+            Action::MouseScroll {
+                col: 2,
+                row: 2,
+                forward: true,
+            },
+            &modal_layout,
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.playlist_view.selected, selected);
+        assert_eq!(app.settings_selected, 1, "scroll belongs to the modal");
+
+        // Escape traverses the settings hierarchy before restoring the sidebar.
+        app.settings_selected = 2;
+        handle_action(&mut app, &mut host, Action::Confirm, &modal_layout)
+            .await
+            .unwrap();
+        assert_eq!(app.overlay, Overlay::GeneralSettingsModal);
+        handle_action(&mut app, &mut host, Action::CloseOverlay, &modal_layout)
+            .await
+            .unwrap();
+        assert_eq!(app.overlay, Overlay::SettingsModal);
+        handle_action(&mut app, &mut host, Action::CloseOverlay, &modal_layout)
+            .await
+            .unwrap();
+        let restored = if sidebar_open {
+            Overlay::Playlist
+        } else {
+            Overlay::None
+        };
+        assert_eq!(app.overlay, restored);
+        assert_eq!(
+            tui.draw(&mut app).unwrap().playlist_rect,
+            layout.playlist_rect
+        );
+
+        // The settings shortcut also closes directly from a nested editor.
+        handle_action(&mut app, &mut host, Action::OpenSettingsModal, &layout)
+            .await
+            .unwrap();
+        app.settings_selected = 2;
+        handle_action(&mut app, &mut host, Action::Confirm, &modal_layout)
+            .await
+            .unwrap();
+        app.general_settings_selected = 5;
+        handle_action(&mut app, &mut host, Action::Confirm, &modal_layout)
+            .await
+            .unwrap();
+        assert!(app.mpris_name_edit.is_some());
+        handle_action(&mut app, &mut host, Action::CloseSettings, &modal_layout)
+            .await
+            .unwrap();
+        assert_eq!(app.overlay, restored);
+        assert!(app.mpris_name_edit.is_none());
+        assert_eq!(app.playlist_view.selected, selected);
+    }
+}
+
+#[compio::test]
 async fn name_edit_cancels_to_general_then_root_without_saving() {
     let mut app = AppState::new(
         Config::default(),

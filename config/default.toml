@@ -42,6 +42,7 @@ mpris_name = ""
 keybind_search_box = "Ctrl+S"
 keybind_fullscreen = "Ctrl+F"
 keybind_settings = "T"
+# 全屏设置弹窗保留已展开的侧边栏；关闭弹窗后恢复侧栏操作。
 keybind_sidebar = "P"
 keybind_quit = "Q"
 keybind_page_up = "pageUP"

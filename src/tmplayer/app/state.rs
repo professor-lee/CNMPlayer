@@ -279,6 +279,7 @@ pub struct AppState {
     pub playlist_slide_target_x: i16,
     playlist_slide_from_x: i16,
     playlist_slide_motion: Transition,
+    playlist_under_modal: bool,
 
     pub last_frame: Instant,
     /// Wall-clock anchor for the last host position snapshot. Between the
@@ -384,6 +385,7 @@ impl AppState {
             playlist_slide_target_x: 0,
             playlist_slide_from_x: 0,
             playlist_slide_motion: Transition::new(0.0),
+            playlist_under_modal: false,
             last_frame: Instant::now(),
             position_anchor_at: Instant::now(),
         }
@@ -665,21 +667,35 @@ impl AppState {
         });
     }
 
+    pub fn playlist_is_open(&self) -> bool {
+        self.overlay == Overlay::Playlist || self.playlist_under_modal
+    }
+
+    pub fn open_modal(&mut self, overlay: Overlay) {
+        let playlist_open = self.playlist_is_open();
+        self.close_overlay();
+        self.playlist_under_modal = playlist_open;
+        self.overlay = overlay;
+    }
+
     pub fn toggle_help_modal(&mut self) {
         if self.overlay == Overlay::HelpModal {
             self.close_overlay();
         } else {
-            self.close_overlay();
+            self.open_modal(Overlay::HelpModal);
             self.help_keybind_selected = self.help_keybind_selected.min(
                 crate::tmplayer::ui::tui::modals::help::help_item_count(self).saturating_sub(1),
             );
             self.help_keybind_scroll = 0;
-            self.overlay = Overlay::HelpModal;
         }
     }
 
     pub fn close_overlay(&mut self) {
-        self.overlay = Overlay::None;
+        self.overlay = if std::mem::take(&mut self.playlist_under_modal) {
+            Overlay::Playlist
+        } else {
+            Overlay::None
+        };
         self.download_path_edit = None;
         self.mpris_name_edit = None;
         self.download_reset_armed = false;
