@@ -317,7 +317,7 @@ impl App {
             let theme = ThemeLoader::load_async(&config.theme)
                 .await
                 .unwrap_or_default();
-            self.apply_theme(theme);
+            self.apply_theme_immediate(theme);
         }
         self.playback
             .audio_player

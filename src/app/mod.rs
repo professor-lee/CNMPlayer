@@ -420,6 +420,11 @@ impl App {
         );
     }
 
+    pub(crate) fn apply_theme_immediate(&mut self, next: Theme) {
+        self.theme = next;
+        self.theme_transition = None;
+    }
+
     fn tick_theme_transition(&mut self, now: Instant) {
         let Some(transition) = self.theme_transition.as_mut() else {
             return;

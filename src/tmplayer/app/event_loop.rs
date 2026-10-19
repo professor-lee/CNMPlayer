@@ -488,10 +488,8 @@ where
     }
     .await;
 
-    // The close animation is a visual handoff, not a fullscreen toast frame.
-    // Clear the exit/status toast before both the fresh Host snapshot and the
-    // sliding page are rendered; otherwise "Bye" remains accent-red at top.
-    app.toast = None;
+    // The host applies fullscreen theme changes immediately, so this fresh
+    // snapshot is rendered with the target palette instead of the old frame.
     let transition_result = if loop_result.is_ok() {
         async {
             let snapshot = host_bridge.host_snapshot(tui.terminal_mut())?;
