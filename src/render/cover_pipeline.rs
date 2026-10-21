@@ -202,25 +202,19 @@ impl CoverPipeline {
                     wake.notify();
                     true
                 };
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let frame = || {
                     let image = match request.source {
                         Source::Bytes(bytes) => Arc::new(image::load_from_memory(&bytes).ok()?),
                         Source::Image(image) => image,
                     };
                     let preview = prepare_preview(&image, key.width, key.height);
                     if !send(Prepared::Preview(preview)) {
-                        return None;
-                    }
-                    prepare_chafa(&image, key.width, key.height)
-                }));
-                let frame = match outcome {
-                    Ok(frame) => frame,
-                    Err(_) => {
-                        log::warn!("cover preparation panicked for {:x}", key.hash);
                         None
+                    } else {
+                        prepare_chafa(&image, key.width, key.height)
                     }
                 };
-                if !send(Prepared::Finished(frame)) {
+                if !send(Prepared::Finished(frame())) {
                     break;
                 }
             }

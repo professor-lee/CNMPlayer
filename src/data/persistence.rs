@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use parking_lot::{Condvar, Mutex};
 use std::collections::VecDeque;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
@@ -248,15 +247,7 @@ fn record_error(state: &mut State, epoch: u64, error: String) {
 }
 
 fn worker_main(shared: Arc<Shared>) {
-    if catch_unwind(AssertUnwindSafe(|| worker_loop(&shared))).is_err() {
-        let mut state = shared.state.lock();
-        state.accepting = false;
-        state.stopped = true;
-        state.queue.clear();
-        let epoch = state.epoch;
-        record_error(&mut state, epoch, "persistence worker panicked".to_string());
-        shared.wake.notify_all();
-    }
+    worker_loop(&shared);
 }
 
 fn worker_loop(shared: &Arc<Shared>) {
@@ -302,25 +293,13 @@ fn worker_loop(shared: &Arc<Shared>) {
 }
 
 fn run_job(shared: &Arc<Shared>, epoch: u64, job: Job) {
-    let result = catch_unwind(AssertUnwindSafe(job));
-    let error = match result {
-        Ok(Ok(())) => return,
-        Ok(Err(error)) => format!("{error:#}"),
-        Err(payload) => panic_message(payload.as_ref()),
+    let error = match job() {
+        Ok(()) => return,
+        Err(error) => format!("{error:#}"),
     };
     log::error!("persistence worker job failed: {error}");
     let mut state = shared.state.lock();
     record_error(&mut state, epoch, error);
-}
-
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        return format!("persistence worker job panicked: {message}");
-    }
-    if let Some(message) = payload.downcast_ref::<String>() {
-        return format!("persistence worker job panicked: {message}");
-    }
-    "persistence worker job panicked".to_string()
 }
 
 fn worker_stopped_error(state: &State) -> anyhow::Error {
