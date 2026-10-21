@@ -369,7 +369,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on Rust 1.95 and stable, then fmt and clippy gates for the host and the vendored crate, plus the vendored test suite.
+CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on stable, then fmt and clippy gates for the host and the vendored crate, plus the vendored test suite.
 Release (`release.yml`) runs the root and vendored test gates before publishing, publishes `SHA256SUMS` alongside the `x86_64` and `aarch64` tarballs, and maintains the AUR packages.
 
 ## Related Projects
