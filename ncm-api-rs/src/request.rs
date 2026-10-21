@@ -8,7 +8,7 @@ use crate::util::cookie::{cookie_obj_to_string, cookie_to_json};
 use crate::util::device::{generate_device_id, generate_wnmcid, random_hex};
 use crate::util::ip::generate_random_chinese_ip;
 
-use http::header::{HeaderMap, HeaderValue, COOKIE, REFERER, USER_AGENT};
+use http::header::{COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

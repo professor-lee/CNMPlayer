@@ -4,7 +4,7 @@ use crate::error::Result;
 /// 对应 Node.js module/register_anonimous.js
 use crate::request::{ApiClient, ApiResponse, CryptoType};
 use crate::util::device::generate_device_id;
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use md5::{Digest, Md5};
 use serde_json::json;
 
