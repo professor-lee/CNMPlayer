@@ -332,27 +332,61 @@ fn read_wrapping(src: &[f32], pos: usize, dst: &mut [f32]) {
     dst[head..].copy_from_slice(&src[..tail]);
 }
 
-/// 抽头的写入端：每样本调用 [`PcmTap::push_sample`]，攒满一批自动落环。
-///
-/// 暂存数组私有且无任何同步，因此每样本的开销只是一次数组写入 —— 相对
-/// `EqSource` 本身每样本 10 次原子读加 10 级 biquad，属噪声级。
+/// Independent analysis requests. The low bit is enabled; every change advances
+/// the epoch, so an off/on cycle cannot retain samples between producer polls.
+#[derive(Debug, Default)]
+pub(crate) struct AnalysisDemand {
+    pcm: AtomicU64,
+    lufs: AtomicU64,
+}
+
+impl AnalysisDemand {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return which consumers changed, allowing the control thread to invalidate
+    /// published readings immediately even when playback is paused.
+    pub(crate) fn set(&self, pcm: bool, lufs: bool) -> (bool, bool) {
+        (
+            Self::set_consumer(&self.pcm, pcm),
+            Self::set_consumer(&self.lufs, lufs),
+        )
+    }
+
+    fn set_consumer(epoch: &AtomicU64, enabled: bool) -> bool {
+        epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                ((current & 1 != 0) != enabled).then(|| current.wrapping_add(1))
+            })
+            .is_ok()
+    }
+}
+
+/// Callback-side staging for the requested consumers only. Changes discard the
+/// current batch and partial frame; collection always resumes at channel zero.
 #[derive(Debug)]
 pub struct PcmTap {
-    ring: std::sync::Arc<PcmRing>,
+    ring: Arc<PcmRing>,
     lufs_meter: Option<Arc<LufsMeter>>,
+    demand: Arc<AnalysisDemand>,
+    pcm_epoch: u64,
+    lufs_epoch: u64,
     left: Box<[f32]>,
     right: Box<[f32]>,
     len: usize,
+    frame_started: bool,
     channels: usize,
     sample_rate: u32,
 }
 
 impl PcmTap {
-    pub fn new(
-        ring: std::sync::Arc<PcmRing>,
+    pub(crate) fn new(
+        ring: Arc<PcmRing>,
         channels: usize,
         sample_rate: u32,
         lufs_meter: Option<Arc<LufsMeter>>,
+        demand: Arc<AnalysisDemand>,
     ) -> Self {
         if let Some(meter) = &lufs_meter {
             meter.configure_and_reset(channels, sample_rate);
@@ -360,39 +394,82 @@ impl PcmTap {
         Self {
             ring,
             lufs_meter,
+            demand,
+            pcm_epoch: 0,
+            lufs_epoch: 0,
             left: vec![0.0; FLUSH_FRAMES].into_boxed_slice(),
             right: vec![0.0; FLUSH_FRAMES].into_boxed_slice(),
             len: 0,
+            frame_started: false,
             channels: channels.max(1),
             sample_rate,
         }
     }
 
-    /// 送入一个样本，`channel` 为其在当前帧内的声道序号。
+    /// Poll at frame boundaries even on the caller's bypass path. Observing an
+    /// epoch, rather than just its enabled bit, also catches quick off/on cycles.
+    pub(crate) fn needs_samples(&mut self) -> bool {
+        self.sync_demand();
+        self.pcm_epoch & 1 != 0 || (self.lufs_epoch & 1 != 0 && self.lufs_meter.is_some())
+    }
+
+    fn sync_demand(&mut self) {
+        let pcm_epoch = self.demand.pcm.load(Ordering::Acquire);
+        let lufs_epoch = self.demand.lufs.load(Ordering::Acquire);
+        let pcm_changed = pcm_epoch != self.pcm_epoch;
+        let lufs_changed = lufs_epoch != self.lufs_epoch;
+        if pcm_changed {
+            self.ring.reset();
+        }
+        if lufs_changed && let Some(meter) = &self.lufs_meter {
+            meter.reset();
+        }
+        if pcm_changed || lufs_changed {
+            self.len = 0;
+            self.frame_started = false;
+        }
+        self.pcm_epoch = pcm_epoch;
+        self.lufs_epoch = lufs_epoch;
+    }
+
+    /// Send an interleaved sample. Only complete frames may enter a batch, even
+    /// if a request changes between the left and right samples of a stereo frame.
     pub fn push_sample(&mut self, channel: usize, sample: f32) {
+        if channel == 0 {
+            self.sync_demand();
+            self.frame_started =
+                self.pcm_epoch & 1 != 0 || (self.lufs_epoch & 1 != 0 && self.lufs_meter.is_some());
+        }
+        if !self.frame_started {
+            return;
+        }
         match channel {
             0 => self.left[self.len] = sample,
             1 => self.right[self.len] = sample,
-            // 多声道音源只取前两路：示波器画的是立体声像，其余声道无处安放。
+            // All channels define a frame, but only the first two are analyzed.
             _ => {}
         }
-
         if channel + 1 < self.channels {
             return;
         }
+        self.sync_demand();
+        if !self.frame_started {
+            return;
+        }
+        self.frame_started = false;
         if self.channels == 1 {
             self.right[self.len] = self.left[self.len];
         }
-
         self.len += 1;
         if self.len == self.left.len() {
             self.flush();
         }
     }
 
-    /// 跳转后调用：暂存与环内的样本都属于跳转前的位置。
+    /// Seeking discards both published and staged samples without waiting for a lock.
     pub fn reset(&mut self) {
         self.len = 0;
+        self.frame_started = false;
         self.ring.reset();
         if let Some(meter) = &self.lufs_meter {
             meter.reset();
@@ -400,15 +477,20 @@ impl PcmTap {
     }
 
     fn flush(&mut self) {
+        self.sync_demand();
         if self.len == 0 {
             return;
         }
-        self.ring.push(
-            &self.left[..self.len],
-            &self.right[..self.len],
-            self.sample_rate,
-        );
-        if let Some(meter) = &self.lufs_meter {
+        if self.pcm_epoch & 1 != 0 {
+            self.ring.push(
+                &self.left[..self.len],
+                &self.right[..self.len],
+                self.sample_rate,
+            );
+        }
+        if self.lufs_epoch & 1 != 0
+            && let Some(meter) = &self.lufs_meter
+        {
             meter.push_batch(&self.left[..self.len], &self.right[..self.len]);
         }
         self.len = 0;

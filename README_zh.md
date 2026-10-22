@@ -120,6 +120,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - `oscilloscope`——真 PCM 示波器；暂停、停止或音频中断时平滑收回平线，恢复后重新张开
 - `vector`——李萨如矢量示波器：横向 x 轴 = 左声道 L，纵向 y 轴 = 右声道 R（向上恒为正），缩放基准取本曲开播以来的最响段落，恰好撑满面板。暂停或突断静音时图形炸开成飞散的盲文点，停稳后轻微明灭，直到恢复播放
 - 折叠播放栏绘制 10 格盲文迷你频谱（`lyrics` 与 `hidden` 两档中保持空白）；窄窗则用 400 ms Momentary LUFS 计量驱动双声道音量条（显示范围 −60…0 LUFS）
+- PCM 抽头仅在可见的可视化需要时运行，LUFS 仅在窄窗音量条显示时计量；播放中切换可视化、缩放窗口或进出全屏会即时更新需求，无需重播歌曲。
 
 `bars` 与迷你频谱分析的是 CNMPlayer 自己解码的播放 PCM，抽头位于十段 EQ 之后、播放音量之前——不采集麦克风、系统输出或其它应用的声音。频谱按 [Cava](https://github.com/karlstav/cava) 的 [`6d43df3b2c7882122585c02c064b20009842a6f8`](https://github.com/karlstav/cava/tree/6d43df3b2c7882122585c02c064b20009842a6f8) 提交忠实移植为 Rust，FFT 后端为纯 Rust 实现（`realfft`）。归属与完整许可条款见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

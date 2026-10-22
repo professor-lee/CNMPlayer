@@ -5,6 +5,7 @@ use super::Page;
 use super::about::EasterEggPhase;
 use super::playback_controller::PlaybackRuntimeState;
 use super::search_controller::SEARCH_BOX_ANIM_DURATION;
+use crate::data::config::Config;
 use crate::data::config::VisualizeMode;
 use crate::render::motion::Curve;
 use crate::render::motion::Toggle;
@@ -147,6 +148,54 @@ fn small_window_needs_redraw(
     }
 }
 
+/// Select consumers from the surface that actually owns the terminal.
+fn analysis_demand(
+    config: &Config,
+    page: Page,
+    (width, height): (u16, u16),
+    flat_panel: FlatPanel,
+    flat_switch_animating: bool,
+    fullscreen: bool,
+) -> (bool, bool) {
+    let visualize = matches!(
+        config.visualize,
+        VisualizeMode::Bars | VisualizeMode::Oscilloscope | VisualizeMode::Vector
+    );
+    // Fullscreen renders its own layout, including when the host was narrow.
+    if fullscreen {
+        return (visualize, false);
+    }
+    if matches!(page, Page::Login | Page::Loading) || width == 0 || height == 0 {
+        return (false, false);
+    }
+    if config.small_window_display
+        && (width < SMALL_WINDOW_MIN_WIDTH || height < SMALL_WINDOW_MIN_HEIGHT)
+    {
+        if width < SMALL_WINDOW_MIN_WIDTH && height >= SMALL_WINDOW_MIN_HEIGHT {
+            return (false, true);
+        }
+        if width >= SMALL_WINDOW_MIN_WIDTH
+            && (FLAT_SMALL_HEIGHT..SMALL_WINDOW_MIN_HEIGHT).contains(&height)
+        {
+            let player_visible = height > FLAT_SMALL_HEIGHT
+                || flat_panel == FlatPanel::Player
+                || flat_switch_animating;
+            return (visualize && player_visible, false);
+        }
+        return (false, false);
+    }
+    let (min_width, min_height) = match page {
+        Page::Home => (SMALL_WINDOW_MIN_WIDTH, SMALL_WINDOW_MIN_HEIGHT),
+        Page::Playlist | Page::Author if !config.small_window_display => (40, 14),
+        Page::Search if !config.small_window_display => (42, 14),
+        _ => (SMALL_WINDOW_MIN_WIDTH, SMALL_WINDOW_MIN_HEIGHT),
+    };
+    (
+        visualize && width >= min_width && height >= min_height,
+        false,
+    )
+}
+
 impl App {
     /// 是否有进行中的动画需要高频重绘（进度条脉冲、搜索框滑出、侧边栏
     /// 滑出、启动加载）。主事件循环据此在动画期间从 1s 空闲节流切换
@@ -225,11 +274,14 @@ impl App {
             self.close_panels_for_small_window();
         }
         self.recompute_small_window_mode();
+        self.sync_analysis_demand();
     }
 
     pub(super) fn sync_terminal_size(&mut self) {
         if let Ok((width, height)) = crossterm::terminal::size() {
             self.set_terminal_size(width, height);
+        } else {
+            self.sync_analysis_demand();
         }
     }
 
@@ -375,6 +427,7 @@ impl App {
         let mut anim = Transition::new(current);
         anim.retarget(target, now, FLAT_SWITCH_ANIM_DURATION, Curve::EaseOut);
         self.flat_switch_anim = Some(anim);
+        self.sync_analysis_demand();
     }
 
     pub(super) fn tick_flat_switch(&mut self, now: Instant) {
@@ -443,6 +496,18 @@ impl App {
 
     pub(crate) fn sync_on_change(&mut self) {
         self.sync_terminal_size();
+    }
+
+    pub(super) fn sync_analysis_demand(&self) {
+        let (pcm, lufs) = analysis_demand(
+            &self.config,
+            self.page,
+            (self.term_width, self.term_height),
+            self.flat_panel,
+            self.flat_switch_animating(),
+            self.fullscreen_context,
+        );
+        self.playback.audio_player.set_analysis(pcm, lufs);
     }
 
     fn mini_spectrum_enabled(&self) -> bool {

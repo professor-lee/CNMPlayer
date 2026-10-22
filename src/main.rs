@@ -499,6 +499,7 @@ async fn launch_tmplayer_fullscreen(
     app.reset_main_spectrum();
 
     let config = app.config.clone();
+    app.set_fullscreen_context(true);
     let mut bridge = AppFullscreenBridge { app };
     let (exit, status_text) =
         match tmplayer::run_fullscreen(terminal, &config, bootstrap, host_snapshot, &mut bridge)
@@ -507,6 +508,7 @@ async fn launch_tmplayer_fullscreen(
             Ok(exit) => (Some(exit), String::new()),
             Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
         };
+    app.set_fullscreen_context(false);
     app.reset_main_spectrum();
     if !status_text.is_empty() {
         app.set_runtime_status(status_text);

@@ -1,5 +1,15 @@
-use super::*;
+use super::{
+    AnalysisDemand, CAPACITY, FLUSH_FRAMES, PcmBatch, PcmReader, PcmRing, PcmSnapshot, PcmTap,
+};
+use crate::tmplayer::audio::lufs_meter::LufsMeter;
 use std::sync::Arc;
+use std::time::Instant;
+
+fn enabled_demand(pcm: bool, lufs: bool) -> Arc<AnalysisDemand> {
+    let demand = Arc::new(AnalysisDemand::new());
+    demand.set(pcm, lufs);
+    demand
+}
 
 fn ramp(from: usize, count: usize) -> Vec<f32> {
     (from..from + count).map(|i| i as f32).collect()
@@ -309,7 +319,13 @@ fn identical_channels_are_reported_as_mono() {
 #[test]
 fn tap_splits_stereo_and_mirrors_mono() {
     let stereo = Arc::new(PcmRing::new());
-    let mut tap = PcmTap::new(Arc::clone(&stereo), 2, 48_000, None);
+    let mut tap = PcmTap::new(
+        Arc::clone(&stereo),
+        2,
+        48_000,
+        None,
+        enabled_demand(true, false),
+    );
     for (channel, sample) in [(0, 1.0), (1, 2.0), (0, 3.0), (1, 4.0)] {
         tap.push_sample(channel, sample);
     }
@@ -322,7 +338,13 @@ fn tap_splits_stereo_and_mirrors_mono() {
     assert_eq!(&snap.right[..2], &[2.0, 4.0]);
 
     let mono = Arc::new(PcmRing::new());
-    let mut tap = PcmTap::new(Arc::clone(&mono), 1, 48_000, None);
+    let mut tap = PcmTap::new(
+        Arc::clone(&mono),
+        1,
+        48_000,
+        None,
+        enabled_demand(true, false),
+    );
     tap.push_sample(0, 0.25);
     tap.flush();
 
@@ -335,7 +357,13 @@ fn tap_splits_stereo_and_mirrors_mono() {
 #[test]
 fn tap_flushes_on_its_own_once_staging_fills() {
     let ring = Arc::new(PcmRing::new());
-    let mut tap = PcmTap::new(Arc::clone(&ring), 1, 48_000, None);
+    let mut tap = PcmTap::new(
+        Arc::clone(&ring),
+        1,
+        48_000,
+        None,
+        enabled_demand(true, false),
+    );
     for i in 0..FLUSH_FRAMES {
         tap.push_sample(0, i as f32);
     }
@@ -443,4 +471,244 @@ fn activity_does_not_consume_or_modify_samples() {
     assert_eq!(after.sample_rate, before.sample_rate);
     assert_eq!(&after.left[..after.len], &before.left[..before.len]);
     assert_eq!(&after.right[..after.len], &before.right[..before.len]);
+}
+
+#[test]
+fn each_analysis_consumer_advances_only_while_requested() {
+    for (pcm, lufs) in [(false, false), (true, false), (false, true), (true, true)] {
+        let ring = Arc::new(PcmRing::new());
+        let meter = Arc::new(LufsMeter::new());
+        let demand = Arc::new(AnalysisDemand::new());
+        demand.set(pcm, lufs);
+        let mut tap = PcmTap::new(
+            Arc::clone(&ring),
+            2,
+            48_000,
+            Some(Arc::clone(&meter)),
+            demand,
+        );
+        assert_eq!(tap.needs_samples(), pcm || lufs);
+        let before = meter.latest();
+        for frame in 0..4800 {
+            let sample = if frame % 2 == 0 { 0.25 } else { -0.25 };
+            tap.push_sample(0, sample);
+            tap.push_sample(1, sample * 0.5);
+        }
+        tap.flush();
+        let mut snapshot = PcmSnapshot::default();
+        ring.snapshot(&mut snapshot);
+        assert_eq!(snapshot.len, if pcm { 4800 } else { 0 });
+        if pcm {
+            assert_eq!(&snapshot.left[..4], &[0.25, -0.25, 0.25, -0.25]);
+            assert_eq!(&snapshot.right[..4], &[0.125, -0.125, 0.125, -0.125]);
+        }
+        let after = meter.latest();
+        if lufs {
+            assert!(after.left_mean_square > 0.01);
+            assert!((after.right_mean_square / after.left_mean_square - 0.25).abs() < 1.0e-5);
+            assert!(after.generation > before.generation);
+        } else {
+            assert_eq!(after.left_mean_square, 0.0);
+            assert_eq!(after.right_mean_square, 0.0);
+            assert_eq!(after.generation, before.generation);
+        }
+    }
+}
+
+#[test]
+fn half_frame_disable_discards_a_full_pending_batch_before_publication() {
+    let ring = Arc::new(PcmRing::new());
+    let demand = enabled_demand(true, false);
+    let mut tap = PcmTap::new(Arc::clone(&ring), 2, 48_000, None, Arc::clone(&demand));
+    for _ in 0..FLUSH_FRAMES - 1 {
+        tap.push_sample(0, 0.75);
+        tap.push_sample(1, -0.5);
+    }
+    tap.push_sample(0, 0.9);
+    assert_eq!(demand.set(false, false), (true, false));
+    tap.push_sample(1, -0.9);
+    assert!(!tap.needs_samples());
+    tap.flush();
+    let mut snapshot = PcmSnapshot::default();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(snapshot.len, 0);
+
+    demand.set(true, false);
+    assert!(tap.needs_samples());
+    // An orphaned right sample cannot complete the frame from before disabling.
+    tap.push_sample(1, 99.0);
+    tap.push_sample(0, 0.25);
+    tap.push_sample(1, -0.125);
+    tap.flush();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(&snapshot.left[..snapshot.len], &[0.25]);
+    assert_eq!(&snapshot.right[..snapshot.len], &[-0.125]);
+}
+
+#[test]
+fn quick_off_on_without_samples_resumes_with_fresh_pcm_and_lufs() {
+    let ring = Arc::new(PcmRing::new());
+    let meter = Arc::new(LufsMeter::new());
+    let demand = enabled_demand(true, true);
+    let mut tap = PcmTap::new(
+        Arc::clone(&ring),
+        2,
+        48_000,
+        Some(Arc::clone(&meter)),
+        Arc::clone(&demand),
+    );
+    for frame in 0..4800 {
+        let sample = if frame % 2 == 0 { 0.5 } else { -0.5 };
+        tap.push_sample(0, sample);
+        tap.push_sample(1, sample);
+    }
+    tap.flush();
+    let before = meter.latest();
+    assert!(before.left_mean_square > 0.01);
+    tap.push_sample(0, 0.9);
+    tap.push_sample(1, 0.9);
+    tap.push_sample(0, 0.9);
+    demand.set(false, false);
+    demand.set(true, true);
+    assert!(tap.needs_samples());
+    let mut snapshot = PcmSnapshot::default();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(snapshot.len, 0);
+    let cleared = meter.latest();
+    assert_eq!(cleared.left_mean_square, 0.0);
+    assert_eq!(cleared.right_mean_square, 0.0);
+    assert!(cleared.generation > before.generation);
+    tap.push_sample(1, 0.9);
+    for _ in 0..2400 {
+        tap.push_sample(0, 0.0);
+        tap.push_sample(1, 0.0);
+    }
+    tap.flush();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(snapshot.len, 2400);
+    assert!(
+        snapshot.left[..snapshot.len]
+            .iter()
+            .all(|&sample| sample == 0.0)
+    );
+    assert!(
+        snapshot.right[..snapshot.len]
+            .iter()
+            .all(|&sample| sample == 0.0)
+    );
+    let resumed = meter.latest();
+    assert_eq!(resumed.left_mean_square, 0.0);
+    assert_eq!(resumed.right_mean_square, 0.0);
+    assert!(resumed.generation > cleared.generation);
+}
+
+#[test]
+fn changing_one_consumer_preserves_the_other_published_history() {
+    let ring = Arc::new(PcmRing::new());
+    let meter = Arc::new(LufsMeter::new());
+    let demand = enabled_demand(true, true);
+    let mut tap = PcmTap::new(
+        Arc::clone(&ring),
+        2,
+        48_000,
+        Some(Arc::clone(&meter)),
+        Arc::clone(&demand),
+    );
+    for frame in 0..2400 {
+        let sample = if frame % 2 == 0 { 0.25 } else { -0.25 };
+        tap.push_sample(0, sample);
+        tap.push_sample(1, sample * 0.5);
+    }
+    tap.flush();
+    let reading = meter.latest();
+    assert!(reading.left_mean_square > 0.01);
+    assert_eq!(demand.set(false, true), (true, false));
+    assert!(tap.needs_samples());
+    let retained = meter.latest();
+    assert_eq!(retained.generation, reading.generation);
+    assert_eq!(retained.left_mean_square, reading.left_mean_square);
+    assert_eq!(retained.right_mean_square, reading.right_mean_square);
+    let mut snapshot = PcmSnapshot::default();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(snapshot.len, 0);
+
+    demand.set(true, true);
+    tap.push_sample(0, 0.25);
+    tap.push_sample(1, -0.125);
+    tap.flush();
+    tap.push_sample(0, 0.8);
+    tap.push_sample(1, 0.8);
+    assert_eq!(demand.set(true, false), (false, true));
+    assert!(tap.needs_samples());
+    assert_eq!(meter.latest().left_mean_square, 0.0);
+    assert_eq!(demand.set(true, false), (false, false));
+    assert!(tap.needs_samples());
+    tap.push_sample(0, 0.5);
+    tap.push_sample(1, -0.25);
+    tap.flush();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(&snapshot.left[..snapshot.len], &[0.25, 0.5]);
+    assert_eq!(&snapshot.right[..snapshot.len], &[-0.125, -0.25]);
+}
+
+#[test]
+fn seek_reset_drops_partial_stereo_frame_and_meter_filter_tail() {
+    let ring = Arc::new(PcmRing::new());
+    let meter = Arc::new(LufsMeter::new());
+    let mut tap = PcmTap::new(
+        Arc::clone(&ring),
+        2,
+        48_000,
+        Some(Arc::clone(&meter)),
+        enabled_demand(true, true),
+    );
+    for _ in 0..3000 {
+        tap.push_sample(0, 0.75);
+        tap.push_sample(1, -0.75);
+    }
+    tap.push_sample(0, 0.9);
+    tap.reset();
+    assert_eq!(meter.latest().left_mean_square, 0.0);
+    tap.push_sample(1, 0.9);
+    for _ in 0..2400 {
+        tap.push_sample(0, 0.0);
+        tap.push_sample(1, 0.0);
+    }
+    tap.flush();
+    let mut snapshot = PcmSnapshot::default();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(snapshot.len, 2400);
+    assert!(
+        snapshot.left[..snapshot.len]
+            .iter()
+            .all(|&sample| sample == 0.0)
+    );
+    assert!(
+        snapshot.right[..snapshot.len]
+            .iter()
+            .all(|&sample| sample == 0.0)
+    );
+    assert_eq!(meter.latest().left_mean_square, 0.0);
+    assert_eq!(meter.latest().right_mean_square, 0.0);
+}
+
+#[test]
+fn multichannel_frames_keep_the_first_two_channels_and_resynchronize_on_enable() {
+    let ring = Arc::new(PcmRing::new());
+    let demand = enabled_demand(false, false);
+    let mut tap = PcmTap::new(Arc::clone(&ring), 4, 48_000, None, Arc::clone(&demand));
+    tap.push_sample(0, 99.0);
+    demand.set(true, false);
+    // Enabling after channel zero must not combine disabled and enabled samples.
+    for channel in 1..4 {
+        tap.push_sample(channel, 99.0);
+    }
+    for (channel, sample) in [(0, 0.25), (1, -0.5), (2, 90.0), (3, 91.0)] {
+        tap.push_sample(channel, sample);
+    }
+    tap.flush();
+    let mut snapshot = PcmSnapshot::default();
+    ring.snapshot(&mut snapshot);
+    assert_eq!(&snapshot.left[..snapshot.len], &[0.25]);
+    assert_eq!(&snapshot.right[..snapshot.len], &[-0.5]);
 }

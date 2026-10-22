@@ -592,7 +592,8 @@ impl App {
         let cache_lease = cache_maintenance.protect(path.clone());
         let api = self.api.clone();
         let cookie = self.api.session_cookie().map(str::to_owned);
-        let (eq_params, pcm_ring, lufs_meter) = self.playback.audio_player.source_context();
+        let (eq_params, pcm_ring, lufs_meter, analysis_demand) =
+            self.playback.audio_player.source_context();
         let (progress_tx, progress_rx) = see::sync::channel((0, 0));
         let (tx, rx) = mpsc::channel();
         let wake = self.api.wake_signal();
@@ -609,7 +610,13 @@ impl App {
                     .await;
                     if let Ok(Ok(decoder)) = decoded {
                         let total_duration = decoder.total_duration();
-                        let source = make_prepared_source(decoder, eq_params, pcm_ring, lufs_meter);
+                        let source = make_prepared_source(
+                            decoder,
+                            eq_params,
+                            pcm_ring,
+                            lufs_meter,
+                            analysis_demand,
+                        );
                         return Ok(PreparedPlayback {
                             source,
                             stream_handle: None,
@@ -660,7 +667,8 @@ impl App {
                 .map_err(|err| err.to_string())?;
                 cancellation.0 = None;
                 let total_duration = decoder.total_duration();
-                let source = make_prepared_source(decoder, eq_params, pcm_ring, lufs_meter);
+                let source =
+                    make_prepared_source(decoder, eq_params, pcm_ring, lufs_meter, analysis_demand);
                 Ok(PreparedPlayback {
                     source,
                     stream_handle: Some(stream_handle),

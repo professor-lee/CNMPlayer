@@ -7,6 +7,7 @@ use crate::tmplayer::app::state::EQ_BANDS;
 use crate::tmplayer::app::state::EQ_FREQS_HZ;
 use crate::tmplayer::app::state::EqSettings;
 use crate::tmplayer::audio::lufs_meter::LufsMeter;
+use crate::tmplayer::audio::pcm_tap::AnalysisDemand;
 use crate::tmplayer::audio::pcm_tap::PcmRing;
 use crate::tmplayer::audio::pcm_tap::PcmTap;
 use anyhow::Result;
@@ -46,6 +47,7 @@ pub(super) struct AudioPlayer {
     pcm_ring: Arc<PcmRing>,
     /// 400ms Momentary LUFS 计量器；`EqSource` 按批写入，小窗口窄窗读取。
     lufs_meter: Arc<LufsMeter>,
+    analysis_demand: Arc<AnalysisDemand>,
 }
 
 pub(super) struct PreparedSource {
@@ -57,11 +59,12 @@ pub(super) fn make_prepared_source<S>(
     eq_params: Arc<EqParams>,
     pcm_ring: Arc<PcmRing>,
     lufs_meter: Arc<LufsMeter>,
+    analysis_demand: Arc<AnalysisDemand>,
 ) -> PreparedSource
 where
     S: Source<Item = f32> + Send + 'static,
 {
-    let source = EqSource::new(decoder, eq_params, pcm_ring, lufs_meter);
+    let source = EqSource::new(decoder, eq_params, pcm_ring, lufs_meter, analysis_demand);
     PreparedSource {
         source: Box::new(source),
     }
@@ -307,6 +310,7 @@ impl AudioPlayer {
             cache_maintenance,
             cache_lease: None,
             lufs_meter: Arc::new(LufsMeter::new()),
+            analysis_demand: Arc::new(AnalysisDemand::new()),
         };
 
         Ok(player)
@@ -325,6 +329,17 @@ impl AudioPlayer {
 
     pub(super) fn lufs_meter(&self) -> Arc<LufsMeter> {
         self.lufs_meter.clone()
+    }
+
+    pub(super) fn set_analysis(&self, pcm: bool, lufs: bool) {
+        let (pcm_changed, lufs_changed) = self.analysis_demand.set(pcm, lufs);
+        // Invalidate displays immediately, even when a paused source cannot poll demand.
+        if pcm_changed {
+            self.pcm_ring.reset();
+        }
+        if lufs_changed {
+            self.lufs_meter.reset();
+        }
     }
 
     pub(super) fn play_prepared(
@@ -349,11 +364,19 @@ impl AudioPlayer {
         self.cache_maintenance.clone()
     }
 
-    pub(super) fn source_context(&self) -> (Arc<EqParams>, Arc<PcmRing>, Arc<LufsMeter>) {
+    pub(super) fn source_context(
+        &self,
+    ) -> (
+        Arc<EqParams>,
+        Arc<PcmRing>,
+        Arc<LufsMeter>,
+        Arc<AnalysisDemand>,
+    ) {
         (
             self.eq_params.clone(),
             self.pcm_ring.clone(),
             self.lufs_meter.clone(),
+            self.analysis_demand.clone(),
         )
     }
 
@@ -602,6 +625,7 @@ where
         params: Arc<EqParams>,
         pcm_ring: Arc<PcmRing>,
         lufs_meter: Arc<LufsMeter>,
+        analysis_demand: Arc<AnalysisDemand>,
     ) -> Self {
         let channels = inner.channels();
         let sample_rate = inner.sample_rate().get();
@@ -625,6 +649,7 @@ where
                 channels.get() as usize,
                 sample_rate,
                 Some(lufs_meter),
+                analysis_demand,
             ),
         }
     }
