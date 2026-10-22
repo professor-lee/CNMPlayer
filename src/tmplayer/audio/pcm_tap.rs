@@ -355,11 +355,21 @@ impl AnalysisDemand {
     }
 
     fn set_consumer(epoch: &AtomicU64, enabled: bool) -> bool {
-        epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                ((current & 1 != 0) != enabled).then(|| current.wrapping_add(1))
-            })
-            .is_ok()
+        let mut current = epoch.load(Ordering::Acquire);
+        loop {
+            if (current & 1 != 0) == enabled {
+                return false;
+            }
+            match epoch.compare_exchange_weak(
+                current,
+                current.wrapping_add(1),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
