@@ -1132,10 +1132,28 @@ fn draw_about_border_flow(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// 彩蛋激活后的形象：在内容区居中，点击可播放果冻动画。
+/// 彩蛋激活后的内容：背景弹幕铺满内容区，形象居中压在上面，点击可播放果冻动画。
 #[cfg(feature = "easter-egg")]
 fn draw_about_mascot(frame: &mut Frame, app: &mut App, inner: Rect) {
-    use crate::render::{mascot, mascot_frames};
+    use crate::render::{danmaku, mascot, mascot_frames};
+
+    if let Some(started_at) = app.about_egg.danmaku_started_at {
+        let palette = danmaku::Palette {
+            base: app.theme.color_subtext(),
+            accents: [
+                app.theme.color_accent(),
+                app.theme.color_accent2(),
+                app.theme.color_accent3(),
+            ],
+        };
+        danmaku::draw(
+            frame.buffer_mut(),
+            inner,
+            app.about_egg.danmaku_seed,
+            started_at.elapsed(),
+            palette,
+        );
+    }
 
     let frame_data = match app.about_egg.jelly_started_at {
         Some(started_at) => mascot::jelly_frame(started_at.elapsed()),
@@ -1156,10 +1174,12 @@ fn draw_about_mascot(frame: &mut Frame, app: &mut App, inner: Rect) {
         return;
     }
 
-    frame.render_widget(
-        Paragraph::new(mascot::frame_lines(frame_data, app.theme.color_surface()))
-            .style(Style::default().bg(app.theme.color_surface())),
+    mascot::draw_frame(
+        frame_data,
+        frame.buffer_mut(),
         draw_rect,
+        app.theme.color_subtext(),
+        app.theme.color_surface(),
     );
 }
 
@@ -1317,7 +1337,9 @@ fn about_braille_lines(width: usize, height: usize) -> Vec<Line<'static>> {
         .max()
         .unwrap_or(0);
     let canvas_w = selected.width.max(rows_w);
-    let canvas_h = selected.height.max(rows.len());
+    // 垂直方向按去掉首尾空行后的实际行数居中：素材声明的 height 含留白，
+    // 拿它算会让形象偏上（68×20 内容区里实测上 1 行、下 8 行空白）。
+    let canvas_h = rows.len();
 
     let offset_x = width.saturating_sub(canvas_w) / 2;
     let offset_y = height.saturating_sub(canvas_h) / 2;

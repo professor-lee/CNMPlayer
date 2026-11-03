@@ -51,7 +51,7 @@ fn heart_hit_rect_is_absent_when_the_column_is_blank() {
 #[test]
 fn download_hit_rect_sits_one_gap_left_of_the_heart() {
     let area = row(5, 20);
-    let (download, heart) = right_suffix_hits(area, HEART_UNLIKED, Some('\u{ec74}'));
+    let (download, heart) = right_suffix_hits(area, HEART_UNLIKED, Some('\u{f019}'));
     let download = download.expect("宽度够时应登记下载按钮");
     let heart = heart.expect("爱心格");
 
@@ -164,7 +164,7 @@ fn control_hit_rects_skip_tokens_clipped_by_a_narrow_row() {
 /// （留在头段就会被当成标题上色——图标颜色静默回归的根因）。
 #[test]
 fn left_tail_peels_the_glyph_out_of_the_head() {
-    let glyph = '\u{ec74}';
+    let glyph = '\u{f019}';
     for heart in [HEART_LIKED, HEART_UNLIKED] {
         let suffix = format!("{glyph} {heart}");
         let line = compose_left_right_line("Title", &suffix, 20);
@@ -195,7 +195,7 @@ fn left_tail_peels_the_glyph_out_of_the_head() {
 #[test]
 fn left_tail_handles_missing_glyph_and_missing_heart() {
     let heart = HEART_UNLIKED;
-    let glyph = '\u{ec74}';
+    let glyph = '\u{f019}';
 
     let heart_only = compose_left_right_line("Title", heart, 20);
     let split = split_left_tail(&heart_only, heart, Some(glyph));

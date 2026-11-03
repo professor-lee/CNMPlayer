@@ -21,6 +21,8 @@ pub(crate) fn mark_animation_end_frame(
 }
 
 #[cfg(feature = "easter-egg")]
+pub mod danmaku;
+#[cfg(feature = "easter-egg")]
 pub mod mascot;
 #[cfg(feature = "easter-egg")]
 pub mod mascot_frames;

@@ -5,7 +5,7 @@
 /// - eapi: MD5 签名 + AES-128-ECB
 /// - linuxapi: AES-128-ECB
 use crate::error::{NcmError, Result};
-use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, BlockModeEncrypt, KeyInit, KeyIvInit};
+use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyInit, KeyIvInit, block_padding::Pkcs7};
 use md5::{Digest, Md5};
 use rand::RngExt;
 use rsa::traits::PublicKeyParts;

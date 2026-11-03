@@ -1,7 +1,9 @@
 use crate::render::mascot_frames::{self, MascotFrame};
-use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Color;
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
 
 /// 蓄力：内容区被半格噪点逐个填满。
 pub const CHARGE_DURATION: Duration = Duration::from_millis(1200);
@@ -36,20 +38,31 @@ pub fn jelly_frame(elapsed: Duration) -> &'static MascotFrame {
     &mascot_frames::FRAMES[idx]
 }
 
-/// 把一帧转成可直接交给 `Paragraph` 的文本行。
+/// 把一帧直接写进 `buf` 的 `area`（左上对齐，超出部分裁掉）。
 ///
 /// 帧里的颜色是 256 色索引，交由终端按自身调色板呈现；[`mascot_frames::NO_COLOR`]
-/// 表示该槽位不着色，此时回退到调用方给的 `fallback_bg`（弹窗底色）。
-pub fn frame_lines(frame: &MascotFrame, fallback_bg: Color) -> Vec<Line<'static>> {
+/// 表示该槽位不着色，此时回退到调用方给的 `fallback_fg` / `fallback_bg`（弹窗配色）。
+///
+/// 唯一例外：背景不着色的空格视为透明、整格不写，下层（背景弹幕）因此能从
+/// 形象的空隙里透出来。有字形的格照常整格覆盖，形象本身不会被弹幕穿透。
+pub fn draw_frame(
+    frame: &MascotFrame,
+    buf: &mut Buffer,
+    area: Rect,
+    fallback_fg: Color,
+    fallback_bg: Color,
+) {
     let width = frame.width as usize;
     if width == 0 {
-        return Vec::new();
+        return;
     }
 
-    let mut lines = Vec::with_capacity(frame.height as usize);
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
-
     for (idx, ch) in frame.chars.chars().enumerate() {
+        let col = (idx % width) as u16;
+        let row = (idx / width) as u16;
+        if col >= area.width || row >= area.height {
+            continue;
+        }
         let fg = frame
             .fg
             .get(idx)
@@ -60,23 +73,27 @@ pub fn frame_lines(frame: &MascotFrame, fallback_bg: Color) -> Vec<Line<'static>
             .get(idx)
             .copied()
             .unwrap_or(mascot_frames::NO_COLOR);
-
-        let mut style = Style::default().bg(indexed_or(bg, fallback_bg));
-        if fg != mascot_frames::NO_COLOR {
-            style = style.fg(Color::Indexed(fg as u8));
+        if ch == ' ' && bg == mascot_frames::NO_COLOR {
+            continue;
         }
-        spans.push(Span::styled(ch.to_string(), style));
 
-        if spans.len() == width {
-            lines.push(Line::from(std::mem::take(&mut spans)));
-            spans.reserve(width);
+        let (x, y) = (area.x + col, area.y + row);
+        // 下层若有宽字符（弹幕里的 CJK）的首列紧挨在左边，这一格正是它的第二列：
+        // 不拆掉它，终端会继续把整个宽字符画在这里，盖住形象的字形。
+        if x > 0
+            && let Some(left) = buf.cell_mut((x - 1, y))
+            && left.symbol().width() > 1
+        {
+            left.set_symbol(" ");
         }
+        let Some(cell) = buf.cell_mut((x, y)) else {
+            continue;
+        };
+        let mut sym = [0u8; 4];
+        cell.set_symbol(ch.encode_utf8(&mut sym))
+            .set_fg(indexed_or(fg, fallback_fg))
+            .set_bg(indexed_or(bg, fallback_bg));
     }
-
-    if !spans.is_empty() {
-        lines.push(Line::from(spans));
-    }
-    lines
 }
 
 /// 判断某格在蓄力进度 `progress`（0..=1）时是否已被填充。
@@ -123,7 +140,7 @@ fn vivid_color(h: u64) -> Color {
 }
 
 /// 整数散列：噪点每帧要算数千次，避免浮点噪声函数的开销。
-fn hash3(x: u64, y: u64, seed: u64) -> u64 {
+pub(crate) fn hash3(x: u64, y: u64, seed: u64) -> u64 {
     let mut h = x
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add(y.wrapping_mul(0xC2B2_AE3D_27D4_EB4F))

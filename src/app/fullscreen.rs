@@ -47,6 +47,11 @@ pub(crate) struct FullscreenRuntimeSnapshot {
 }
 
 impl App {
+    pub(crate) fn set_fullscreen_context(&mut self, fullscreen: bool) {
+        self.fullscreen_context = fullscreen;
+        self.sync_on_change();
+    }
+
     pub(crate) async fn fullscreen_tick_playback(&mut self) {
         self.tick_audio().await;
         self.tick_cover_fetch();
@@ -57,6 +62,7 @@ impl App {
         self.tick_like_sync();
         // 下载结果与图标状态同理（全屏页也能发起下载）。
         self.tick_download();
+        self.sync_analysis_demand();
         super::trim_allocator_periodically();
     }
 
@@ -326,6 +332,7 @@ impl App {
             })
             .unwrap_or_else(|error| log::error!("apply EQ: {error:#}"));
         self.config = config;
+        self.sync_on_change();
         self.refresh_download_root();
         self.persist_config();
         self.sync_mpris_exposure();

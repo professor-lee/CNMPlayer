@@ -155,6 +155,8 @@ pub(crate) struct App {
     /// 最近一次同步到的终端尺寸（单元格）。
     term_width: u16,
     term_height: u16,
+    /// Fullscreen owns analysis demand even while drawing a host snapshot.
+    fullscreen_context: bool,
     /// 当前生效的小窗口模式；None 表示普通内容页或未启用小窗口显示。
     pub(crate) small_window_mode: Option<SmallWindowMode>,
     /// 扁窗高度恰为播放栏高度时，Alt+X 切换的当前目标面板。
@@ -309,6 +311,7 @@ impl App {
             player_bar_hits: PlayerBarHitTargets::default(),
             term_width: 0,
             term_height: 0,
+            fullscreen_context: false,
             small_window_mode: None,
             flat_panel: FlatPanel::Player,
             flat_switch_anim: None,
@@ -466,6 +469,7 @@ impl App {
         trim_allocator_periodically();
         self.tick_startup_init().await;
         self.tick_startup_loading();
+        self.sync_analysis_demand();
         #[cfg(feature = "easter-egg")]
         self.tick_about_easter_egg();
 
@@ -483,6 +487,7 @@ impl App {
 
             self.qr_last_poll_at = Some(now);
             self.check_qr_status_and_login().await;
+            self.sync_analysis_demand();
         }
     }
 

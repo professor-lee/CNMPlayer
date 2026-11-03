@@ -25,7 +25,7 @@ to a terminal UI.
 
 ## Development environment
 
-Rust 1.95 or newer; the repository pins 1.95.0 in `rust-toolchain.toml`. The root crate (`cnmplayer`) uses edition 2024; the vendored `ncm-api` crate uses edition 2021.
+Rust 1.95 or newer. `rust-toolchain.toml` requests the current stable toolchain, so with rustup `cargo` uses the latest installed stable. The root crate (`cnmplayer`) and the vendored `ncm-api` crate both use edition 2024.
 
 The locked dependencies require Rust 1.95: `compio-driver 0.12.4` uses [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html), stabilized in 1.95. Dependency manifest declarations suggested 1.90, but an actual 1.90 build failed at `compio-buf 0.8.3`'s `MaybeUninit` slice API and a 1.93 build failed at `cfg_select!`. Edition 2024 alone would only require 1.85; neither edition nor incomplete manifest declarations establish the real dependency MSRV. The root and vendored crate share one workspace lockfile.
 
@@ -104,7 +104,7 @@ with `--no-default-features` to drop it.
 Formatting is `rustfmt`; the repository pins its own configuration:
 
 - root `.rustfmt.toml`: `max_width = 100`, `edition = "2024"`;
-- `ncm-api-rs/rustfmt.toml`: `edition = "2021"`, `max_width = 100`,
+- `ncm-api-rs/rustfmt.toml`: `edition = "2024"`, `max_width = 100`,
   `use_field_init_shorthand = true` — run
   `cargo fmt --manifest-path ncm-api-rs/Cargo.toml` when you touch the vendored
   crate.
@@ -116,8 +116,8 @@ run it with `-D warnings`; `ncm-api-rs/clippy.toml` relaxes
 CI (`.github/workflows/ci.yml`) runs on pull requests targeting `main` / `develop` and on pushes to `develop`. Every job runs on `ubuntu-24.04`; `build-and-test` and `quality` install the system dependencies listed above:
 
 - `build-and-test` runs `cargo check` and `cargo test`
-  (`--workspace --locked --all-targets`) across a four-way matrix: Rust 1.95.0
-  and stable, each with default features and with `--no-default-features`.
+  (`--workspace --locked --all-targets`) on stable, with default features and
+  with `--no-default-features`.
 - `quality` runs on stable with the `rustfmt` and `clippy` components:
   `cargo fmt --all -- --check` and
   `cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check`, then three
@@ -130,20 +130,19 @@ CI (`.github/workflows/ci.yml`) runs on pull requests targeting `main` / `develo
 The equivalent local commands, job by job:
 
 ```bash
-# build-and-test: default features and --no-default-features, once per toolchain.
-# Plain `cargo` already selects the pinned 1.95.0; use `cargo +stable` for the
-# stable half of the matrix.
+# build-and-test: default features and --no-default-features on the stable
+# toolchain selected by rust-toolchain.toml.
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked --all-targets
 cargo check --workspace --locked --all-targets --no-default-features
 cargo test --workspace --locked --all-targets --no-default-features
 
 # quality (stable only)
-cargo +stable fmt --all -- --check
-cargo +stable fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
-cargo +stable clippy --locked --all-targets --all-features -- -D warnings
-cargo +stable clippy --locked --all-targets --no-default-features -- -D warnings
-cargo +stable clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
+cargo fmt --all -- --check
+cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --no-default-features -- -D warnings
+cargo clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
 
 # vendored-tests
 cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets

@@ -47,8 +47,9 @@ impl UiIcons {
         "\u{f01e}"
     }
 
+    /// Font Awesome download glyph (Nerd Font U+F019).
     pub const fn download(self) -> char {
-        '\u{ec74}'
+        '\u{f019}'
     }
 
     pub const fn downloaded(self) -> char {

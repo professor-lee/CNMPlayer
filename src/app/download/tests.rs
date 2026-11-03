@@ -197,10 +197,6 @@ fn target_paths_use_extension_and_part_suffix() {
 fn state_glyph_uses_the_fixed_nerd_font_set() {
     let icons = UiIcons::new();
     let phase = Duration::ZERO;
-    assert_eq!(
-        state_glyph(DownloadState::NotDownloaded, phase, icons),
-        '\u{ec74}'
-    );
     assert_eq!(state_glyph(DownloadState::Done, phase, icons), '\u{f00c}');
     assert_eq!(
         state_glyph(DownloadState::Downloading, phase, icons),

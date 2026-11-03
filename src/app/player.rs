@@ -7,6 +7,7 @@ use crate::tmplayer::app::state::EQ_BANDS;
 use crate::tmplayer::app::state::EQ_FREQS_HZ;
 use crate::tmplayer::app::state::EqSettings;
 use crate::tmplayer::audio::lufs_meter::LufsMeter;
+use crate::tmplayer::audio::pcm_tap::AnalysisDemand;
 use crate::tmplayer::audio::pcm_tap::PcmRing;
 use crate::tmplayer::audio::pcm_tap::PcmTap;
 use anyhow::Result;
@@ -25,7 +26,7 @@ use std::num::NonZero;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -46,6 +47,7 @@ pub(super) struct AudioPlayer {
     pcm_ring: Arc<PcmRing>,
     /// 400ms Momentary LUFS 计量器；`EqSource` 按批写入，小窗口窄窗读取。
     lufs_meter: Arc<LufsMeter>,
+    analysis_demand: Arc<AnalysisDemand>,
 }
 
 pub(super) struct PreparedSource {
@@ -57,11 +59,12 @@ pub(super) fn make_prepared_source<S>(
     eq_params: Arc<EqParams>,
     pcm_ring: Arc<PcmRing>,
     lufs_meter: Arc<LufsMeter>,
+    analysis_demand: Arc<AnalysisDemand>,
 ) -> PreparedSource
 where
     S: Source<Item = f32> + Send + 'static,
 {
-    let source = EqSource::new(decoder, eq_params, pcm_ring, lufs_meter);
+    let source = EqSource::new(decoder, eq_params, pcm_ring, lufs_meter, analysis_demand);
     PreparedSource {
         source: Box::new(source),
     }
@@ -307,6 +310,7 @@ impl AudioPlayer {
             cache_maintenance,
             cache_lease: None,
             lufs_meter: Arc::new(LufsMeter::new()),
+            analysis_demand: Arc::new(AnalysisDemand::new()),
         };
 
         Ok(player)
@@ -325,6 +329,17 @@ impl AudioPlayer {
 
     pub(super) fn lufs_meter(&self) -> Arc<LufsMeter> {
         self.lufs_meter.clone()
+    }
+
+    pub(super) fn set_analysis(&self, pcm: bool, lufs: bool) {
+        let (pcm_changed, lufs_changed) = self.analysis_demand.set(pcm, lufs);
+        // Invalidate displays immediately, even when a paused source cannot poll demand.
+        if pcm_changed {
+            self.pcm_ring.reset();
+        }
+        if lufs_changed {
+            self.lufs_meter.reset();
+        }
     }
 
     pub(super) fn play_prepared(
@@ -349,11 +364,19 @@ impl AudioPlayer {
         self.cache_maintenance.clone()
     }
 
-    pub(super) fn source_context(&self) -> (Arc<EqParams>, Arc<PcmRing>, Arc<LufsMeter>) {
+    pub(super) fn source_context(
+        &self,
+    ) -> (
+        Arc<EqParams>,
+        Arc<PcmRing>,
+        Arc<LufsMeter>,
+        Arc<AnalysisDemand>,
+    ) {
         (
             self.eq_params.clone(),
             self.pcm_ring.clone(),
             self.lufs_meter.clone(),
+            self.analysis_demand.clone(),
         )
     }
 
@@ -499,38 +522,48 @@ impl Drop for AudioPlayer {
 }
 
 pub(super) struct EqParams {
-    bands_db_x10: [AtomicI32; EQ_BANDS],
+    bands_db_x10: Mutex<[i32; EQ_BANDS]>,
+    revision: AtomicU64,
 }
 
 impl EqParams {
     fn new() -> Self {
         Self {
-            bands_db_x10: std::array::from_fn(|_| AtomicI32::new(0)),
+            bands_db_x10: Mutex::new([0; EQ_BANDS]),
+            revision: AtomicU64::new(0),
         }
     }
 
     fn set_from(&self, eq: EqSettings) {
-        let eq = eq.clamp();
-        for (idx, value) in eq.bands_db.iter().enumerate() {
-            self.bands_db_x10[idx].store((value * 10.0).round() as i32, Ordering::Relaxed);
+        let next = eq
+            .clamp()
+            .bands_db
+            .map(|value| (value * 10.0).round() as i32);
+        let mut bands = self.bands_db_x10.lock();
+        if *bands != next {
+            *bands = next;
+            self.revision.fetch_add(1, Ordering::Release);
         }
-    }
-
-    fn load_db(&self) -> [f32; EQ_BANDS] {
-        std::array::from_fn(|idx| self.bands_db_x10[idx].load(Ordering::Relaxed) as f32 / 10.0)
-    }
-
-    fn load_db_x10(&self) -> [i32; EQ_BANDS] {
-        std::array::from_fn(|idx| self.bands_db_x10[idx].load(Ordering::Relaxed))
     }
 }
 
+#[derive(Clone, Copy)]
 struct BiquadCoeffs {
     b0: f32,
     b1: f32,
     b2: f32,
     a1: f32,
     a2: f32,
+}
+
+impl BiquadCoeffs {
+    const IDENTITY: Self = Self {
+        b0: 1.0,
+        b1: 0.0,
+        b2: 0.0,
+        a1: 0.0,
+        a2: 0.0,
+    };
 }
 
 #[derive(Default, Clone, Copy)]
@@ -585,9 +618,11 @@ where
 {
     inner: S,
     channels: NonZero<u16>,
-    idx: usize,
+    channel: usize,
     params: Arc<EqParams>,
-    last_db_x10: [i32; EQ_BANDS],
+    revision: u64,
+    eq_active: bool,
+    tap_active: bool,
     coeffs: [BiquadCoeffs; EQ_BANDS],
     states: Vec<BiquadState>,
     tap: PcmTap,
@@ -602,22 +637,36 @@ where
         params: Arc<EqParams>,
         pcm_ring: Arc<PcmRing>,
         lufs_meter: Arc<LufsMeter>,
+        analysis_demand: Arc<AnalysisDemand>,
     ) -> Self {
         let channels = inner.channels();
         let sample_rate = inner.sample_rate().get();
-        let fs = sample_rate as f32;
-        let eq_db = params.load_db();
-        let last_db_x10 = params.load_db_x10();
-        let coeffs =
-            std::array::from_fn(|idx| biquad_peaking(fs, EQ_FREQS_HZ[idx], 1.0, eq_db[idx]));
+        let bands = params.bands_db_x10.lock();
+        let revision = params.revision.load(Ordering::Acquire);
+        let eq_active = bands.iter().any(|&gain| gain != 0);
+        let coeffs = std::array::from_fn(|band| {
+            if eq_active {
+                biquad_peaking(
+                    sample_rate as f32,
+                    EQ_FREQS_HZ[band],
+                    1.0,
+                    bands[band] as f32 / 10.0,
+                )
+            } else {
+                BiquadCoeffs::IDENTITY
+            }
+        });
+        drop(bands);
         let states = vec![BiquadState::default(); (channels.get() as usize) * EQ_BANDS];
 
         Self {
             inner,
             channels,
-            idx: 0,
+            channel: 0,
             params,
-            last_db_x10,
+            revision,
+            eq_active,
+            tap_active: false,
             coeffs,
             states,
             tap: PcmTap::new(
@@ -625,12 +674,32 @@ where
                 channels.get() as usize,
                 sample_rate,
                 Some(lufs_meter),
+                analysis_demand,
             ),
         }
     }
 
-    fn state_index(&self, channel: usize, band: usize) -> usize {
-        channel * EQ_BANDS + band
+    fn refresh_eq(&mut self) {
+        if self.params.revision.load(Ordering::Acquire) == self.revision {
+            return;
+        }
+        // The UI may be publishing a new curve. Never wait on the audio thread;
+        // retry at the next complete frame instead of reading a mixed curve.
+        let Some(bands) = self.params.bands_db_x10.try_lock() else {
+            return;
+        };
+        self.revision = self.params.revision.load(Ordering::Acquire);
+        let active = bands.iter().any(|&gain| gain != 0);
+        if active != self.eq_active {
+            self.states.fill(BiquadState::default());
+        }
+        self.eq_active = active;
+        if active {
+            let rate = self.inner.sample_rate().get() as f32;
+            self.coeffs = std::array::from_fn(|band| {
+                biquad_peaking(rate, EQ_FREQS_HZ[band], 1.0, bands[band] as f32 / 10.0)
+            });
+        }
     }
 }
 
@@ -641,28 +710,30 @@ where
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let current = self.params.load_db_x10();
-        if current != self.last_db_x10 {
-            let fs = self.inner.sample_rate().get() as f32;
-            let eq_db = self.params.load_db();
-            self.coeffs =
-                std::array::from_fn(|idx| biquad_peaking(fs, EQ_FREQS_HZ[idx], 1.0, eq_db[idx]));
-            self.last_db_x10 = current;
+        if self.channel == 0 {
+            self.refresh_eq();
+            self.tap_active = self.tap.needs_samples();
         }
-
         let input = self.inner.next()?;
-        let channel =
-            (self.idx % (self.channels.get() as usize)).min(self.channels.get() as usize - 1);
-        self.idx = self.idx.wrapping_add(1);
-
-        let mut output = input;
-        for band in 0..EQ_BANDS {
-            let state_idx = self.state_index(channel, band);
-            output = biquad_process(&self.coeffs[band], &mut self.states[state_idx], output);
+        let channel = self.channel;
+        self.channel += 1;
+        if self.channel == self.channels.get() as usize {
+            self.channel = 0;
         }
-        // PCM 抽头取 EQ 之后、音量之前的样本：波形反映均衡效果，但不随音量缩放。
-        // 逐样本只写一次暂存数组，攒够一批才落环（见 pcm_tap 的线程模型说明）。
-        self.tap.push_sample(channel, output);
+        if !self.eq_active && !self.tap_active {
+            return Some(input);
+        }
+        let mut output = input;
+        if self.eq_active {
+            for band in 0..EQ_BANDS {
+                let state_idx = channel * EQ_BANDS + band;
+                output = biquad_process(&self.coeffs[band], &mut self.states[state_idx], output);
+            }
+        }
+        // Analysis still observes post-EQ, pre-volume PCM when EQ itself is bypassed.
+        if self.tap_active {
+            self.tap.push_sample(channel, output);
+        }
         Some(output)
     }
 }
@@ -738,3 +809,6 @@ mod error_callback_tests;
 
 #[cfg(test)]
 mod seek_worker_tests;
+
+#[cfg(test)]
+mod eq_source_tests;

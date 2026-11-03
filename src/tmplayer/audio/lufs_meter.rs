@@ -8,6 +8,7 @@
 //! 都由读取方决定。
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 每个子块的时长。Momentary 窗口 = 8 * 50ms = 400ms。
 const SUB_BLOCK_SECS: f64 = 0.050;
@@ -133,12 +134,15 @@ struct State {
     window_pos: usize,
     valid_blocks: usize,
     generation: u64,
+    reset_generation: u64,
     published: LufsReading,
 }
 
 #[derive(Debug)]
 pub struct LufsMeter {
     inner: Mutex<State>,
+    /// Reset never waits for the writer; the next read or write applies it.
+    reset_generation: AtomicU64,
 }
 
 impl Default for LufsMeter {
@@ -162,8 +166,10 @@ impl LufsMeter {
                 window_pos: 0,
                 valid_blocks: 0,
                 generation: 0,
+                reset_generation: 0,
                 published: LufsReading::default(),
             }),
+            reset_generation: AtomicU64::new(0),
         }
     }
 
@@ -180,12 +186,8 @@ impl LufsMeter {
             state.sub_frames = sub_frames;
             state.left = ChannelMeter::new(filters);
             state.right = ChannelMeter::new(filters);
-            state.window_left = [0.0; WINDOW_BLOCKS];
-            state.window_right = [0.0; WINDOW_BLOCKS];
-            state.window_pos = 0;
-            state.valid_blocks = 0;
-            state.generation = state.generation.wrapping_add(1);
-            state.published = LufsReading::default();
+            self.reset();
+            state.sync_reset(self.reset_generation.load(Ordering::Acquire));
         }
     }
 
@@ -193,16 +195,7 @@ impl LufsMeter {
     ///
     /// 可能被音频链路调用：与批量写入一样不等待锁。
     pub fn reset(&self) {
-        if let Ok(mut state) = self.inner.try_lock() {
-            state.left.reset();
-            state.right.reset();
-            state.window_left = [0.0; WINDOW_BLOCKS];
-            state.window_right = [0.0; WINDOW_BLOCKS];
-            state.window_pos = 0;
-            state.valid_blocks = 0;
-            state.generation = state.generation.wrapping_add(1);
-            state.published = LufsReading::default();
-        }
+        self.reset_generation.fetch_add(1, Ordering::Release);
     }
 
     /// 音频线程批量写入。抢不到锁就整批丢弃：LUFS 只是显示计量，
@@ -215,6 +208,7 @@ impl LufsMeter {
         let Ok(mut state) = self.inner.try_lock() else {
             return;
         };
+        state.sync_reset(self.reset_generation.load(Ordering::Acquire));
         if state.sample_rate == 0 {
             return;
         }
@@ -240,8 +234,31 @@ impl LufsMeter {
     pub fn latest(&self) -> LufsReading {
         self.inner
             .lock()
-            .map(|state| state.published)
+            .map(|mut state| {
+                state.sync_reset(self.reset_generation.load(Ordering::Acquire));
+                state.published
+            })
             .unwrap_or_default()
+    }
+}
+
+impl State {
+    fn sync_reset(&mut self, generation: u64) {
+        if self.reset_generation == generation {
+            return;
+        }
+        self.reset_generation = generation;
+        self.left.reset();
+        self.right.reset();
+        self.window_left = [0.0; WINDOW_BLOCKS];
+        self.window_right = [0.0; WINDOW_BLOCKS];
+        self.window_pos = 0;
+        self.valid_blocks = 0;
+        self.generation = self.generation.wrapping_add(1);
+        self.published = LufsReading {
+            generation: self.generation,
+            ..LufsReading::default()
+        };
     }
 }
 

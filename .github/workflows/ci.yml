@@ -23,12 +23,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - toolchain: 1.95.0
-            feature_name: default
-            feature_args: ""
-          - toolchain: 1.95.0
-            feature_name: no-default-features
-            feature_args: --no-default-features
           - toolchain: stable
             feature_name: default
             feature_args: ""

@@ -120,6 +120,8 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 - `oscilloscope` — a real-PCM waveform that smoothly settles to a flat line on pause, stop or audio interruption, and reopens when playback resumes
 - `vector` — a Lissajous vectorscope: the left channel drives the horizontal axis and the right channel the vertical one (up is always positive), scaled so the track's loudest moment so far fills the panel. On pause or a sudden cut to silence the figure bursts apart into drifting dots that settle and twinkle until playback resumes
 - The collapsed player bar draws a 10-cell braille mini spectrum (blank in `lyrics` and `hidden`), and the narrow small window draws a stereo VU meter fed by a 400 ms momentary LUFS meter (−60…0 LUFS)
+- PCM tapping runs only while a visible visualizer needs it; LUFS metering runs only in the narrow small window. Changing visualization modes, resizing or entering/leaving fullscreen updates these consumers during playback without restarting the track.
+- A flat 10-band EQ bypasses filtering without disabling any requested visualization or LUFS consumer. EQ changes apply at complete audio-frame boundaries without restarting playback; returning to flat clears the old filter history.
 
 Bars and the mini spectrum analyze CNMPlayer's own decoded playback PCM, tapped after the 10-band EQ and before the playback volume — not the microphone, the system output or other applications. The spectrum is a faithful Rust port of [Cava](https://github.com/karlstav/cava)'s algorithm at commit [`6d43df3b2c7882122585c02c064b20009842a6f8`](https://github.com/karlstav/cava/tree/6d43df3b2c7882122585c02c064b20009842a6f8), and its FFT backend is pure Rust (`realfft`). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and full license terms.
 
@@ -369,7 +371,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on Rust 1.95 and stable, then fmt and clippy gates for the host and the vendored crate, plus the vendored test suite.
+CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on stable, then fmt and clippy gates for the host and the vendored crate, plus the vendored test suite.
 Release (`release.yml`) runs the root and vendored test gates before publishing, publishes `SHA256SUMS` alongside the `x86_64` and `aarch64` tarballs, and maintains the AUR packages.
 
 ## Related Projects

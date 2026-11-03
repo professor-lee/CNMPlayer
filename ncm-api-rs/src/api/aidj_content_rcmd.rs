@@ -22,14 +22,14 @@ impl ApiClient {
             "listenedTs": false
         });
 
-        if let Some(latitude) = query.get("latitude") {
-            if let Some(longitude) = query.get("longitude") {
-                ext_info["lbsInfoList"] = json!([{
-                    "lat": latitude,
-                    "lon": longitude,
-                    "time": timestamp_s
-                }]);
-            }
+        if let Some(latitude) = query.get("latitude")
+            && let Some(longitude) = query.get("longitude")
+        {
+            ext_info["lbsInfoList"] = json!([{
+                "lat": latitude,
+                "lon": longitude,
+                "time": timestamp_s
+            }]);
         }
 
         let data = json!({

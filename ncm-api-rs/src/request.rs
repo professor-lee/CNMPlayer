@@ -8,7 +8,7 @@ use crate::util::cookie::{cookie_obj_to_string, cookie_to_json};
 use crate::util::device::{generate_device_id, generate_wnmcid, random_hex};
 use crate::util::ip::generate_random_chinese_ip;
 
-use http::header::{HeaderMap, HeaderValue, COOKIE, REFERER, USER_AGENT};
+use http::header::{COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -225,11 +225,11 @@ impl ApiClient {
             }
         });
 
-        if let Some(ref ip) = ip {
-            if let (Ok(real_ip), Ok(fwd)) = (HeaderValue::from_str(ip), HeaderValue::from_str(ip)) {
-                headers.insert("X-Real-IP", real_ip);
-                headers.insert("X-Forwarded-For", fwd);
-            }
+        if let Some(ref ip) = ip
+            && let (Ok(real_ip), Ok(fwd)) = (HeaderValue::from_str(ip), HeaderValue::from_str(ip))
+        {
+            headers.insert("X-Real-IP", real_ip);
+            headers.insert("X-Forwarded-For", fwd);
         }
 
         // Cookie 处理
@@ -287,12 +287,12 @@ impl ApiClient {
         }
 
         // 未登录时注入匿名 token
-        if !cookie_map.contains_key("MUSIC_U") {
-            if let Some(ref token) = self.anonymous_token {
-                cookie_map
-                    .entry("MUSIC_A".to_string())
-                    .or_insert_with(|| token.clone());
-            }
+        if !cookie_map.contains_key("MUSIC_U")
+            && let Some(ref token) = self.anonymous_token
+        {
+            cookie_map
+                .entry("MUSIC_A".to_string())
+                .or_insert_with(|| token.clone());
         }
 
         headers.insert(COOKIE, header_value(&cookie_obj_to_string(&cookie_map)));

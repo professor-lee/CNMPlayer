@@ -16,7 +16,7 @@ CNMPlayer 是一个运行在终端中的网易云音乐客户端（Rust + TUI）
 
 ## 开发环境
 
-Rust 1.95 或更新版本；仓库在 `rust-toolchain.toml` 中固定 1.95.0。根 crate（`cnmplayer`）使用 edition 2024，vendored 的 `ncm-api` crate 使用 edition 2021。
+Rust 1.95 或更新版本。`rust-toolchain.toml` 请求当前 stable 工具链，使用 rustup 时 `cargo` 会选用已安装的最新 stable。根 crate（`cnmplayer`）与 vendored 的 `ncm-api` crate 均使用 edition 2024。
 
 锁定依赖需要 Rust 1.95：`compio-driver 0.12.4` 使用了在 1.95 稳定的 [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html)。依赖 manifest 声明曾提示 1.90，但真实 1.90 构建在 `compio-buf 0.8.3` 的 `MaybeUninit` slice API 处失败，1.93 构建又在 `cfg_select!` 处失败。单看 edition 2024 只需要 1.85；edition 与不完整的 manifest 声明都不能代替真实依赖 MSRV 验证。根 crate 与 vendored crate 共用一个 workspace lockfile。
 
@@ -88,32 +88,31 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 格式化工具是 rustfmt，仓库自带配置：
 
 - 根目录 `.rustfmt.toml`：`max_width = 100`、`edition = "2024"`；
-- `ncm-api-rs/rustfmt.toml`：`edition = "2021"`、`max_width = 100`、`use_field_init_shorthand = true` —— 动过 vendored crate 时一并执行 `cargo fmt --manifest-path ncm-api-rs/Cargo.toml`。
+- `ncm-api-rs/rustfmt.toml`：`edition = "2024"`、`max_width = 100`、`use_field_init_shorthand = true` —— 动过 vendored crate 时一并执行 `cargo fmt --manifest-path ncm-api-rs/Cargo.toml`。
 
 Clippy：`cargo clippy --all-targets` 只是本地快速检查，下面的门禁会带上 `-D warnings`；`ncm-api-rs/clippy.toml` 把 `too-many-arguments-threshold` 放宽到 8、`type-complexity-threshold` 放宽到 300。
 
 CI（`.github/workflows/ci.yml`）在面向 `main` / `develop` 的 PR 以及推送到 `develop` 时触发。所有 job 都跑在 `ubuntu-24.04` 上；`build-and-test` 与 `quality` 安装上面列出的系统依赖：
 
-- `build-and-test`：以四组矩阵运行 `cargo check` 与 `cargo test`（`--workspace --locked --all-targets`）—— Rust 1.95.0 与 stable，各自再分默认特性与 `--no-default-features`。
+- `build-and-test`：在 stable 上以默认特性与 `--no-default-features` 两组运行 `cargo check` 与 `cargo test`（`--workspace --locked --all-targets`）。
 - `quality`：在 stable 上并装好 `rustfmt`、`clippy` 组件后运行 `cargo fmt --all -- --check` 与 `cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check`，随后是三次带 `-D warnings` 的 clippy —— 根 crate 的 `--all-features`、根 crate 的 `--no-default-features`，以及经 manifest 指向 vendored crate。
 - `vendored-tests`：`cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets`。
 
 对应的本地命令（按 job 分组）：
 
 ```bash
-# build-and-test：默认特性与 --no-default-features，每种工具链各跑一遍。
-# 直接 `cargo` 已按 pin 选中 1.95.0；stable 那一半用 `cargo +stable`。
+# build-and-test：在 rust-toolchain.toml 选中的 stable 上运行默认特性与 --no-default-features 两组。
 cargo check --workspace --locked --all-targets
 cargo test --workspace --locked --all-targets
 cargo check --workspace --locked --all-targets --no-default-features
 cargo test --workspace --locked --all-targets --no-default-features
 
 # quality（仅 stable）
-cargo +stable fmt --all -- --check
-cargo +stable fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
-cargo +stable clippy --locked --all-targets --all-features -- -D warnings
-cargo +stable clippy --locked --all-targets --no-default-features -- -D warnings
-cargo +stable clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
+cargo fmt --all -- --check
+cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --no-default-features -- -D warnings
+cargo clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
 
 # vendored-tests
 cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
