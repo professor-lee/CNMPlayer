@@ -39,6 +39,9 @@ pub(crate) struct AboutEasterEgg {
     pub(crate) mascot_activated_at: Option<Instant>,
     /// 最近一次点击形象的时刻；`None` 表示形象静止。
     pub(crate) jelly_started_at: Option<Instant>,
+    /// 背景弹幕的起始时刻与随机种子：迸发开始时生成，每次触发彩蛋弹幕都不同。
+    pub(crate) danmaku_started_at: Option<Instant>,
+    pub(crate) danmaku_seed: u64,
     /// 版本行与形象的命中区域，绘制时写回、鼠标事件时查询。
     pub(crate) version_hit: Option<HitRect>,
     pub(crate) mascot_hit: Option<HitRect>,
@@ -131,7 +134,12 @@ impl App {
             EasterEggPhase::Charging => {
                 if elapsed >= mascot::CHARGE_DURATION {
                     self.about_egg.phase = EasterEggPhase::Bursting;
-                    self.about_egg.phase_started_at = Some(Instant::now());
+                    let now = Instant::now();
+                    self.about_egg.phase_started_at = Some(now);
+                    self.about_egg.danmaku_started_at = Some(now);
+                    self.about_egg.danmaku_seed = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_nanos() as u64);
                 }
             }
             EasterEggPhase::Bursting => {

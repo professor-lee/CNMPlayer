@@ -3,6 +3,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
 
 /// 蓄力：内容区被半格噪点逐个填满。
 pub const CHARGE_DURATION: Duration = Duration::from_millis(1200);
@@ -76,7 +77,16 @@ pub fn draw_frame(
             continue;
         }
 
-        let Some(cell) = buf.cell_mut((area.x + col, area.y + row)) else {
+        let (x, y) = (area.x + col, area.y + row);
+        // 下层若有宽字符（弹幕里的 CJK）的首列紧挨在左边，这一格正是它的第二列：
+        // 不拆掉它，终端会继续把整个宽字符画在这里，盖住形象的字形。
+        if x > 0
+            && let Some(left) = buf.cell_mut((x - 1, y))
+            && left.symbol().width() > 1
+        {
+            left.set_symbol(" ");
+        }
+        let Some(cell) = buf.cell_mut((x, y)) else {
             continue;
         };
         let mut sym = [0u8; 4];

@@ -1132,10 +1132,28 @@ fn draw_about_border_flow(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// 彩蛋激活后的形象：在内容区居中，点击可播放果冻动画。
+/// 彩蛋激活后的内容：背景弹幕铺满内容区，形象居中压在上面，点击可播放果冻动画。
 #[cfg(feature = "easter-egg")]
 fn draw_about_mascot(frame: &mut Frame, app: &mut App, inner: Rect) {
-    use crate::render::{mascot, mascot_frames};
+    use crate::render::{danmaku, mascot, mascot_frames};
+
+    if let Some(started_at) = app.about_egg.danmaku_started_at {
+        let palette = danmaku::Palette {
+            base: app.theme.color_subtext(),
+            accents: [
+                app.theme.color_accent(),
+                app.theme.color_accent2(),
+                app.theme.color_accent3(),
+            ],
+        };
+        danmaku::draw(
+            frame.buffer_mut(),
+            inner,
+            app.about_egg.danmaku_seed,
+            started_at.elapsed(),
+            palette,
+        );
+    }
 
     let frame_data = match app.about_egg.jelly_started_at {
         Some(started_at) => mascot::jelly_frame(started_at.elapsed()),
