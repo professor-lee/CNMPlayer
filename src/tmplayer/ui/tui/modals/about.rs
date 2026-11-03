@@ -195,7 +195,9 @@ fn about_braille_lines(width: usize, height: usize) -> Vec<Line<'static>> {
         .max()
         .unwrap_or(0);
     let canvas_w = selected.width.max(rows_w);
-    let canvas_h = selected.height.max(rows.len());
+    // 垂直方向按去掉首尾空行后的实际行数居中：素材声明的 height 含留白，
+    // 拿它算会让形象偏上。
+    let canvas_h = rows.len();
 
     let offset_x = width.saturating_sub(canvas_w) / 2;
     let offset_y = height.saturating_sub(canvas_h) / 2;

@@ -122,3 +122,23 @@ fn scrolled_rows_match_the_rendered_offsets() {
 fn scrolled_rows_is_empty_without_room() {
     assert!(scrolled_rows(SETTINGS_KEYBIND_ITEMS, 0, 3).is_empty());
 }
+
+/// about 左侧 logo 在各种高度下都垂直居中：上下空行差不超过 1。
+#[test]
+fn about_logo_is_vertically_centered() {
+    for (width, height) in [(27, 20), (27, 14), (22, 12), (20, 10)] {
+        let lines = about_braille_lines(width, height);
+        let ink: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| !line.to_string().trim().is_empty())
+            .map(|(idx, _)| idx)
+            .collect();
+        let (first, last) = (ink[0], *ink.last().unwrap());
+        let below = height - 1 - last;
+        assert!(
+            first.abs_diff(below) <= 1,
+            "{width}x{height}: 上 {first} 行、下 {below} 行"
+        );
+    }
+}
