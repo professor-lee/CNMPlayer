@@ -16,13 +16,52 @@ const MAX_TEXT_WIDTH: usize = (SLOT - MIN_GAP) as usize;
 /// 语料超宽会挤掉槽位里的最小间隙，相邻弹幕就可能贴在一起。
 #[test]
 fn every_corpus_entry_fits_its_slot() {
-    for text in CORPUS {
+    for text in CORPUS.iter().chain(KAOMOJI) {
         assert!(
             text.width() <= MAX_TEXT_WIDTH,
             "{text:?} 宽 {} 列，超过 {MAX_TEXT_WIDTH}",
             text.width()
         );
     }
+}
+
+/// 换成小字不改变列宽：排布按原文宽度算，变宽就会压到下一条弹幕。
+#[test]
+fn small_script_keeps_column_width() {
+    for text in CORPUS {
+        for script in [Script::Super, Script::Sub] {
+            let mapped: String = text.chars().map(|c| script.apply(c)).collect();
+            assert_eq!(mapped.width(), text.width(), "{text:?} → {mapped:?}");
+        }
+    }
+}
+
+/// 上标覆盖全部数字和字母（大写缺上标时换小写上标），只有 q/Q 没有；
+/// 选中下标的弹幕里每个数字/字母都真的变成了下标，不会半大半小。
+#[test]
+fn small_script_covers_letters_and_whole_bullets() {
+    for c in ('0'..='9').chain('a'..='z').chain('A'..='Z') {
+        let mapped = Script::Super.apply(c);
+        assert_eq!(mapped == c, c.eq_ignore_ascii_case(&'q'), "{c} → {mapped}");
+    }
+    assert_eq!(Script::Super.apply('L'), 'ᴸ');
+    assert_eq!(Script::Super.apply('X'), 'ˣ');
+
+    for text in CORPUS {
+        for roll in 0..10 {
+            if pick_script(text, roll) == Script::Sub {
+                assert!(
+                    text.chars()
+                        .filter(char::is_ascii_alphanumeric)
+                        .all(|c| Script::Sub.apply(c) != c),
+                    "{text:?} 下标后仍有大字"
+                );
+            }
+        }
+    }
+    assert_eq!(pick_script("GG", 9), Script::Normal, "g 没有下标，退回大字");
+    assert_eq!(pick_script("23333", 9), Script::Sub);
+    assert_eq!(pick_script("太好听了", 6), Script::Normal, "没有可换的字符");
 }
 
 /// 同车道相邻弹幕至少隔 MIN_GAP 列，任意时刻、任意种子都成立。
@@ -62,21 +101,29 @@ fn danmaku_never_runs_out() {
     }
 }
 
-/// 弹幕自右向左：同一条弹幕过一会儿 x 变小。
+/// 弹幕自右向左，每条车道速度落在 10..=18 列/秒。
 #[test]
-fn bullets_move_right_to_left() {
-    let lane0 = |ms| -> Vec<i64> {
-        visible_bullets(3, Duration::from_millis(ms), 68, 1)
-            .iter()
-            .map(|b| b.x)
-            .collect()
-    };
-    let (before, after) = (lane0(10_000), lane0(10_500));
-    // 0.5s 内至少移动 3 列，不到一个槽位，因此按序比对的是同一批弹幕的后继位置。
-    let moved = before
-        .iter()
-        .any(|x| after.iter().any(|y| (3..=7).contains(&(x - y))));
-    assert!(moved, "before {before:?} after {after:?}");
+fn bullets_move_right_to_left_at_lane_speed() {
+    for seed in [3u64, 99, 0xC0FFEE] {
+        for lane in 0..20u16 {
+            let speed = lane_speed(seed, lane) as i64;
+            assert!((10..=18).contains(&speed), "车道 {lane} 速度 {speed}");
+
+            let at = |ms| visible_bullets(seed, Duration::from_millis(ms), 68, lane + 1);
+            let before: Vec<Bullet> = at(10_000).into_iter().filter(|b| b.lane == lane).collect();
+            let after: Vec<Bullet> = at(11_000).into_iter().filter(|b| b.lane == lane).collect();
+            // 同一条弹幕 1 秒后正好左移 speed 列（文字、字号都不变）。
+            // 只比 1 秒后仍在屏幕内的：更左的可能已随槽位滑出可见范围。
+            for b in before.iter().filter(|b| b.x - speed >= 0) {
+                assert!(
+                    after
+                        .iter()
+                        .any(|a| a.x == b.x - speed && a.text == b.text && a.script == b.script),
+                    "seed {seed} 车道 {lane}: {b:?} 没有出现在左边 {speed} 列处"
+                );
+            }
+        }
+    }
 }
 
 /// 左右边缘只露出半个宽字符时整字跳过，不留下半个字、不写到区域外。
