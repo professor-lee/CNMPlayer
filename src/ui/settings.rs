@@ -1156,10 +1156,12 @@ fn draw_about_mascot(frame: &mut Frame, app: &mut App, inner: Rect) {
         return;
     }
 
-    frame.render_widget(
-        Paragraph::new(mascot::frame_lines(frame_data, app.theme.color_surface()))
-            .style(Style::default().bg(app.theme.color_surface())),
+    mascot::draw_frame(
+        frame_data,
+        frame.buffer_mut(),
         draw_rect,
+        app.theme.color_subtext(),
+        app.theme.color_surface(),
     );
 }
 
