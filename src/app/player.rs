@@ -48,6 +48,10 @@ pub(super) struct AudioPlayer {
     /// 400ms Momentary LUFS 计量器；`EqSource` 按批写入，小窗口窄窗读取。
     lufs_meter: Arc<LufsMeter>,
     analysis_demand: Arc<AnalysisDemand>,
+    /// `stop()` 之后旧 `Player` 的位置不再代表任何曲目：rodio 只在源被轮询时
+    /// 刷新/归零位置，源已结束或阻塞在下载上时会永远停在旧值。下一次
+    /// `clear_and_play` 换上新 `Player` 前，对外一律报 0。
+    stopped: bool,
 }
 
 pub(super) struct PreparedSource {
@@ -262,6 +266,7 @@ impl AudioPlayer {
             new_player.pause();
         }
         self.player = new_player;
+        self.stopped = false;
         // 环内还是上一首的样本；不清掉的话示波器会先画一段前一首的波形。
         self.pcm_ring.reset();
         self.player.append(src);
@@ -311,6 +316,7 @@ impl AudioPlayer {
             cache_lease: None,
             lufs_meter: Arc::new(LufsMeter::new()),
             analysis_demand: Arc::new(AnalysisDemand::new()),
+            stopped: false,
         };
 
         Ok(player)
@@ -447,6 +453,7 @@ impl AudioPlayer {
             drop(lease);
         }
         self.player.stop();
+        self.stopped = true;
         // 这里刻意不清 PCM 环：停止后示波器要靠这段残留把波形缓动收回中线。
         // 换歌不会漏看上一首——所有播放入口都经 clear_and_play，那里会清。
         self.progress_rx = None;
@@ -497,6 +504,9 @@ impl AudioPlayer {
 
     /// 用于界面显示的播放位置：后台加载期间直接显示跳转目标。
     pub(super) fn display_position(&self) -> Duration {
+        if self.stopped {
+            return Duration::ZERO;
+        }
         self.seek_worker
             .state
             .lock()
@@ -505,6 +515,9 @@ impl AudioPlayer {
     }
 
     pub(super) fn position(&self) -> Duration {
+        if self.stopped {
+            return Duration::ZERO;
+        }
         self.player.get_pos()
     }
 }
