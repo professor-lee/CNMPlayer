@@ -1,6 +1,7 @@
 //! Streaming audio reader: async writes on the reactor, blocking reads/seeks only
 //! on decoder/audio workers. Published bytes are fully written before readers see them.
 
+use super::api::NoStreamUrl;
 use super::api::error_for_status;
 use super::cache_maintenance::CacheMaintenance;
 use anyhow::Context;
@@ -10,6 +11,7 @@ use compio::io::AsyncWrite;
 use compio::io::AsyncWriteExt;
 use cyper::Response;
 use futures::StreamExt;
+use futures::future::LocalBoxFuture;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 use see::sync::Sender;
@@ -28,6 +30,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 static ACTIVE_STREAMING_TEMPS: LazyLock<Mutex<HashSet<PathBuf>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -271,30 +274,259 @@ impl Drop for StreamingReader {
     }
 }
 
+/// 取一个新的签名直链。签名会过期、不同次取到的边缘节点也不同，
+/// 所以每次重连失败后都换一个新链接。
+pub(super) type UrlSource = Box<dyn FnMut() -> LocalBoxFuture<'static, Result<String>>>;
+
+/// 后台重试与断点续传的参数。重试全程不改动任何界面文字。
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RetryPolicy {
+    /// 单次取直链的上限。
+    pub(super) url_timeout: Duration,
+    /// 单次等响应头的上限。
+    pub(super) header_timeout: Duration,
+    /// 单个连接多久没有新字节就断开、从断点重连。
+    pub(super) body_stall: Duration,
+    /// 连续多少次尝试都没有新字节才放弃；有进展就重新计数。
+    pub(super) max_attempts: u32,
+    /// 第 n 次失败后等待 `base * 2^(n-2)`（首次立即重试），封顶 `max_backoff`。
+    pub(super) base_backoff: Duration,
+    pub(super) max_backoff: Duration,
+}
+
+impl RetryPolicy {
+    pub(super) const DEFAULT: Self = Self {
+        url_timeout: Duration::from_secs(15),
+        header_timeout: Duration::from_secs(15),
+        body_stall: Duration::from_secs(15),
+        max_attempts: 6,
+        base_backoff: Duration::from_secs(1),
+        max_backoff: Duration::from_secs(8),
+    };
+
+    fn backoff(&self, failures: u32) -> Duration {
+        if failures <= 1 {
+            return Duration::ZERO;
+        }
+        let factor = 1u32 << (failures - 2).min(16);
+        self.base_backoff
+            .saturating_mul(factor)
+            .min(self.max_backoff)
+    }
+}
+
+/// 一次尝试失败的性质：`Retry` 换链接/从断点重连，`Fatal` 立即放弃。
+enum Failure {
+    Retry(anyhow::Error),
+    Fatal(anyhow::Error),
+}
+
+/// 等 `fut` 至多 `limit`，期间每 200ms 看一次取消标志；超时或取消返回 `None`。
+async fn bounded<F: Future>(fut: F, limit: Duration, cancelled: &AtomicBool) -> Option<F::Output> {
+    let deadline = Instant::now() + limit;
+    let mut fut = std::pin::pin!(fut);
+    loop {
+        if cancelled.load(Ordering::SeqCst) {
+            return None;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        let slice = left.min(Duration::from_millis(200));
+        if let Ok(output) = compio::time::timeout(slice, fut.as_mut()).await {
+            return Some(output);
+        }
+    }
+}
+
+async fn pause(duration: Duration, cancelled: &AtomicBool) {
+    let _ = bounded(std::future::pending::<()>(), duration, cancelled).await;
+}
+
+/// `bytes 1000-2023/14210656` → (起点, 总长)。
+fn parse_content_range(value: &str) -> Option<(u64, u64)> {
+    let range = value.trim().strip_prefix("bytes ")?;
+    let (span, total) = range.split_once('/')?;
+    let (start, _) = span.split_once('-')?;
+    Some((start.trim().parse().ok()?, total.trim().parse().ok()?))
+}
+
+/// 一首歌的下载来源。跨重连保留：当前直链、首个响应的 ETag 与重试计数。
+pub(super) struct Origin {
+    http: cyper::Client,
+    cookie: Option<String>,
+    source: UrlSource,
+    url: Option<String>,
+    etag: Option<String>,
+    policy: RetryPolicy,
+    failures: u32,
+}
+
+impl Origin {
+    /// `url` 是已经取到的第一个直链；`source` 用于之后换新链接。
+    pub(super) fn new(
+        http: cyper::Client,
+        cookie: Option<String>,
+        url: Option<String>,
+        source: UrlSource,
+        policy: RetryPolicy,
+    ) -> Self {
+        Self {
+            http,
+            cookie,
+            source,
+            url,
+            etag: None,
+            policy,
+            failures: 0,
+        }
+    }
+
+    /// 失败一次：预算用尽返回 `false`，否则按退避等待后返回 `true`。
+    async fn backoff_after(&mut self, cancelled: &AtomicBool) -> bool {
+        self.failures += 1;
+        if self.failures >= self.policy.max_attempts {
+            return false;
+        }
+        pause(self.policy.backoff(self.failures), cancelled).await;
+        true
+    }
+
+    /// 一次连接：从 `offset` 起请求，`total == 0` 表示首个连接（由它决定总长）。
+    async fn connect(
+        &mut self,
+        offset: u64,
+        total: u64,
+        cancelled: &AtomicBool,
+    ) -> std::result::Result<(Response, u64), Failure> {
+        let policy = self.policy;
+        let url = match self.url.clone() {
+            Some(url) => url,
+            None => match bounded((self.source)(), policy.url_timeout, cancelled).await {
+                Some(Ok(url)) => url,
+                Some(Err(err)) if err.is::<NoStreamUrl>() => return Err(Failure::Fatal(err)),
+                Some(Err(err)) => return Err(Failure::Retry(err)),
+                None => return Err(Failure::Retry(anyhow::anyhow!("stream url timed out"))),
+            },
+        };
+        let result = self.request(&url, offset, total, cancelled).await;
+        // 失败后丢掉这个直链：签名可能过期，换一个也常换到更快的节点。
+        self.url = result.is_ok().then_some(url);
+        result
+    }
+
+    async fn request(
+        &mut self,
+        url: &str,
+        offset: u64,
+        total: u64,
+        cancelled: &AtomicBool,
+    ) -> std::result::Result<(Response, u64), Failure> {
+        let retry = |err: anyhow::Error| Failure::Retry(err);
+        let mut request = self.http.get(url).map_err(|err| retry(err.into()))?;
+        if let Some(cookie) = self.cookie.as_deref() {
+            request = request
+                .header("Cookie", cookie)
+                .map_err(|e| retry(e.into()))?;
+        }
+        if offset > 0 {
+            request = request
+                .header("Range", format!("bytes={offset}-"))
+                .map_err(|e| retry(e.into()))?;
+        }
+        let response = match bounded(request.send(), self.policy.header_timeout, cancelled).await {
+            Some(Ok(response)) => response,
+            Some(Err(err)) => return Err(retry(err.into())),
+            None => {
+                return Err(retry(anyhow::anyhow!(
+                    "streaming response headers timed out"
+                )));
+            }
+        };
+        let response = error_for_status(response).map_err(retry)?;
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        };
+        let etag = header("ETag");
+        if let (Some(known), Some(now)) = (self.etag.as_deref(), etag.as_deref())
+            && known != now
+        {
+            return Err(Failure::Fatal(anyhow::anyhow!("streaming source changed")));
+        }
+        let skip = if response.status().as_u16() == 206 {
+            let (start, size) = header("Content-Range")
+                .as_deref()
+                .and_then(parse_content_range)
+                .ok_or_else(|| retry(anyhow::anyhow!("invalid Content-Range")))?;
+            if start != offset || (total > 0 && size != total) {
+                return Err(retry(anyhow::anyhow!("unexpected Content-Range")));
+            }
+            if total == 0 {
+                return Err(retry(anyhow::anyhow!("unrequested partial response")));
+            }
+            0
+        } else {
+            // 服务器忽略了 Range：整份重发，跳过已有的前缀。
+            let length = response
+                .content_length()
+                .ok_or_else(|| Failure::Fatal(anyhow::anyhow!("Music no content_length!")))?;
+            if length == 0 {
+                return Err(Failure::Fatal(anyhow::anyhow!("empty streaming response")));
+            }
+            if total > 0 && length != total {
+                return Err(Failure::Fatal(anyhow::anyhow!("streaming source changed")));
+            }
+            offset
+        };
+        if self.etag.is_none() {
+            self.etag = etag;
+        }
+        Ok((response, skip))
+    }
+
+    /// 重试直到连上、遇到不可重试的错误、被取消或预算用尽。
+    async fn open(
+        &mut self,
+        offset: u64,
+        total: u64,
+        cancelled: &AtomicBool,
+    ) -> Result<(Response, u64)> {
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                bail!("streaming cancelled");
+            }
+            match self.connect(offset, total, cancelled).await {
+                Ok(connected) => return Ok(connected),
+                Err(Failure::Fatal(err)) => return Err(err),
+                Err(Failure::Retry(err)) => {
+                    if !self.backoff_after(cancelled).await {
+                        return Err(err);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl StreamingReader {
     pub(super) async fn new(
-        http: &cyper::Client,
-        url: &str,
+        mut origin: Origin,
         cache_path: PathBuf,
-        cookie: Option<&str>,
         progress_tx: Sender<(u64, u64)>,
         cache_maintenance: CacheMaintenance,
     ) -> Result<Self> {
         let writer_lease = cache_maintenance.protect(cache_path.clone());
-        let mut request = http.get(url)?;
-        if let Some(cookie) = cookie {
-            request = request.header("Cookie", cookie)?;
-        }
-        let response = compio::time::timeout(Duration::from_secs(30), request.send())
-            .await
-            .context("streaming response headers timed out after 30s")??;
-        let response = error_for_status(response)?;
+        let state = Arc::new(StreamingState::default());
+        // 首个连接也走重试：取直链、等响应头各自限时，失败换新链接再来。
+        let (response, _) = origin.open(0, 0, &state.cancelled).await?;
         let total = response
             .content_length()
             .context("Music no content_length!")?;
-        if total == 0 {
-            bail!("empty streaming response");
-        }
         if let Some(parent) = cache_path.parent() {
             compio::fs::create_dir_all(parent)
                 .await
@@ -333,7 +565,6 @@ impl StreamingReader {
                 return Err(err);
             }
         };
-        let state = Arc::new(StreamingState::default());
         state.total.store(total, Ordering::SeqCst);
         let task_state = state.clone();
         compio::runtime::spawn(async move {
@@ -342,6 +573,7 @@ impl StreamingReader {
             let _writer_lease = writer_lease;
             let result = download_streaming(
                 response,
+                &mut origin,
                 writer_file,
                 &tmp_path,
                 cache_path.clone(),
@@ -428,76 +660,52 @@ fn checked_seek(base: u64, offset: i64) -> std::io::Result<u64> {
         .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "invalid streaming seek position"))
 }
 
+/// 下载整首歌。某个连接断开、出错或超过 `body_stall` 没有新字节时，
+/// 从已发布的断点用 `Range` 重连（必要时换新直链）续写同一个临时文件；
+/// 只有连续 `max_attempts` 次尝试都没有新字节才判失败。
 async fn download_streaming(
     response: Response,
+    origin: &mut Origin,
     file: compio::fs::File,
     tmp_path: &PathBuf,
     cache_path: PathBuf,
     state: &StreamingState,
     progress_tx: Sender<(u64, u64)>,
-) -> Result<()> {
-    download_streaming_with_timeout(
-        response,
-        file,
-        tmp_path,
-        cache_path,
-        state,
-        progress_tx,
-        Duration::from_secs(30),
-    )
-    .await
-}
-
-async fn download_streaming_with_timeout(
-    response: Response,
-    file: compio::fs::File,
-    tmp_path: &PathBuf,
-    cache_path: PathBuf,
-    state: &StreamingState,
-    progress_tx: Sender<(u64, u64)>,
-    body_stall_timeout: Duration,
 ) -> Result<()> {
     let result: Result<()> = async {
         let mut cursor = Cursor::new(&file);
-        let mut stream = response.bytes_stream();
         let total = state.total.load(Ordering::SeqCst);
-        let mut downloaded = 0u64;
-        let mut last_progress = std::time::Instant::now();
+        let mut connection = Some((response, 0));
         loop {
-            if state.cancelled.load(Ordering::SeqCst) {
-                bail!("streaming cancelled");
-            }
-            if last_progress.elapsed() >= body_stall_timeout {
-                bail!("streaming body stalled with no byte progress");
-            }
-            let wait = Duration::from_millis(500)
-                .min(body_stall_timeout.saturating_sub(last_progress.elapsed()));
-            let chunk = match compio::time::timeout(wait, stream.next()).await {
-                Ok(Some(Ok(chunk))) if !chunk.is_empty() => chunk,
-                Ok(Some(Ok(_))) => continue,
-                Ok(Some(Err(err))) => return Err(err.into()),
-                Ok(None) => break,
-                Err(_) => continue,
+            let (response, skip) = match connection.take() {
+                Some(connected) => connected,
+                None => {
+                    let offset = state.downloaded.load(Ordering::SeqCst);
+                    origin.open(offset, total, &state.cancelled).await?
+                }
             };
-            let next = downloaded
-                .checked_add(chunk.len() as u64)
-                .context("streaming length overflow")?;
-            if next > total {
-                bail!("streaming response exceeds Content-Length");
+            let before = state.downloaded.load(Ordering::SeqCst);
+            let pumped = pump(
+                response,
+                skip,
+                &mut cursor,
+                state,
+                &progress_tx,
+                origin.policy.body_stall,
+            )
+            .await;
+            if state.downloaded.load(Ordering::SeqCst) > before {
+                origin.failures = 0;
             }
-            cursor.write_all(chunk).await.0?;
-            downloaded = next;
-            last_progress = std::time::Instant::now();
-            // Pair publication with the wait mutex to prevent missed wakeups.
-            {
-                let _guard = state.wait_lock.lock();
-                state.downloaded.store(downloaded, Ordering::SeqCst);
-                state.condvar.notify_all();
+            match pumped {
+                Ok(()) => break,
+                Err(Failure::Fatal(err)) => return Err(err),
+                Err(Failure::Retry(err)) => {
+                    if !origin.backoff_after(&state.cancelled).await {
+                        return Err(err);
+                    }
+                }
             }
-            let _ = progress_tx.send((downloaded, total));
-        }
-        if downloaded != total {
-            bail!("streaming Content-Length mismatch: expected {total}, received {downloaded}");
         }
         cursor.flush().await?;
         file.sync_all().await?;
@@ -512,6 +720,76 @@ async fn download_streaming_with_timeout(
         bail!("streaming cancelled");
     }
     compio::fs::rename(tmp_path, cache_path).await?;
+    Ok(())
+}
+
+/// 把一个响应的正文写到 `cursor`（其位置始终等于已发布字节数）。
+/// `skip` 是服务器忽略 Range、整份重发时要丢掉的已有前缀。
+async fn pump(
+    response: Response,
+    mut skip: u64,
+    cursor: &mut Cursor<&compio::fs::File>,
+    state: &StreamingState,
+    progress_tx: &Sender<(u64, u64)>,
+    body_stall: Duration,
+) -> std::result::Result<(), Failure> {
+    let mut stream = response.bytes_stream();
+    let total = state.total.load(Ordering::SeqCst);
+    let mut downloaded = state.downloaded.load(Ordering::SeqCst);
+    let mut last_progress = Instant::now();
+    loop {
+        if state.cancelled.load(Ordering::SeqCst) {
+            return Err(Failure::Fatal(anyhow::anyhow!("streaming cancelled")));
+        }
+        if last_progress.elapsed() >= body_stall {
+            return Err(Failure::Retry(anyhow::anyhow!(
+                "streaming body stalled with no byte progress"
+            )));
+        }
+        let wait =
+            Duration::from_millis(500).min(body_stall.saturating_sub(last_progress.elapsed()));
+        let mut chunk = match compio::time::timeout(wait, stream.next()).await {
+            Ok(Some(Ok(chunk))) if !chunk.is_empty() => chunk,
+            Ok(Some(Ok(_))) => continue,
+            Ok(Some(Err(err))) => return Err(Failure::Retry(err.into())),
+            Ok(None) => break,
+            Err(_) => continue,
+        };
+        if skip > 0 {
+            let dropped = skip.min(chunk.len() as u64);
+            skip -= dropped;
+            last_progress = Instant::now();
+            chunk = chunk.slice(dropped as usize..);
+            if chunk.is_empty() {
+                continue;
+            }
+        }
+        let next = downloaded + chunk.len() as u64;
+        if next > total {
+            return Err(Failure::Fatal(anyhow::anyhow!(
+                "streaming response exceeds Content-Length"
+            )));
+        }
+        cursor
+            .write_all(chunk)
+            .await
+            .0
+            .map_err(|err| Failure::Fatal(err.into()))?;
+        downloaded = next;
+        last_progress = Instant::now();
+        // Pair publication with the wait mutex to prevent missed wakeups.
+        {
+            let _guard = state.wait_lock.lock();
+            state.downloaded.store(downloaded, Ordering::SeqCst);
+            state.condvar.notify_all();
+        }
+        let _ = progress_tx.send((downloaded, total));
+    }
+    if downloaded != total {
+        return Err(Failure::Retry(anyhow::anyhow!(
+            "streaming Content-Length mismatch: expected {total}, received {downloaded}"
+        )));
+    }
     Ok(())
 }
 

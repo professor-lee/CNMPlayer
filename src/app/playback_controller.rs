@@ -13,9 +13,12 @@ use super::roam::private_roam_continuation_start;
 use super::roam::private_roam_restored_index;
 use super::roam::private_roam_window;
 use super::search_controller::SearchItem;
+use super::streaming::Origin;
+use super::streaming::RetryPolicy;
 use super::streaming::StreamingReader;
 use super::streaming::StreamingReaderHandle;
 use super::streaming::StreamingStatus;
+use super::streaming::UrlSource;
 use super::tracks::PlaylistTrack;
 use super::tracks::PlaylistTrackKind;
 use super::tracks::format_duration;
@@ -628,21 +631,22 @@ impl App {
                     // A removed or undecodable cache entry is a cache miss,
                     // as before background preparation was introduced.
                 }
-                let mut api = api;
-                let url = api
-                    .song_stream_url_with_quality(&song_id, &quality)
-                    .await
-                    .map_err(|err| err.to_string())?;
-                let reader = StreamingReader::new(
-                    api.http_client(),
-                    &url,
-                    path,
-                    cookie.as_deref(),
-                    progress_tx,
-                    cache_maintenance.clone(),
-                )
-                .await
-                .map_err(|err| err.to_string())?;
+                // 取直链、等响应头、正文各自限时并在后台静默重试，
+                // 断线时从断点续传；不再用一个总超时把它们一起掐断。
+                let http = api.http_client().clone();
+                let source: UrlSource = Box::new(move || {
+                    let mut api = api.clone();
+                    let song_id = song_id.clone();
+                    let quality = quality.clone();
+                    Box::pin(
+                        async move { api.song_stream_url_with_quality(&song_id, &quality).await },
+                    )
+                });
+                let origin = Origin::new(http, cookie, None, source, RetryPolicy::DEFAULT);
+                let reader =
+                    StreamingReader::new(origin, path, progress_tx, cache_maintenance.clone())
+                        .await
+                        .map_err(|err| err.to_string())?;
                 let stream_handle = StreamingReaderHandle::from(&reader);
                 struct DecodeCancellation(Option<StreamingReaderHandle>);
                 impl Drop for DecodeCancellation {
@@ -677,11 +681,7 @@ impl App {
                     cache_lease,
                 })
             };
-            let result: Result<PreparedPlayback, String> =
-                match compio::time::timeout(Duration::from_secs(30), preparation).await {
-                    Ok(result) => result,
-                    Err(_) => Err("playback preparation timed out after 30s".to_string()),
-                };
+            let result: Result<PreparedPlayback, String> = preparation.await;
             let _ = tx.send(PrepareEvent::Ready(result));
             wake.notify();
         });
