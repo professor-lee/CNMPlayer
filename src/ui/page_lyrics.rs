@@ -2,10 +2,12 @@ use crate::app::App;
 use crate::data::config::Language;
 use crate::ui::lyric_view;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear};
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) const PAGE_LYRICS_PANEL_HEIGHT: u16 = 4;
 
@@ -126,6 +128,7 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     frame.render_widget(Clear, area);
+    release_left_wide_neighbors(frame.buffer_mut(), area);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -180,6 +183,23 @@ pub fn draw_page_lyrics_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     frame.render_widget(lyric_rows, inner);
+}
+
+/// 浮窗左边框左邻那一格若是双宽字，它的后半格本该压在左边框上。ratatui 的差分
+/// 遇到变化的双宽字会跳过下一格不发，终端把整个字画满两列，左边框就被吃掉
+/// （页面滑入滑出时每帧都会有新字落到这一格）。把这个半截字换成空格，
+/// 保留原样式，左边框才会每帧都完整。
+fn release_left_wide_neighbors(buf: &mut Buffer, area: Rect) {
+    if area.x <= buf.area.x {
+        return;
+    }
+    let x = area.x - 1;
+    for y in area.top()..area.bottom().min(buf.area.bottom()) {
+        let cell = &mut buf[(x, y)];
+        if cell.symbol().width() > 1 {
+            cell.set_char(' ');
+        }
+    }
 }
 
 fn base_bg_style(app: &App) -> Style {
