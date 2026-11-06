@@ -1,8 +1,8 @@
 name: Release
 
-# push tag v* → 双架构构建 → GitHub Release → AUR 同步（链式，同一 workflow 内完成）。
-# 说明：GitHub 不允许 GITHUB_TOKEN 创建的事件触发其他 workflow，
-# 因此 AUR 同步作为本 workflow 的 job 而非独立的 release 触发 workflow。
+# push tag v* → 双架构构建 → GitHub Release → AUR 同步 → 回合并 PR。
+# GITHUB_TOKEN 发布的 release 事件不会触发其他 workflow，AUR 因此保持链式 job。
+# 回合并使用独立 GitHub App，让 PR CI 与合并后的 develop push 正常触发。
 # workflow_dispatch 用于空跑演练（默认只构建不发布）或手动补同步 AUR（sync_aur=true）。
 
 on:
@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Resolve tag
         id: meta
@@ -59,6 +60,10 @@ jobs:
             echo "::error::tag version $WANT_VER != Cargo.toml version $HAVE_VER"
             exit 1
           fi
+
+      - name: Record released commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     # 用产物架构名（amd64/aarch64）而非 Rust 三元组：与 tarball 名一致，也更短
@@ -225,3 +230,48 @@ jobs:
         env:
           TAG: ${{ needs.guard.outputs.tag }}
         run: sudo -u builder -H bash "$GITHUB_WORKSPACE/.github/scripts/aur_sync.sh" release "$TAG" false
+
+  backmerge:
+    name: Backmerge released main into develop
+    needs: [guard, build, gate, publish, aur]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: release-backmerge-develop
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.guard.outputs.sha }}
+          persist-credentials: false
+
+      - name: Require dedicated App credentials
+        env:
+          APP_ID: ${{ vars.RELEASE_BACKMERGE_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.RELEASE_BACKMERGE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+            echo "::error::Configure RELEASE_BACKMERGE_APP_ID and RELEASE_BACKMERGE_APP_PRIVATE_KEY for the dedicated repository App."
+            exit 1
+          fi
+
+      - name: Create repository-scoped App token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.RELEASE_BACKMERGE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BACKMERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Create or reuse pinned backmerge PR and enable auto-merge
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.guard.outputs.tag }}
+          RELEASE_SHA: ${{ needs.guard.outputs.sha }}
+        run: python3 .github/scripts/release_backmerge.py
