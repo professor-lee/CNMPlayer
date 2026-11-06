@@ -1,6 +1,9 @@
+use super::super::streaming::Origin;
+use super::super::streaming::RetryPolicy;
 use super::super::streaming::StreamingReader;
 use super::super::streaming::StreamingReaderHandle;
 use super::super::streaming::StreamingState;
+use super::super::streaming::UrlSource;
 use super::super::streaming::checked_seek;
 use std::fs::File;
 use std::io::ErrorKind;
@@ -24,6 +27,28 @@ fn unique_test_directory(name: &str) -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&directory).unwrap();
     directory
+}
+
+/// 测试用重试参数：毫秒级等待，`attempts` 次尝试无进展即放弃。
+fn fast_policy(attempts: u32, body_stall: Duration) -> RetryPolicy {
+    RetryPolicy {
+        url_timeout: Duration::from_secs(2),
+        header_timeout: Duration::from_secs(2),
+        body_stall,
+        max_attempts: attempts,
+        base_backoff: Duration::from_millis(10),
+        max_backoff: Duration::from_millis(20),
+    }
+}
+
+/// 每次都给同一个直链的来源（本地测试服务器）。
+fn fixed_origin(http: &cyper::Client, url: String, policy: RetryPolicy) -> Origin {
+    let source_url = url.clone();
+    let source: UrlSource = Box::new(move || {
+        let url = source_url.clone();
+        Box::pin(async move { Ok(url) })
+    });
+    Origin::new(http.clone(), None, Some(url), source, policy)
 }
 
 #[test]
@@ -154,10 +179,12 @@ async fn complete_stream_is_published_but_truncated_stream_is_not() {
         );
         let (tx, _rx) = see::sync::channel((0, 0));
         let reader = StreamingReader::new(
-            &http,
-            &format!("http://{address}/song"),
+            fixed_origin(
+                &http,
+                format!("http://{address}/song"),
+                fast_policy(1, Duration::from_secs(2)),
+            ),
             final_path.clone(),
-            None,
             tx,
             cache_maintenance,
         )
@@ -241,14 +268,19 @@ async fn headers_then_stall_fails_waiting_reader_without_publishing_cache() {
         reader.read(&mut byte)
     });
     let (progress_tx, _progress_rx) = see::sync::channel((0, 0));
-    let result = super::super::streaming::download_streaming_with_timeout(
+    let mut origin = fixed_origin(
+        &http,
+        format!("http://{address}/song"),
+        fast_policy(1, Duration::from_millis(70)),
+    );
+    let result = super::super::streaming::download_streaming(
         response,
+        &mut origin,
         writer_file,
         &tmp_path,
         cache_path.clone(),
         &state,
         progress_tx,
-        Duration::from_millis(70),
     )
     .await;
     state.finish(&result);
@@ -305,14 +337,19 @@ async fn slow_chunks_reset_watchdog_beyond_one_timeout_window() {
         .await
         .unwrap();
     let (progress_tx, _progress_rx) = see::sync::channel((0, 0));
-    let result = super::super::streaming::download_streaming_with_timeout(
+    let mut origin = fixed_origin(
+        &http,
+        format!("http://{address}/song"),
+        fast_policy(1, Duration::from_millis(70)),
+    );
+    let result = super::super::streaming::download_streaming(
         response,
+        &mut origin,
         writer_file,
         &tmp_path,
         cache_path.clone(),
         &state,
         progress_tx,
-        Duration::from_millis(70),
     )
     .await;
     state.finish(&result);
@@ -348,10 +385,12 @@ async fn cancellation_wakes_decoder_and_removes_only_its_temporary() {
     );
     let (progress_tx, _progress_rx) = see::sync::channel((0, 0));
     let reader = StreamingReader::new(
-        &http,
-        &format!("http://{address}/song"),
+        fixed_origin(
+            &http,
+            format!("http://{address}/song"),
+            fast_policy(1, Duration::from_secs(2)),
+        ),
         final_path.clone(),
-        None,
         progress_tx,
         cache_maintenance,
     )
@@ -481,4 +520,184 @@ fn cancellation_wakes_waiting_reader() {
     });
     state.cancel();
     worker.join().unwrap();
+}
+
+/// 依次应答若干连接：每个元素是一段原样写回的响应（头+正文），写完即断开。
+/// 返回每个请求里的 `Range` 头（没有则为空串）。
+fn scripted_server(
+    replies: Vec<Vec<u8>>,
+) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut ranges = Vec::new();
+        for reply in replies {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let received = socket.read(&mut request).unwrap();
+            let text = String::from_utf8_lossy(&request[..received]).to_ascii_lowercase();
+            ranges.push(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("range:"))
+                    .map(|value| value.trim().to_string())
+                    .unwrap_or_default(),
+            );
+            socket.write_all(&reply).unwrap();
+        }
+        ranges
+    });
+    (address, server)
+}
+
+fn reply(head: &str, body: &[u8]) -> Vec<u8> {
+    let mut bytes = format!("{head}\r\nConnection: close\r\n\r\n").into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+/// 跑一次完整下载，返回 (读者读到的字节, 落盘缓存, 服务器收到的 Range)。
+async fn download_with(
+    name: &str,
+    replies: Vec<Vec<u8>>,
+    attempts: u32,
+) -> (std::io::Result<Vec<u8>>, Option<Vec<u8>>, Vec<String>) {
+    let (address, server) = scripted_server(replies);
+    let directory = unique_test_directory(name);
+    let final_path = directory.join("song.audio");
+    let http = cyper::Client::builder().no_proxy().build().unwrap();
+    let cache_maintenance = crate::app::cache_maintenance::CacheMaintenance::new(
+        crate::data::config::CacheConfig::default(),
+    );
+    let (tx, _rx) = see::sync::channel((0, 0));
+    let origin = fixed_origin(
+        &http,
+        format!("http://{address}/song"),
+        fast_policy(attempts, Duration::from_secs(2)),
+    );
+    let read = match StreamingReader::new(origin, final_path.clone(), tx, cache_maintenance).await {
+        Ok(reader) => compio::runtime::spawn_blocking(move || {
+            let mut reader = reader;
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).map(|_| bytes)
+        })
+        .await
+        .unwrap(),
+        Err(err) => Err(std::io::Error::other(err.to_string())),
+    };
+    let ranges = server.join().unwrap();
+    // 落盘发生在读者看到完整正文之后，给改名一点时间。
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while read.is_ok() && !final_path.exists() && std::time::Instant::now() < deadline {
+        compio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let cached = std::fs::read(&final_path).ok();
+    // 失败路径的临时文件由分离任务删除；等它跑完再收尾，避免运行时带着未完成任务退出。
+    let has_part = |dir: &std::path::Path| {
+        std::fs::read_dir(dir).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "part")
+        })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while has_part(&directory) && std::time::Instant::now() < deadline {
+        compio::time::sleep(Duration::from_millis(10)).await;
+    }
+    compio::time::sleep(Duration::from_millis(20)).await;
+    std::fs::remove_dir_all(directory).unwrap();
+    (read, cached, ranges)
+}
+
+/// 正文中途断开：从已收到的断点用 Range 续传，拼出完整文件。
+#[compio::test]
+async fn dropped_body_resumes_from_published_offset() {
+    let (read, cached, ranges) = download_with(
+        "resume",
+        vec![
+            reply("HTTP/1.1 200 OK\r\nContent-Length: 6\r\nETag: \"v1\"", b"abc"),
+            reply(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 3-5/6\r\nETag: \"v1\"",
+                b"def",
+            ),
+        ],
+        3,
+    )
+    .await;
+    assert_eq!(read.unwrap(), b"abcdef");
+    assert_eq!(cached.as_deref(), Some(b"abcdef".as_slice()));
+    assert_eq!(ranges, ["", "bytes=3-"]);
+}
+
+/// 首个连接就失败（服务端错误）：后台重试拿到正常响应。
+#[compio::test]
+async fn failed_first_connection_is_retried() {
+    let (read, cached, ranges) = download_with(
+        "first-retry",
+        vec![
+            reply("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0", b""),
+            reply("HTTP/1.1 200 OK\r\nContent-Length: 3", b"xyz"),
+        ],
+        3,
+    )
+    .await;
+    assert_eq!(read.unwrap(), b"xyz");
+    assert_eq!(cached.as_deref(), Some(b"xyz".as_slice()));
+    assert_eq!(ranges, ["", ""]);
+}
+
+/// 服务器忽略 Range、整份重发：丢掉已有前缀，不重复写入。
+#[compio::test]
+async fn full_resend_skips_the_existing_prefix() {
+    let (read, cached, ranges) = download_with(
+        "full-resend",
+        vec![
+            reply("HTTP/1.1 200 OK\r\nContent-Length: 6", b"ab"),
+            reply("HTTP/1.1 200 OK\r\nContent-Length: 6", b"abcdef"),
+        ],
+        3,
+    )
+    .await;
+    assert_eq!(read.unwrap(), b"abcdef");
+    assert_eq!(cached.as_deref(), Some(b"abcdef".as_slice()));
+    assert_eq!(ranges, ["", "bytes=2-"]);
+}
+
+/// 续传时 ETag 变了：内容已换，绝不拼接，直接失败且不落盘。
+#[compio::test]
+async fn changed_etag_on_resume_fails_without_publishing() {
+    let (read, cached, ranges) = download_with(
+        "etag",
+        vec![
+            reply("HTTP/1.1 200 OK\r\nContent-Length: 6\r\nETag: \"v1\"", b"abc"),
+            reply(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 3-5/6\r\nETag: \"v2\"",
+                b"XYZ",
+            ),
+        ],
+        5,
+    )
+    .await;
+    assert!(read.unwrap_err().to_string().contains("source changed"));
+    assert!(cached.is_none());
+    assert_eq!(ranges.len(), 2, "fatal mismatch must not retry again");
+}
+
+/// 连续若干次尝试都没有新字节：预算用尽后失败，读者拿到错误而不是假 EOF。
+#[compio::test]
+async fn retries_without_progress_give_up_after_the_budget() {
+    let (read, cached, ranges) = download_with(
+        "give-up",
+        vec![
+            reply("HTTP/1.1 200 OK\r\nContent-Length: 6", b"abc"),
+            reply("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0", b""),
+            reply("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0", b""),
+        ],
+        3,
+    )
+    .await;
+    assert!(read.unwrap_err().to_string().contains("503"));
+    assert!(cached.is_none());
+    assert_eq!(ranges, ["", "bytes=3-", "bytes=3-"]);
 }

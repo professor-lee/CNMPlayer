@@ -542,11 +542,11 @@ impl ApiState {
             return Ok(url.to_string());
         }
 
-        Err(anyhow!(
-            "song stream url not found for id {} at level {}",
-            song_id,
-            level
-        ))
+        Err(NoStreamUrl {
+            song_id: song_id.to_string(),
+            level: level.to_string(),
+        }
+        .into())
     }
 
     pub(super) async fn vip_info(&mut self) -> Result<ApiResponse> {
@@ -776,6 +776,26 @@ pub(super) fn error_for_status(resp: Response) -> Result<Response> {
         Ok(resp)
     }
 }
+
+/// 接口正常返回但没有可播放的直链（版权/会员限制）：重试也不会变，
+/// 播放准备据此跳过后台重试。
+#[derive(Debug)]
+pub(super) struct NoStreamUrl {
+    song_id: String,
+    level: String,
+}
+
+impl std::fmt::Display for NoStreamUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "song stream url not found for id {} at level {}",
+            self.song_id, self.level
+        )
+    }
+}
+
+impl std::error::Error for NoStreamUrl {}
 
 #[cfg(test)]
 mod tests;

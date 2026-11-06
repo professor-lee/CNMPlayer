@@ -89,3 +89,41 @@ fn snap_pulls_to_the_nearest_edge() {
     let corner = panel_rect_at(content, size, (1.0, 1.0));
     assert_eq!(snap_pos(content, corner, (0.4, 0.4)), (1.0, 1.0));
 }
+
+/// 按差分把下一帧"发给"一个模拟终端：双宽字落地会吃掉右边一格。
+fn present(terminal: &mut Buffer, prev: &Buffer, next: &Buffer) {
+    for (x, y, cell) in prev.diff(next) {
+        terminal[(x, y)] = cell.clone();
+        if cell.symbol().width() > 1 && x + 1 < terminal.area.right() {
+            terminal[(x + 1, y)].set_symbol("");
+        }
+    }
+}
+
+/// 页面平移让中文字落到浮窗左边框左邻时，左边框必须仍在终端上可见。
+#[test]
+fn wide_char_left_of_panel_does_not_swallow_its_border() {
+    let screen = area(0, 0, 10, 4);
+    let panel = area(4, 0, 6, 4);
+    let draw = |page: &str| {
+        let mut buf = Buffer::empty(screen);
+        for y in 0..4 {
+            buf.set_string(0, y, page, Style::default());
+        }
+        release_left_wide_neighbors(&mut buf, panel);
+        ratatui::widgets::Widget::render(Clear, panel, &mut buf);
+        ratatui::widgets::Widget::render(Block::default().borders(Borders::ALL), panel, &mut buf);
+        buf
+    };
+
+    let first = draw("abcdefghij");
+    let mut terminal = first.clone();
+    // 平移后 x=3 起是"中"，它的后半格就是浮窗左边框所在的 x=4。
+    let second = draw("abc中efghi");
+    present(&mut terminal, &first, &second);
+
+    for y in 0..4 {
+        let symbol = terminal[(panel.x, y)].symbol();
+        assert!(matches!(symbol, "│" | "┌" | "└"), "row {y}: {symbol:?}");
+    }
+}
