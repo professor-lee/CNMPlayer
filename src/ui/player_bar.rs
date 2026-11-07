@@ -12,6 +12,12 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// 歌手页 / 歌单页标题右侧的收藏按钮：返回按钮占用的格数（含前导空格）。
+/// 样式与折叠栏爱心一致；命中区由调用方登记。
+pub(crate) fn subscribe_button_glyph(subscribed: bool) -> &'static str {
+    UiIcons::new().heart(subscribed)
+}
+
 /// 脉冲动画的时间基准：进程启动时初始化。
 /// 注意不能用 Instant::now().elapsed()——那是“当前时刻到当前时刻”，恒为 0，
 /// 会导致波形静止不动。

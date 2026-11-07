@@ -436,9 +436,14 @@ impl App {
         self.playlist_track_hits.clear();
         self.playlist_track_download_hits.clear();
         self.author_tile_hits.clear();
+        self.subscribe_button_hit = None;
         self.search_item_hits.clear();
         self.search_item_download_hits.clear();
         self.page_lyrics_layout = None;
+    }
+
+    pub(crate) fn set_subscribe_button_hit(&mut self, rect: HitRect) {
+        self.subscribe_button_hit = Some(rect);
     }
 
     /// 歌词浮窗位置（归一化，内容区内左上角）。
@@ -741,6 +746,13 @@ impl App {
     }
 
     async fn handle_content_click(&mut self, col: u16, row: u16) -> bool {
+        if let Some(rect) = self.subscribe_button_hit
+            && rect.contains(col, row)
+            && matches!(self.page, Page::Playlist | Page::Author)
+        {
+            self.toggle_subscription_hotkey();
+            return true;
+        }
         match self.page {
             Page::Home => {
                 if self.browse.home_sidebar.is_visible() {
