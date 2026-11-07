@@ -299,12 +299,13 @@ A binding that collides with another slot is rejected, and `Ctrl+Alt+R` inside t
 
 The fullscreen-only slots are inert in the host: there they fall through to page navigation instead.
 Conflicts are only checked between slots that act on the same side, so a host-only slot may share a key with a fullscreen-only one (`L`, `Ctrl+S`).
+Keys that close a modal follow their slot: the settings modal closes on `keybind_settings` and the search box on `keybind_search_box`, so rebinding a slot also retires its old key.
 
 ### Fixed shortcuts
 
 - `Esc` — close the current overlay, or go back from the current page
 - `Ctrl+C` — quit from any state
-- `Ctrl+K` — open the keybind list; press it again inside the list to close the whole modal on either UI, not return to settings. `Esc` retains its parent-navigation behavior.
+- `Ctrl+K` — open the keybind list; press it again inside the list to close the whole modal on either UI, not return to settings. `Esc` retains its parent-navigation behavior. The host list shows every key grouped by function (General, Playback, Like & Download, Jump, Equalizer, Window, Fixed Keys); one-sided entries are tagged `(Host)` / `(Fullscreen)`, and focus skips the group headers. The fullscreen list shows only the keys that work on the fullscreen page.
 - `Ctrl+Up` / `Ctrl+Down` — switch the sidebar playlist section (Created / Collected) while the sidebar is open
 - `Ctrl+Alt+R` — restore the default keybinds (inside the keybind modal)
 - `F1` / `F2` / `F3` — login method (QR / account / phone)
@@ -332,7 +333,7 @@ Settings modal:
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` move, `Left` / `Right` / `Enter` change a value, `Esc` steps back
 - Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the Lyrics Settings subpage, where a single click flips the switch
-- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding.
+- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding. Fixed keys are listed read-only.
 
 Fullscreen page:
 
