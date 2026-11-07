@@ -9,6 +9,8 @@ use super::owned_task::SharedTask;
 use super::owned_task::peek_shared_future;
 use super::owned_task::spawn_shared;
 use super::playlist::PlaylistFetchTask;
+use super::playlist::PlaylistPageKind;
+use super::playlist::fetch_album_page;
 use super::playlist::fetch_playlist_page;
 use super::response::parse_value_as_string;
 use super::response::response_code;
@@ -42,11 +44,14 @@ pub(super) struct HomeSidebarFetch {
     pub(super) collected: Vec<HomeSidebarPlaylist>,
     created_more: bool,
     collected_more: bool,
+    /// 收藏专辑（含 EP、Single）：只在收藏歌单取完后才拉，保证「先歌单、后专辑」的纯追加顺序。
+    albums_more: bool,
 }
 
 #[derive(Clone)]
 pub(super) struct HomeSidebarPageFetch {
     pub(super) section: HomeSidebarSection,
+    pub(super) kind: HomeSidebarItemKind,
     pub(super) items: Vec<HomeSidebarPlaylist>,
     pub(super) next_offset: usize,
     pub(super) has_more: bool,
@@ -129,7 +134,45 @@ async fn fetch_home_sidebar_playlists(
     }
 
     let created = parse_home_sidebar_playlists(&created_response);
-    let collected = parse_home_sidebar_playlists(&collected_response);
+    let mut collected = parse_home_sidebar_playlists(&collected_response);
+    let collected_more = response_page_has_more(
+        &collected_response,
+        0,
+        collected.len(),
+        HOME_SIDEBAR_PLAYLIST_LIMIT,
+    );
+    // 收藏歌单还有下一页时，专辑留给分页在歌单取完后再拉。
+    let albums_more = if collected_more {
+        true
+    } else {
+        let albums_response = api
+            .album_sublist(HOME_SIDEBAR_PLAYLIST_LIMIT, 0)
+            .await
+            .map_err(|err| {
+                format!(
+                    "{}: {err}",
+                    pick("收藏专辑请求失败", "Collected albums request failed")
+                )
+            })?;
+        let albums_code = response_code(&albums_response);
+        if albums_code != 200 {
+            return Err(format!(
+                "{}({}): {}",
+                pick("收藏专辑请求失败", "Collected albums request failed"),
+                albums_code,
+                response_message(&albums_response)
+            ));
+        }
+        let albums = parse_home_sidebar_albums(&albums_response);
+        let more = response_page_has_more(
+            &albums_response,
+            0,
+            albums.len(),
+            HOME_SIDEBAR_PLAYLIST_LIMIT,
+        );
+        collected.extend(albums);
+        more
+    };
     Ok(HomeSidebarFetch {
         user_id,
         liked_playlist_id: extract_liked_playlist_id(&account),
@@ -140,12 +183,8 @@ async fn fetch_home_sidebar_playlists(
             created.len(),
             HOME_SIDEBAR_PLAYLIST_LIMIT,
         ),
-        collected_more: response_page_has_more(
-            &collected_response,
-            0,
-            collected.len(),
-            HOME_SIDEBAR_PLAYLIST_LIMIT,
-        ),
+        collected_more,
+        albums_more,
         created,
         collected,
     })
@@ -155,15 +194,19 @@ async fn fetch_home_sidebar_page(
     mut api: ApiState,
     user_id: String,
     section: HomeSidebarSection,
+    kind: HomeSidebarItemKind,
     offset: usize,
     language: Language,
 ) -> Result<HomeSidebarPageFetch, String> {
-    let response = match section {
-        HomeSidebarSection::Created => {
+    let response = match (section, kind) {
+        (_, HomeSidebarItemKind::Album) => {
+            api.album_sublist(HOME_SIDEBAR_PLAYLIST_LIMIT, offset).await
+        }
+        (HomeSidebarSection::Created, HomeSidebarItemKind::Playlist) => {
             api.user_playlist_create(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, offset)
                 .await
         }
-        HomeSidebarSection::Collected => {
+        (HomeSidebarSection::Collected, HomeSidebarItemKind::Playlist) => {
             api.user_playlist_collect(&user_id, HOME_SIDEBAR_PLAYLIST_LIMIT, offset)
                 .await
         }
@@ -174,8 +217,12 @@ async fn fetch_home_sidebar_page(
         return Err(format!("请求失败({code}): {}", response_message(&response)));
     }
 
-    let items = parse_home_sidebar_playlists(&response);
-    if items.is_empty() {
+    let items = match kind {
+        HomeSidebarItemKind::Playlist => parse_home_sidebar_playlists(&response),
+        HomeSidebarItemKind::Album => parse_home_sidebar_albums(&response),
+    };
+    // 专辑分页从 0 开始时可能本就为空（收藏歌单刚好取完、没有收藏专辑）：不算错误。
+    if items.is_empty() && !(kind == HomeSidebarItemKind::Album && offset == 0) {
         return Err(match language {
             Language::Zh => "侧边栏歌单分页为空".to_string(),
             Language::En => "Sidebar playlist page is empty".to_string(),
@@ -185,6 +232,7 @@ async fn fetch_home_sidebar_page(
     let next_offset = offset.saturating_add(item_count);
     Ok(HomeSidebarPageFetch {
         section,
+        kind,
         items,
         next_offset,
         has_more: response_page_has_more(
@@ -202,8 +250,16 @@ pub(crate) enum HomeSidebarSection {
     Collected,
 }
 
+/// 侧边栏条目类型：歌单，或收藏的专辑（含 EP、Single，网易云里都是专辑）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HomeSidebarItemKind {
+    Playlist,
+    Album,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct HomeSidebarPlaylist {
+    pub(crate) kind: HomeSidebarItemKind,
     pub(crate) id: Option<String>,
     pub(crate) title: String,
     pub(crate) creator: String,
@@ -254,6 +310,9 @@ pub(crate) struct HomeSidebarState {
     pub(super) collected_has_more: bool,
     pub(super) created_next_offset: usize,
     pub(super) collected_next_offset: usize,
+    /// 收藏分区里专辑（含 EP、Single）的分页游标：排在收藏歌单之后。
+    pub(super) album_has_more: bool,
+    pub(super) album_next_offset: usize,
     pub(crate) focused_section: HomeSidebarSection,
     pub(crate) focused_index: usize,
     pub(super) created_focused_index: usize,
@@ -283,6 +342,8 @@ impl Default for HomeSidebarState {
             collected_has_more: false,
             created_next_offset: 0,
             collected_next_offset: 0,
+            album_has_more: false,
+            album_next_offset: 0,
             focused_section: HomeSidebarSection::Created,
             focused_index: 0,
             created_focused_index: 0,
@@ -347,25 +408,36 @@ impl HomeSidebarState {
     pub(super) fn section_has_more(&self, section: HomeSidebarSection) -> bool {
         match section {
             HomeSidebarSection::Created => self.created_has_more,
-            HomeSidebarSection::Collected => self.collected_has_more,
+            HomeSidebarSection::Collected => self.collected_has_more || self.album_has_more,
         }
     }
 
-    fn section_next_offset(&self, section: HomeSidebarSection) -> usize {
+    /// 该分区下一页要拉的 `(条目类型, offset)`：收藏分区先取完歌单再取专辑。
+    fn section_next_page(&self, section: HomeSidebarSection) -> (HomeSidebarItemKind, usize) {
         match section {
-            HomeSidebarSection::Created => self.created_next_offset,
-            HomeSidebarSection::Collected => self.collected_next_offset,
+            HomeSidebarSection::Created => {
+                (HomeSidebarItemKind::Playlist, self.created_next_offset)
+            }
+            HomeSidebarSection::Collected if self.collected_has_more => {
+                (HomeSidebarItemKind::Playlist, self.collected_next_offset)
+            }
+            HomeSidebarSection::Collected => (HomeSidebarItemKind::Album, self.album_next_offset),
         }
     }
 
     pub(super) fn append_section_page(&mut self, page: HomeSidebarPageFetch) {
-        match page.section {
-            HomeSidebarSection::Created => {
+        match (page.section, page.kind) {
+            (_, HomeSidebarItemKind::Album) => {
+                self.collected_playlists.extend(page.items);
+                self.album_next_offset = page.next_offset;
+                self.album_has_more = page.has_more;
+            }
+            (HomeSidebarSection::Created, HomeSidebarItemKind::Playlist) => {
                 self.created_playlists.extend(page.items);
                 self.created_next_offset = page.next_offset;
                 self.created_has_more = page.has_more;
             }
-            HomeSidebarSection::Collected => {
+            (HomeSidebarSection::Collected, HomeSidebarItemKind::Playlist) => {
                 self.collected_playlists.extend(page.items);
                 self.collected_next_offset = page.next_offset;
                 self.collected_has_more = page.has_more;
@@ -566,10 +638,45 @@ fn parse_home_sidebar_playlists(response: &ApiResponse) -> Vec<HomeSidebarPlayli
                 .unwrap_or("Unknown User")
                 .to_string(),
             track_count,
+            kind: HomeSidebarItemKind::Playlist,
         });
     }
 
     out
+}
+
+/// 解析 `album/sublist` 回包（`data[]`）：作者名用 " / " 连接，`size` 为曲目数。
+fn parse_home_sidebar_albums(response: &ApiResponse) -> Vec<HomeSidebarPlaylist> {
+    let Some(items) = response.body.get("data").and_then(|value| value.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let title = item.get("name").and_then(|value| value.as_str())?;
+            let creator = item
+                .get("artists")
+                .and_then(|value| value.as_array())
+                .map(|artists| {
+                    artists
+                        .iter()
+                        .filter_map(|artist| artist.get("name").and_then(|value| value.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                })
+                .unwrap_or_default();
+            Some(HomeSidebarPlaylist {
+                kind: HomeSidebarItemKind::Album,
+                id: parse_value_as_string(item.get("id")),
+                title: title.to_string(),
+                creator,
+                track_count: item
+                    .get("size")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0) as usize,
+            })
+        })
+        .collect()
 }
 
 impl App {
@@ -673,8 +780,18 @@ impl App {
                 self.browse.home_sidebar.collected_has_more = data.collected_more;
                 self.browse.home_sidebar.created_next_offset =
                     self.browse.home_sidebar.created_playlists.len();
+                // 专辑排在收藏歌单之后：首批拉到的专辑数 = 收藏分区总数 − 收藏歌单数。
+                let album_count = self
+                    .browse
+                    .home_sidebar
+                    .collected_playlists
+                    .iter()
+                    .filter(|item| item.kind == HomeSidebarItemKind::Album)
+                    .count();
                 self.browse.home_sidebar.collected_next_offset =
-                    self.browse.home_sidebar.collected_playlists.len();
+                    self.browse.home_sidebar.collected_playlists.len() - album_count;
+                self.browse.home_sidebar.album_next_offset = album_count;
+                self.browse.home_sidebar.album_has_more = data.albums_more;
                 self.browse.home_sidebar.clamp_focus();
                 self.browse.home_sidebar.status_line = match self.config.language {
                     Language::Zh => format!(
@@ -757,12 +874,13 @@ impl App {
         let Some(user_id) = self.browse.home_sidebar.user_id.clone() else {
             return;
         };
-        let offset = self.browse.home_sidebar.section_next_offset(section);
+        let (kind, offset) = self.browse.home_sidebar.section_next_page(section);
         self.browse.home_sidebar.loading_more = true;
         let fut = fetch_home_sidebar_page(
             self.api.clone(),
             user_id,
             section,
+            kind,
             offset,
             self.config.language,
         );
@@ -771,7 +889,7 @@ impl App {
     }
 
     pub(super) fn open_focused_home_sidebar_playlist(&mut self) {
-        let (playlist_id, title) = {
+        let (item_id, title, kind) = {
             let Some(item) = self.browse.home_sidebar.focused_playlist() else {
                 self.browse.home.status_line = self
                     .lang_text("侧边栏暂无可打开歌单", "No sidebar playlist to open")
@@ -779,7 +897,7 @@ impl App {
                 return;
             };
 
-            let Some(playlist_id) = item.id.clone() else {
+            let Some(item_id) = item.id.clone() else {
                 self.browse.home.status_line = self
                     .lang_text(
                         "当前歌单缺少 ID，无法打开",
@@ -789,19 +907,35 @@ impl App {
                 return;
             };
 
-            (playlist_id, item.title.clone())
+            (item_id, item.title.clone(), item.kind)
         };
 
-        let future = fetch_playlist_page(
-            self.api.clone(),
-            self.config.language,
-            playlist_id,
-            None,
-            self.browse.home_sidebar.liked_playlist_id.clone(),
-            self.browse.home_sidebar.user_id.clone(),
-        );
-        let task: PlaylistFetchTask = Box::pin(async move { Some(future.await) });
+        let api = self.api.clone();
+        let language = self.config.language;
+        let (task, page_kind): (PlaylistFetchTask, PlaylistPageKind) = match kind {
+            HomeSidebarItemKind::Album => {
+                let future = fetch_album_page(api, language, item_id, None);
+                (
+                    Box::pin(async move { Some(future.await) }),
+                    PlaylistPageKind::Album,
+                )
+            }
+            HomeSidebarItemKind::Playlist => {
+                let future = fetch_playlist_page(
+                    api,
+                    language,
+                    item_id,
+                    None,
+                    self.browse.home_sidebar.liked_playlist_id.clone(),
+                    self.browse.home_sidebar.user_id.clone(),
+                );
+                (
+                    Box::pin(async move { Some(future.await) }),
+                    PlaylistPageKind::Playlist,
+                )
+            }
+        };
         // 只在主页绘制侧栏；保留展开与焦点，返回时继续操作原歌单。
-        self.dispatch_home_playlist_fetch(title, task);
+        self.dispatch_home_playlist_fetch(title, task, page_kind);
     }
 }

@@ -131,9 +131,9 @@ impl App {
         }
     }
 
-    /// 歌单收藏态已在服务端改变：主页侧边栏的「收藏歌单」分区过期，下次展开时重取。
+    /// 歌单 / 专辑收藏态已在服务端改变：主页侧边栏的「收藏」分区过期，下次展开时重取。
     fn mark_sidebar_stale_for(&mut self, key: &str) {
-        if key.starts_with("playlist:") {
+        if key.starts_with("playlist:") || key.starts_with("album:") {
             self.browse.home_sidebar.stale = true;
         }
     }

@@ -349,6 +349,7 @@ fn sidebar_state_appends_requested_section_page() {
         created_has_more: true,
         created_next_offset: 100,
         created_playlists: vec![HomeSidebarPlaylist {
+            kind: super::sidebar::HomeSidebarItemKind::Playlist,
             id: Some("first".to_string()),
             title: "first".to_string(),
             creator: "creator".to_string(),
@@ -358,7 +359,9 @@ fn sidebar_state_appends_requested_section_page() {
     };
     state.append_section_page(HomeSidebarPageFetch {
         section: HomeSidebarSection::Created,
+        kind: super::sidebar::HomeSidebarItemKind::Playlist,
         items: vec![HomeSidebarPlaylist {
+            kind: super::sidebar::HomeSidebarItemKind::Playlist,
             id: Some("second".to_string()),
             title: "second".to_string(),
             creator: "creator".to_string(),
@@ -627,6 +630,7 @@ fn like_display_is_per_song() {
 
 fn sidebar_item(title: &str) -> HomeSidebarPlaylist {
     HomeSidebarPlaylist {
+        kind: super::sidebar::HomeSidebarItemKind::Playlist,
         id: Some(title.to_string()),
         title: title.to_string(),
         creator: String::new(),

@@ -269,6 +269,20 @@ impl ApiState {
         Ok(response)
     }
 
+    /// 当前账号收藏的专辑（含 EP、Single），分页。
+    pub(super) async fn album_sublist(
+        &mut self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("limit", &limit.max(1).to_string())
+            .param("offset", &offset.to_string());
+        let response = self.client.album_sublist(&query).await?;
+        Ok(response)
+    }
+
     pub(super) async fn login_email(&mut self, email: &str, password: &str) -> Result<ApiResponse> {
         let query = Query::new()
             .param("email", email)
