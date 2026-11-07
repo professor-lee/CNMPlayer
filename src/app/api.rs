@@ -480,6 +480,20 @@ impl ApiState {
         Ok(response)
     }
 
+    /// 歌手动态信息（含当前账号是否已收藏该歌手）。
+    pub(super) async fn artist_detail_dynamic(&mut self, id: &str) -> Result<ApiResponse> {
+        let query = self.query_with_cookie().param("id", id);
+        let response = self.client.artist_detail_dynamic(&query).await?;
+        Ok(response)
+    }
+
+    /// 专辑动态信息（含当前账号是否已收藏该专辑）。
+    pub(super) async fn album_detail_dynamic(&mut self, id: &str) -> Result<ApiResponse> {
+        let query = self.query_with_cookie().param("id", id);
+        let response = self.client.album_detail_dynamic(&query).await?;
+        Ok(response)
+    }
+
     pub(super) async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("uid", uid);
         let response = self.client.likelist(&query).await?;
