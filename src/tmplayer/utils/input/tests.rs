@@ -182,11 +182,15 @@ fn general_settings_tab_navigation_and_toggle_close_do_not_leak() {
 #[test]
 fn rebinding_disables_the_default_key() {
     let key = |ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
-    let mut config = Config::default();
-    config.keybind_fullscreen_toggle_mode = "R".into();
-    config.keybind_toggle_like_fullscreen = "K".into();
-    config.keybind_fullscreen_toggle_play_pause = "Enter".into();
-    config.keybind_settings = "Y".into();
+    let config = Config {
+        keybind_fullscreen_toggle_mode: "R".into(),
+        keybind_toggle_like_fullscreen: "K".into(),
+        keybind_fullscreen_toggle_play_pause: "Enter".into(),
+        keybind_settings: "Y".into(),
+        keybind_fullscreen_prev: "A".into(),
+        keybind_fullscreen_next: "D".into(),
+        ..Config::default()
+    };
 
     assert_eq!(map_key(key('m'), Overlay::None, &config), Action::None);
     assert_eq!(
@@ -208,8 +212,6 @@ fn rebinding_disables_the_default_key() {
         );
     }
 
-    config.keybind_fullscreen_prev = "A".into();
-    config.keybind_fullscreen_next = "D".into();
     for code in [KeyCode::Left, KeyCode::Right] {
         assert_eq!(
             map_key(
