@@ -16,6 +16,7 @@ use super::playlist_pagination;
 use super::playlist_pagination::PlaylistPagination;
 use super::response::first_non_empty;
 use super::response::parse_usize_value;
+use super::response::parse_value_as_string;
 use super::response::response_code;
 use super::response::response_message;
 use super::text::lang_text;
@@ -101,6 +102,8 @@ pub(super) struct PlaylistFetch {
     pub(super) has_more: bool,
     pub(super) paginated: bool,
     pub(super) liked: Option<LikedRefresh>,
+    /// 可收藏对象的 `(收藏键, 服务端收藏态)`；自建歌单 / 推荐页等不可收藏为 `None`。
+    pub(super) subscribed: Option<(String, bool)>,
 }
 
 /// 打开的歌单是不是「我喜欢的音乐」：ID 对得上，或标题命中（中英文两种叫法）。
@@ -197,7 +200,7 @@ pub(super) async fn fetch_playlist_page(
         .to_string();
 
     let liked = if is_liked_playlist(liked_playlist_id.as_deref(), &playlist_id, Some(&title)) {
-        fetch_liked_refresh(&mut api, language, uid_hint).await
+        fetch_liked_refresh(&mut api, language, uid_hint.clone()).await
     } else {
         None
     };
@@ -216,6 +219,19 @@ pub(super) async fn fetch_playlist_page(
 
     let cover_url = first_non_empty(playlist, &["/coverImgUrl", "/picUrl"]).or(fallback_cover_url);
 
+    // 自己创建的歌单不能收藏：创建者与当前账号相同就不给收藏按钮。
+    let creator_id = parse_value_as_string(playlist.pointer("/creator/userId"));
+    let own_playlist = creator_id.is_some() && creator_id == uid_hint;
+    let subscribed = (!own_playlist).then(|| {
+        (
+            super::subscription::playlist_key(&playlist_id),
+            playlist
+                .get("subscribed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        )
+    });
+
     let total_tracks = parse_usize_value(playlist.get("trackCount"));
     let first_page =
         fetch_playlist_tracks_page(api.clone(), playlist_id.clone(), 0, total_tracks).await?;
@@ -232,6 +248,7 @@ pub(super) async fn fetch_playlist_page(
         has_more: first_page.has_more,
         paginated: true,
         liked,
+        subscribed,
     })
 }
 
@@ -283,6 +300,7 @@ pub(super) async fn fetch_daily_recommend_page(
         has_more: false,
         paginated: false,
         liked: None,
+        subscribed: None,
     })
 }
 
@@ -295,7 +313,18 @@ pub(super) async fn fetch_album_page(
     album_id: String,
     fallback_cover_url: Option<String>,
 ) -> Result<PlaylistFetch, String> {
-    let response = api.album(&album_id).await.map_err(|err| err.to_string())?;
+    let mut dynamic_api = api.clone();
+    let (response, dynamic) = futures::join!(
+        api.album(&album_id),
+        dynamic_api.album_detail_dynamic(&album_id)
+    );
+    let response = response.map_err(|err| err.to_string())?;
+    // 收藏态拿不到时不画收藏按钮，不影响专辑页本身。
+    let subscribed = dynamic
+        .ok()
+        .filter(|response| response_code(response) == 200)
+        .and_then(|response| response.body.get("isSub").and_then(Value::as_bool))
+        .map(|subscribed| (super::subscription::album_key(&album_id), subscribed));
     let code = response_code(&response);
     if code != 200 {
         return Err(format!(
@@ -358,6 +387,7 @@ pub(super) async fn fetch_album_page(
         paginated: false,
         tracks,
         liked: None,
+        subscribed,
     })
 }
 
@@ -391,6 +421,8 @@ pub(crate) struct PlaylistState {
     pub(crate) artist: String,
     pub(crate) description: String,
     pub(crate) cover: CoverFetchState,
+    /// 当前页可收藏对象的键（取收藏态见 `App::subscription_displayed`）。
+    pub(crate) subscribe_key: Option<String>,
     pub(crate) focused_idx: usize,
     pub(super) scroll_offset: usize,
     pub(super) visible_rows: usize,
@@ -405,6 +437,7 @@ impl Default for PlaylistState {
     fn default() -> Self {
         Self {
             id: None,
+            subscribe_key: None,
             title: "歌单详情".to_string(),
             artist: "网易云音乐".to_string(),
             description: "从主页进入歌单后加载真实数据。".to_string(),

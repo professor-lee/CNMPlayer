@@ -32,6 +32,7 @@ pub(crate) mod sidebar;
 mod startup;
 mod startup_controller;
 mod streaming;
+mod subscription;
 mod text;
 pub(crate) mod tracks;
 
@@ -184,6 +185,8 @@ pub(crate) struct App {
     /// 歌单页 / 专辑页行内下载图标的命中区（先于整行命中判定）。
     playlist_track_download_hits: Vec<(HitRect, usize)>,
     author_tile_hits: Vec<(HitRect, usize)>,
+    /// 歌手页 / 歌单页标题右侧收藏按钮的命中区（不可收藏时为 None）。
+    subscribe_button_hit: Option<HitRect>,
     search_item_hits: Vec<(HitRect, usize)>,
     /// 搜索页单曲行内下载图标的命中区。
     search_item_download_hits: Vec<(HitRect, usize)>,
@@ -330,6 +333,7 @@ impl App {
             playlist_track_hits: Vec::new(),
             playlist_track_download_hits: Vec::new(),
             author_tile_hits: Vec::new(),
+            subscribe_button_hit: None,
             search_item_hits: Vec::new(),
             search_item_download_hits: Vec::new(),
             input: InputController::default(),
@@ -464,6 +468,7 @@ impl App {
         self.tick_author_fetch();
         self.tick_playlist_fetch();
         self.tick_like_sync();
+        self.tick_subscription_sync();
         self.tick_download();
         self.tick_stderr_log_trim();
         trim_allocator_periodically();

@@ -276,6 +276,7 @@ fn private_roam_playlist_fetch(
         has_more: false,
         paginated: false,
         liked: None,
+        subscribed: None,
     }
 }
 

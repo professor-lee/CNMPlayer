@@ -38,6 +38,7 @@ struct AuthorResponses {
     desc: Option<ApiResponse>,
     top_song: Option<ApiResponse>,
     pub(super) album: Option<ApiResponse>,
+    dynamic: Option<ApiResponse>,
 }
 
 /// 作者页的一次拉取结果：`AuthorState` 里除封面句柄与视口字段外的全部字段。
@@ -55,6 +56,8 @@ pub(super) struct AuthorFetch {
     pub(super) albums: Vec<PlaylistTrack>,
     pub(super) eps: Vec<PlaylistTrack>,
     pub(super) singles: Vec<PlaylistTrack>,
+    /// `(收藏键, 服务端是否已收藏该歌手)`；动态信息拿不到时为 `None`（不画收藏按钮）。
+    pub(super) subscribed: Option<(String, bool)>,
 }
 
 /// 四个 `artist/*` 接口一次并发拉取；发行物接口在自己的后台 future 内顺序遍历分页。
@@ -68,13 +71,15 @@ async fn fetch_artist_responses(
     let mut detail_api = api.clone();
     let mut desc_api = api.clone();
     let mut top_song_api = api.clone();
+    let mut dynamic_api = api.clone();
     let album_api = api.clone();
     let album_fetch = fetch_all_artist_albums(album_api, artist_id);
-    let (detail, desc, top_song, album) = futures::join!(
+    let (detail, desc, top_song, album, dynamic) = futures::join!(
         detail_api.artist_detail(artist_id),
         desc_api.artist_desc(artist_id),
         top_song_api.artist_top_song(artist_id),
         album_fetch,
+        dynamic_api.artist_detail_dynamic(artist_id),
     );
     let album = album.map_err(|error| format!("artist album pagination failed: {error}"))?;
 
@@ -83,6 +88,7 @@ async fn fetch_artist_responses(
         desc: desc.ok(),
         top_song: top_song.ok(),
         album: Some(album),
+        dynamic: dynamic.ok(),
     })
 }
 
@@ -260,6 +266,8 @@ impl AuthorTile {
 
 pub(crate) struct AuthorState {
     pub(crate) id: Option<String>,
+    /// 当前页歌手的收藏键（取收藏态见 `App::subscription_displayed`）。
+    pub(crate) subscribe_key: Option<String>,
     pub(crate) title: String,
     pub(crate) artist: String,
     pub(crate) description: String,
@@ -279,6 +287,7 @@ impl Default for AuthorState {
     fn default() -> Self {
         Self {
             id: None,
+            subscribe_key: None,
             title: "作者页".to_string(),
             artist: "网易云音乐".to_string(),
             description: "从搜索结果进入作者页后加载真实数据。".to_string(),
@@ -677,7 +686,12 @@ impl App {
             desc,
             top_song,
             album,
+            dynamic,
         } = responses;
+        let subscribed = dynamic
+            .filter(|response| response_code(response) == 200)
+            .and_then(|response| response.body.get("followed").and_then(Value::as_bool))
+            .map(|followed| (super::subscription::artist_key(artist_id), followed));
 
         if detail.is_none() && desc.is_none() && top_song.is_none() && album.is_none() {
             return Err(
@@ -887,6 +901,7 @@ impl App {
             albums,
             eps,
             singles,
+            subscribed,
         })
     }
 }
