@@ -3,7 +3,7 @@ use super::input::{
 };
 use super::layout::ModalRows;
 use super::modals::download::render_download_settings_modal;
-use super::modals::help::{help_item_count, help_items, render_help_modal};
+use super::modals::help::{help_row_text, help_rows, render_help_modal};
 use super::modals::lyrics::render_lyrics_settings_modal;
 use super::modals::settings::{render_general_settings_modal, render_settings_modal};
 use super::page::{cover_key, slide_page_from_bottom};
@@ -1229,19 +1229,17 @@ fn progress_drag_ignores_missing_or_degenerate_tracks() {
     }
 }
 
-/// 按键提示弹窗的条目数必须由列表本身决定：写死会让末尾几行选不中
-/// （历史上常量 14 对不上 16 行就是这么来的），小窗口切换也已从设置弹窗搬到这里。
+/// 按键提示弹窗只列全屏页可用的键：宿主专用的键（例如小窗口切换）不出现。
 #[test]
-fn help_items_cover_every_row_and_include_the_moved_hint() {
+fn help_rows_list_only_fullscreen_keys() {
     let app = state(Overlay::HelpModal);
-    let items = help_items(&app);
-
-    assert_eq!(help_item_count(&app), items.len(), "翻页计数与列表同源");
-    assert!(items.len() > 14, "条目数应随列表增长，不再写死");
-    assert!(
-        items.iter().any(|(label, _)| label.contains("小窗口")),
-        "“小窗口切换显示”应从设置弹窗移到按键提示里"
-    );
+    let texts: Vec<String> = help_rows()
+        .iter()
+        .map(|&row| help_row_text(&app, row))
+        .collect();
+    assert!(texts.iter().any(|t| t.contains("均衡器")), "{texts:?}");
+    assert!(!texts.iter().any(|t| t.contains("小窗口")), "{texts:?}");
+    assert!(!texts.iter().any(|t| t.contains("主程序")), "{texts:?}");
 }
 
 /// 读回一行的实际渲染文本（用 TestBackend 的缓冲，等价于看画面）。
@@ -1386,36 +1384,28 @@ fn lyrics_modal_hit_rows_sit_on_the_drawn_rows() {
     }
 }
 
-/// 按键提示弹窗：命中行落在条目行上，且移到这里的“小窗口切换显示”能显示出来。
+/// 按键提示弹窗：命中行只落在条目行上（分组标题不可点）。
 #[test]
 fn help_modal_hit_rows_sit_on_the_drawn_rows() {
     let mut app = state(Overlay::HelpModal);
-    let items = help_items(&app);
-    let moved = items
-        .iter()
-        .position(|(label, _)| label.contains("小窗口"))
-        .expect("小窗口条目");
-    // 选中它，渲染窗口就会滚到它，从而一定在命中区内。
-    app.help_keybind_selected = moved;
+    let rows_def = help_rows();
 
     let (rows, buf) = render_to_buffer(&mut app, |f, app, rows| {
         render_help_modal(f, f.area(), app, rows)
     });
 
     assert!(rows.len() > 0, "条目行要登记出来才能点");
-    let mut saw_hint = false;
-    for idx in 0..rows.len() {
-        let rect = rows.get(idx).expect("命中行");
-        let text = compact(&line_text(&buf, rect.y));
+    for y in 0..buf.area().height {
+        let Some(index) = (0..buf.area().width).find_map(|x| rows.hit(x, y)) else {
+            continue;
+        };
+        assert!(!rows_def[index].is_header(), "第 {y} 行是分组标题却可点");
+        let text = compact(&line_text(&buf, y));
         assert!(
-            items
-                .iter()
-                .any(|(label, key)| text.contains(&compact(label)) && text.contains(&compact(key))),
+            text.contains(&compact(&help_row_text(&app, rows_def[index]))),
             "命中行落在非条目行上: {text:?}"
         );
-        saw_hint |= text.contains(&compact("小窗口"));
     }
-    assert!(saw_hint, "“小窗口切换显示”应出现在按键提示弹窗里");
 }
 
 /// 矮终端下 about 仍按条目序号 8 登记，不能映射到被截断的其他条目。
@@ -1447,13 +1437,13 @@ fn settings_modal_about_row_keeps_its_item_index_when_items_are_truncated() {
 #[test]
 fn help_modal_hit_index_matches_the_row_after_scrolling() {
     let mut app = state(Overlay::HelpModal);
-    let items = help_items(&app);
-    // 选末条：24 行终端放不下 17 条，渲染窗口必然滚动，滚动量 = 1。
-    app.help_keybind_selected = items.len() - 1;
+    let rows_def = help_rows();
+    app.help_keybind_selected = rows_def.len() - 1;
 
     let (rows, buf) = render_to_buffer(&mut app, |f, app, rows| {
         render_help_modal(f, f.area(), app, rows)
     });
+    assert!(app.help_keybind_scroll > 0, "末条应当把视口滚起来");
 
     let mut hits = 0;
     for y in 0..buf.area().height {
@@ -1461,9 +1451,8 @@ fn help_modal_hit_index_matches_the_row_after_scrolling() {
             continue;
         };
         let text = compact(&line_text(&buf, y));
-        let (label, key) = &items[index];
         assert!(
-            text.contains(&compact(label)) && text.contains(&compact(key)),
+            text.contains(&compact(&help_row_text(&app, rows_def[index]))),
             "第 {y} 行的命中序号 {index} 与画面 {text:?} 不符"
         );
         hits += 1;
@@ -1477,8 +1466,7 @@ fn help_modal_hit_index_matches_the_row_after_scrolling() {
 #[test]
 fn help_modal_viewport_stays_put_while_focus_is_inside() {
     let mut app = state(Overlay::HelpModal);
-    let items = help_items(&app);
-    let last = items.len() - 1;
+    let last = help_rows().len() - 1;
 
     // 末条越界：视口滚起来（24 行终端放不下全部条目）。
     app.help_keybind_selected = last;
@@ -1496,7 +1484,7 @@ fn help_modal_viewport_stays_put_while_focus_is_inside() {
     assert_eq!(app.help_keybind_scroll, scrolled, "窗口内不动");
 
     // 回首条：越过上边界，视口回到顶。
-    app.help_keybind_selected = 0;
+    app.help_keybind_selected = 1;
     let _ = render_to_buffer(&mut app, |f, app, rows| {
         render_help_modal(f, f.area(), app, rows)
     });

@@ -3,6 +3,7 @@ use crate::app::App;
 use crate::app::Overlay;
 use crate::app::input_controller::HitRect;
 use crate::data::config::{AudioQuality, BarChannels, BarNumber, Language, VisualizeMode};
+use crate::data::keymap::{self, KeyRow, KeyView};
 use crate::tmplayer::data::about::{BrailleImage, about_info};
 use crate::tmplayer::ui::borders::SOLID_BORDER;
 use ratatui::Frame;
@@ -748,75 +749,44 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         rows[0],
     );
 
-    let mut lines: Vec<Line> = (0..crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS)
-        .map(|idx| {
-            let is_rebinding = app.settings.keybind_rebinding == Some(idx);
-            let style = if is_rebinding {
-                Style::default()
-                    .fg(app.theme.color_accent())
-                    .add_modifier(Modifier::BOLD)
-            } else if idx == app.settings.keybind_selected {
-                Style::default()
+    let rows_def = crate::app::settings_controller::keybind_rows();
+    let lines: Vec<Line> = rows_def
+        .iter()
+        .enumerate()
+        .map(|(idx, &row)| {
+            let mut text = keymap::row_text(row, &app.config, app.config.language, KeyView::Host);
+            let style = match row {
+                KeyRow::Header(_) => {
+                    return Line::from(Span::styled(
+                        text,
+                        Style::default()
+                            .fg(app.theme.color_accent3())
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                KeyRow::Slot(slot) if app.settings.keybind_rebinding == Some(slot) => {
+                    text.push_str(l(app, "  [等待输入]", "  [Waiting Input]"));
+                    Style::default()
+                        .fg(app.theme.color_accent())
+                        .add_modifier(Modifier::BOLD)
+                }
+                _ if idx == app.settings.keybind_selected => Style::default()
                     .fg(app.theme.color_accent2())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.color_text())
+                    .add_modifier(Modifier::BOLD),
+                KeyRow::Fixed(_) => Style::default().fg(app.theme.color_subtext()),
+                KeyRow::Slot(_) => Style::default().fg(app.theme.color_text()),
             };
-
-            let mut label = app.keybind_label_for_index(idx);
-            if is_rebinding {
-                label.push_str(l(app, "  [等待输入]", "  [Waiting Input]"));
-            }
-
-            Line::from(Span::styled(format!("  {}", label), style))
+            Line::from(Span::styled(format!("  {text}"), style))
         })
         .collect();
 
-    lines.push(Line::from(Span::styled(
-        format!(
-            "  {}",
-            l(
-                app,
-                "侧边栏歌单区切换（Ctrl+up/down）",
-                "Sidebar Playlist Section Switch (Ctrl+Up/Down)",
-            )
-        ),
-        Style::default().fg(app.theme.color_subtext()),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "  {}",
-            l(
-                app,
-                "按键绑定弹窗开关（Ctrl+K）",
-                "Toggle Keybinds (Ctrl+K)"
-            )
-        ),
-        Style::default().fg(app.theme.color_subtext()),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "  {}",
-            l(
-                app,
-                "重置快捷键（Ctrl+Alt+R）",
-                "Reset Keybinds (Ctrl+Alt+R)"
-            )
-        ),
-        Style::default().fg(app.theme.color_subtext()),
-    )));
-
-    let focus_index = app
-        .settings
-        .keybind_rebinding
-        .unwrap_or(app.settings.keybind_selected);
     let visible_rows = rows[1].height as usize;
     let total_rows = lines.len();
-    let scroll = scroll_for_focus(
+    let scroll = keymap::scroll_for_row(
         app.settings.keybind_scroll,
-        total_rows,
+        rows_def,
         visible_rows,
-        focus_index,
+        app.settings.keybind_selected,
     );
     app.settings.keybind_scroll = scroll;
 
@@ -831,7 +801,12 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         format!(
             "{}: {}  {}",
             l(app, "正在重绑", "Rebinding"),
-            app.keybind_label_for_index(index),
+            keymap::row_text(
+                KeyRow::Slot(index),
+                &app.config,
+                app.config.language,
+                KeyView::Host
+            ),
             l(
                 app,
                 "按下新快捷键，Esc 取消",
@@ -858,13 +833,11 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
         rows[2],
     );
 
-    // 命中区：只登记窗口内可见的快捷键行（渲染带 `scroll` 偏移；末尾三行
-    // 是说明文字、不属于任何条目）。
-    for (idx, offset) in scrolled_rows(
-        crate::app::settings_controller::SETTINGS_KEYBIND_ITEMS,
-        visible_rows,
-        scroll,
-    ) {
+    // 命中区：只登记窗口内可见、且不是分组标题的行（渲染带 `scroll` 偏移）。
+    for (idx, offset) in scrolled_rows(total_rows, visible_rows, scroll) {
+        if rows_def[idx].is_header() {
+            continue;
+        }
         app.push_settings_item_hit(
             HitRect {
                 x: rows[1].x,

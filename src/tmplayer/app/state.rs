@@ -368,7 +368,9 @@ impl AppState {
             mpris_name_edit: None,
             bar_settings_selected: 0,
             lyrics_settings_selected: 0,
-            help_keybind_selected: 0,
+            help_keybind_selected: crate::data::keymap::first_focusable(
+                crate::tmplayer::ui::tui::modals::help::help_rows(),
+            ),
             help_keybind_scroll: 0,
             vip_audio_unlocked: false,
             download_state: crate::tmplayer::DownloadIconState::Hidden,
@@ -704,9 +706,13 @@ impl AppState {
             self.close_overlay();
         } else {
             self.open_modal(Overlay::HelpModal);
-            self.help_keybind_selected = self.help_keybind_selected.min(
-                crate::tmplayer::ui::tui::modals::help::help_item_count(self).saturating_sub(1),
-            );
+            let rows = crate::tmplayer::ui::tui::modals::help::help_rows();
+            if rows
+                .get(self.help_keybind_selected)
+                .is_none_or(|row| row.is_header())
+            {
+                self.help_keybind_selected = crate::data::keymap::first_focusable(rows);
+            }
             self.help_keybind_scroll = 0;
         }
     }

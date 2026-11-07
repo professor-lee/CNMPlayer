@@ -737,6 +737,9 @@ async fn handle_action(
                     app.overlay = Overlay::BarSettingsModal;
                 }
                 4 => {
+                    app.help_keybind_selected = crate::data::keymap::first_focusable(
+                        crate::tmplayer::ui::tui::modals::help::help_rows(),
+                    );
                     app.help_keybind_scroll = 0;
                     app.overlay = Overlay::HelpModal;
                 }
@@ -891,15 +894,11 @@ async fn handle_action(
                 }
                 sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
-                let count = crate::tmplayer::ui::tui::modals::help::help_item_count(app);
-                if count == 0 {
-                    return Ok(());
-                }
-                if app.help_keybind_selected == 0 {
-                    app.help_keybind_selected = count - 1;
-                } else {
-                    app.help_keybind_selected -= 1;
-                }
+                app.help_keybind_selected = crate::data::keymap::step_focus(
+                    crate::tmplayer::ui::tui::modals::help::help_rows(),
+                    app.help_keybind_selected,
+                    false,
+                );
             }
         }
         Action::ModalDown => {
@@ -928,10 +927,11 @@ async fn handle_action(
                 }
                 sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
-                let count = crate::tmplayer::ui::tui::modals::help::help_item_count(app);
-                if count > 0 {
-                    app.help_keybind_selected = (app.help_keybind_selected + 1) % count;
-                }
+                app.help_keybind_selected = crate::data::keymap::step_focus(
+                    crate::tmplayer::ui::tui::modals::help::help_rows(),
+                    app.help_keybind_selected,
+                    true,
+                );
             }
         }
         Action::ModalLeft => {
