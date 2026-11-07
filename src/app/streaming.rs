@@ -188,6 +188,8 @@ struct StreamingState {
     done: AtomicU64, // 0 = in progress, 1 = complete, 2 = error, 3 = cancelled
     error: Mutex<Option<String>>,
     cancelled: AtomicBool,
+    /// 与 `Origin` 共享：后台重试/断点续传期间为 true。
+    retrying: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +213,7 @@ impl StreamingState {
     }
 
     fn finish(&self, result: &Result<()>) {
+        self.retrying.store(false, Ordering::SeqCst);
         let _guard = self.wait_lock.lock();
         if result.is_ok() && self.has_complete_body() {
             self.done.store(1, Ordering::SeqCst);
@@ -252,6 +255,11 @@ impl StreamingReaderHandle {
 
     pub(super) fn has_complete_body(&self) -> bool {
         self.state.has_complete_body()
+    }
+
+    /// 下载正在后台重试（断线重连、换直链）；界面据此显示加载态。
+    pub(super) fn is_retrying(&self) -> bool {
+        self.state.retrying.load(Ordering::SeqCst)
     }
 }
 
@@ -361,6 +369,9 @@ pub(super) struct Origin {
     etag: Option<String>,
     policy: RetryPolicy,
     failures: u32,
+    /// 进入退避即置位，拿到新响应头或新字节即清除；首连阶段（还没有
+    /// `StreamingReaderHandle`）由播放准备方持有同一个标志读取。
+    retrying: Arc<AtomicBool>,
 }
 
 impl Origin {
@@ -380,7 +391,19 @@ impl Origin {
             etag: None,
             policy,
             failures: 0,
+            retrying: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 共享的重试标志：首连阶段界面据此显示加载态。
+    pub(super) fn retrying(&self) -> Arc<AtomicBool> {
+        self.retrying.clone()
+    }
+
+    /// 换入调用方预先建好的重试标志（首连阶段界面要读同一个标志）。
+    pub(super) fn with_retrying(mut self, retrying: Arc<AtomicBool>) -> Self {
+        self.retrying = retrying;
+        self
     }
 
     /// 失败一次：预算用尽返回 `false`，否则按退避等待后返回 `true`。
@@ -389,6 +412,7 @@ impl Origin {
         if self.failures >= self.policy.max_attempts {
             return false;
         }
+        self.retrying.store(true, Ordering::SeqCst);
         pause(self.policy.backoff(self.failures), cancelled).await;
         true
     }
@@ -521,7 +545,10 @@ impl StreamingReader {
         cache_maintenance: CacheMaintenance,
     ) -> Result<Self> {
         let writer_lease = cache_maintenance.protect(cache_path.clone());
-        let state = Arc::new(StreamingState::default());
+        let state = Arc::new(StreamingState {
+            retrying: origin.retrying(),
+            ..StreamingState::default()
+        });
         // 首个连接也走重试：取直链、等响应头各自限时，失败换新链接再来。
         let (response, _) = origin.open(0, 0, &state.cancelled).await?;
         let total = response
@@ -783,6 +810,7 @@ async fn pump(
             state.downloaded.store(downloaded, Ordering::SeqCst);
             state.condvar.notify_all();
         }
+        state.retrying.store(false, Ordering::SeqCst);
         let _ = progress_tx.send((downloaded, total));
     }
     if downloaded != total {

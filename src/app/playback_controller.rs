@@ -32,6 +32,7 @@ use rodio::decoder::DecoderBuilder;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use std::time::SystemTime;
@@ -57,6 +58,8 @@ struct PendingPlayback {
     _task: compio::runtime::JoinHandle<()>,
     cancel: Option<StreamingReaderHandle>,
     start_paused: bool,
+    /// 首连阶段（还没有读取器句柄）的后台重试标志，与 `Origin` 共享。
+    retrying: Arc<AtomicBool>,
 }
 impl Drop for PendingPlayback {
     fn drop(&mut self) {
@@ -223,6 +226,14 @@ impl App {
     /// 是否正在后台加载跳转目标（进度条据此显示脉冲加载动画）。
     pub(crate) fn is_seeking(&self) -> bool {
         self.playback.audio_player.is_seeking()
+    }
+
+    /// 后台重试下载（首连阶段或播放中途续传）：进度条显示加载态。
+    pub(crate) fn is_retrying(&self) -> bool {
+        if let Some(pending) = self.playback.pending_start.as_ref() {
+            return pending.retrying.load(std::sync::atomic::Ordering::SeqCst);
+        }
+        self.playback.audio_player.is_retrying()
     }
 
     pub(crate) fn playback_duration(&self) -> Duration {
@@ -601,6 +612,8 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let wake = self.api.wake_signal();
         let song_id = track.song_id.clone();
+        let retrying = Arc::new(AtomicBool::new(false));
+        let task_retrying = retrying.clone();
         let task = compio::runtime::spawn(async move {
             let preparation = async {
                 if is_nonempty_file(&path).await {
@@ -642,7 +655,8 @@ impl App {
                         async move { api.song_stream_url_with_quality(&song_id, &quality).await },
                     )
                 });
-                let origin = Origin::new(http, cookie, None, source, RetryPolicy::DEFAULT);
+                let origin = Origin::new(http, cookie, None, source, RetryPolicy::DEFAULT)
+                    .with_retrying(task_retrying);
                 let reader =
                     StreamingReader::new(origin, path, progress_tx, cache_maintenance.clone())
                         .await
@@ -693,6 +707,7 @@ impl App {
             rx,
             _task: task,
             cancel: None,
+            retrying,
         });
         self.playback.playback_state = PlaybackRuntimeState::Stopped;
         self.set_runtime_status(format!(

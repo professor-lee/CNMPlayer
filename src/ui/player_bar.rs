@@ -333,6 +333,33 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(app.theme.color_surface()),
                 ));
             }
+        } else if app.is_retrying() {
+            // 后台重试下载：已播放部分照常；未播放部分沿用跳转加载态的脉冲带（同周期、同先慢后快缓动），高光色为“已加载”色（buff）。
+            if filled > 0 {
+                spans.push(Span::styled(
+                    "▁".repeat(filled as usize),
+                    Style::default()
+                        .fg(app.theme.color_accent3())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            let cycle = (ANIM_EPOCH.elapsed().as_secs_f32() / PULSE_PERIOD_SECS).fract();
+            let eased = cycle * cycle;
+            let width = progress_w.saturating_sub(filled).max(1) as f32;
+            let center = eased * (width - 1.0);
+            let band_half = (width * 0.08).max(1.0);
+            for x in filled..progress_w {
+                let d = ((x - filled) as f32 - center).abs();
+                let color = if d <= band_half {
+                    let amount = 0.25 * (d / band_half * std::f32::consts::FRAC_PI_2).cos();
+                    app.theme.lighten(app.theme.palette.buff, amount)
+                } else if x < buffer_filled {
+                    app.theme.color_buff()
+                } else {
+                    app.theme.color_surface()
+                };
+                spans.push(Span::styled("▁", Style::default().fg(color)));
+            }
         } else if buffer_filled == 0 {
             // No buffer data (cached/unknown progress): accent3 for played, buff for remaining
             if filled > 0 {

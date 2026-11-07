@@ -42,6 +42,8 @@ pub(crate) struct FullscreenRuntimeSnapshot {
     pub(crate) position: Duration,
     pub(crate) volume: f32,
     pub(crate) seeking: bool,
+    /// 后台重试下载中（首连或中途续传）：全屏进度条显示加载态。
+    pub(crate) retrying: bool,
     /// 当前播放歌曲的下载图标状态；`None` = 下载不可用或没有播放中的歌曲。
     pub(crate) download: Option<DownloadState>,
 }
@@ -88,6 +90,7 @@ impl App {
             position: self.playback_position(),
             volume: self.playback.audio_player.volume(),
             seeking: self.playback.audio_player.is_seeking(),
+            retrying: self.is_retrying(),
             download: self.current_download_state(),
         }
     }

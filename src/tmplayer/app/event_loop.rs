@@ -317,6 +317,11 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         changed = true;
     }
 
+    if app.player.retrying != runtime.retrying {
+        app.player.retrying = runtime.retrying;
+        changed = true;
+    }
+
     if app.download_state != runtime.download {
         app.download_state = runtime.download;
         changed = true;

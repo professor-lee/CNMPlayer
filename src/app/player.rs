@@ -502,6 +502,13 @@ impl AudioPlayer {
         self.seek_worker.state.lock().pending_target.is_some()
     }
 
+    /// 下载正在后台重试（断线重连、换直链）：进度条据此显示加载态。
+    pub(super) fn is_retrying(&self) -> bool {
+        self.stream_handle
+            .as_ref()
+            .is_some_and(StreamingReaderHandle::is_retrying)
+    }
+
     /// 用于界面显示的播放位置：后台加载期间直接显示跳转目标。
     pub(super) fn display_position(&self) -> Duration {
         if self.stopped {

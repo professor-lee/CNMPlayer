@@ -701,3 +701,76 @@ async fn retries_without_progress_give_up_after_the_budget() {
     assert!(cached.is_none());
     assert_eq!(ranges, ["", "bytes=3-", "bytes=3-"]);
 }
+
+/// 重试期间标志置位，字节重新流动后清除（界面据此显示/撤掉进度条加载态）。
+#[compio::test]
+async fn retrying_flag_follows_backoff_and_clears_when_bytes_flow() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        let mut request = [0; 4096];
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(socket.read(&mut request).unwrap() > 0);
+        socket
+            .write_all(&reply(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0",
+                b"",
+            ))
+            .unwrap();
+        drop(socket);
+        let (mut socket, _) = listener.accept().unwrap();
+        assert!(socket.read(&mut request).unwrap() > 0);
+        release_rx.recv().unwrap();
+        socket
+            .write_all(&reply("HTTP/1.1 200 OK\r\nContent-Length: 3", b"abc"))
+            .unwrap();
+    });
+    let directory = unique_test_directory("retrying-flag");
+    let final_path = directory.join("song.audio");
+    let http = cyper::Client::builder().no_proxy().build().unwrap();
+    let cache_maintenance = crate::app::cache_maintenance::CacheMaintenance::new(
+        crate::data::config::CacheConfig::default(),
+    );
+    let (tx, _rx) = see::sync::channel((0, 0));
+    let origin = fixed_origin(
+        &http,
+        format!("http://{address}/song"),
+        fast_policy(3, Duration::from_secs(2)),
+    );
+    let retrying = origin.retrying();
+    assert!(!retrying.load(Ordering::SeqCst));
+    let opening = compio::runtime::spawn(StreamingReader::new(
+        origin,
+        final_path.clone(),
+        tx,
+        cache_maintenance,
+    ));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !retrying.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+        compio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        retrying.load(Ordering::SeqCst),
+        "首连失败后应进入重试并置位"
+    );
+    release_tx.send(()).unwrap();
+    let reader = opening.await.unwrap().unwrap();
+    let bytes = compio::runtime::spawn_blocking(move || {
+        let mut reader = reader;
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).map(|_| bytes)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(bytes, b"abc");
+    assert!(!retrying.load(Ordering::SeqCst), "字节重新流动后应清除");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !final_path.exists() && std::time::Instant::now() < deadline {
+        compio::time::sleep(Duration::from_millis(10)).await;
+    }
+    compio::time::sleep(Duration::from_millis(20)).await;
+    std::fs::remove_dir_all(directory).unwrap();
+}

@@ -92,6 +92,7 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
             position: runtime.position,
             volume: runtime.volume,
             seeking: runtime.seeking,
+            retrying: runtime.retrying,
             download: match runtime.download {
                 None => tmplayer::DownloadIconState::Hidden,
                 Some(app::download::DownloadState::NotDownloaded) => {

@@ -212,7 +212,7 @@ impl App {
         ) {
             return true;
         }
-        if self.is_seeking() || self.page_lyrics_grab.is_some() {
+        if self.is_seeking() || self.is_retrying() || self.page_lyrics_grab.is_some() {
             return true;
         }
         if self.input.search_motion.is_running()
