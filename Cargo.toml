@@ -1,6 +1,6 @@
 [package]
 name = "cnmplayer"
-version = "0.7.3"
+version = "0.7.4"
 edition = "2024"
 description = "A Rust TUI client for NetEase Cloud Music"
 license = "AGPL-3.0-only"
