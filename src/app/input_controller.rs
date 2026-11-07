@@ -13,7 +13,6 @@ use crate::ui::page_lyrics;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
-use crossterm::event::KeyModifiers;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
@@ -114,9 +113,7 @@ impl App {
             return;
         }
 
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
-        {
+        if keybind_matches(crate::data::keymap::KEY_FORCE_QUIT, key) {
             self.should_quit = true;
             return;
         }
@@ -145,8 +142,7 @@ impl App {
         }
 
         if self.page != Page::Login
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+            && keybind_matches(crate::data::keymap::KEY_TOGGLE_KEYBINDS, key)
         {
             if self.overlay == Some(Overlay::SettingsKeybinds) {
                 self.close_overlay();

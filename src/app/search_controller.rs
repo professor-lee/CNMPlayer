@@ -615,8 +615,10 @@ impl App {
     }
 
     pub(super) async fn handle_search_box_key(&mut self, key: KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+        // 可输入的字符优先当作文本，即使搜索框键被重绑成单个字母也能正常打字。
+        let typed_char = matches!(key.code, KeyCode::Char(_))
+            && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT);
+        if !typed_char && crate::data::keymap::keybind_matches(&self.config.keybind_search_box, key)
         {
             self.close_overlay();
             return;

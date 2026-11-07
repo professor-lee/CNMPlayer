@@ -4,7 +4,6 @@ use super::Overlay;
 use super::input_controller::HitRect;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
 #[cfg(feature = "easter-egg")]
 use std::time::Instant;
 
@@ -58,9 +57,7 @@ impl App {
                 }
                 self.overlay = Some(Overlay::Settings);
             }
-            KeyCode::Char('t') | KeyCode::Char('T')
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
+            _ if crate::data::keymap::keybind_matches(&self.config.keybind_settings, key) => {
                 self.close_overlay();
             }
             // 空格等价于点击一次形象：重新计时即打断当前动画重头播放。

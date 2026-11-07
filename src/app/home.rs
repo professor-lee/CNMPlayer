@@ -16,7 +16,6 @@ use super::roam::fetch_private_roam_page;
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
 use ncm_api::ApiResponse;
 use serde_json::Value;
 
@@ -499,18 +498,19 @@ fn parse_personalized_cards(response: &ApiResponse, limit: usize) -> Vec<Recomme
 impl App {
     pub(super) async fn handle_home_key(&mut self, key: KeyEvent) {
         if self.browse.home_sidebar.is_visible() {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                match key.code {
-                    KeyCode::Up => {
-                        self.browse.home_sidebar.switch_section_prev();
-                        return;
-                    }
-                    KeyCode::Down => {
-                        self.browse.home_sidebar.switch_section_next();
-                        return;
-                    }
-                    _ => {}
-                }
+            if crate::data::keymap::keybind_matches(
+                crate::data::keymap::KEY_SIDEBAR_SECTION_PREV,
+                key,
+            ) {
+                self.browse.home_sidebar.switch_section_prev();
+                return;
+            }
+            if crate::data::keymap::keybind_matches(
+                crate::data::keymap::KEY_SIDEBAR_SECTION_NEXT,
+                key,
+            ) {
+                self.browse.home_sidebar.switch_section_next();
+                return;
             }
             match key.code {
                 KeyCode::Esc => {

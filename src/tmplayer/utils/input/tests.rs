@@ -177,3 +177,47 @@ fn general_settings_tab_navigation_and_toggle_close_do_not_leak() {
         Action::None
     );
 }
+
+/// 重绑后旧键失效：全屏页不再有写死的 M/L/←/→/Space 兜底，设置弹窗也不再写死 T。
+#[test]
+fn rebinding_disables_the_default_key() {
+    let key = |ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+    let mut config = Config::default();
+    config.keybind_fullscreen_toggle_mode = "R".into();
+    config.keybind_toggle_like_fullscreen = "K".into();
+    config.keybind_fullscreen_toggle_play_pause = "Enter".into();
+    config.keybind_settings = "Y".into();
+
+    assert_eq!(map_key(key('m'), Overlay::None, &config), Action::None);
+    assert_eq!(
+        map_key(key('r'), Overlay::None, &config),
+        Action::ToggleRepeatMode
+    );
+    assert_eq!(map_key(key('l'), Overlay::None, &config), Action::None);
+    assert_eq!(map_key(key(' '), Overlay::None, &config), Action::None);
+    for overlay in [Overlay::SettingsModal, Overlay::GeneralSettingsModal] {
+        assert_eq!(
+            map_key(key('t'), overlay, &config),
+            Action::None,
+            "{overlay:?}"
+        );
+        assert_ne!(
+            map_key(key('y'), overlay, &config),
+            Action::None,
+            "{overlay:?}"
+        );
+    }
+
+    config.keybind_fullscreen_prev = "A".into();
+    config.keybind_fullscreen_next = "D".into();
+    for code in [KeyCode::Left, KeyCode::Right] {
+        assert_eq!(
+            map_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                Overlay::None,
+                &config
+            ),
+            Action::None
+        );
+    }
+}
