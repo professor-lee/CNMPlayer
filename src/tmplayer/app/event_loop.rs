@@ -613,6 +613,10 @@ async fn handle_action(
     ) {
         return Ok(());
     }
+    // 轮询选歌手期间按了别的键（含 Esc）就放弃这次选择，免得停按后意外跳页。
+    if !matches!(action, Action::CycleOpenArtist | Action::None) {
+        app.artist_cycle = None;
+    }
     match action {
         Action::Quit => {}
         Action::OpenSettingsModal => {
@@ -1105,6 +1109,37 @@ async fn handle_action(
         }
         Action::OpenAuthorPage(index) => {
             app.exit_request = Some(crate::tmplayer::FullscreenExit::BackToHostOpenAuthor(index));
+        }
+        Action::CycleOpenArtist => {
+            let count = crate::app::tracks::artist_name_segments(&app.player.track.artist)
+                .iter()
+                .filter(|name| !name.trim().is_empty())
+                .count();
+            match count {
+                0 => app.set_toast(match app.config.language {
+                    crate::data::config::Language::Zh => "当前歌曲没有歌手信息",
+                    crate::data::config::Language::En => "The current song has no artist",
+                }),
+                // 只有一位歌手：无需轮询，直接进入。
+                1 => {
+                    app.exit_request =
+                        Some(crate::tmplayer::FullscreenExit::BackToHostOpenAuthor(0));
+                }
+                _ => {
+                    let segments = crate::app::tracks::artist_name_segments(&app.player.track.artist);
+                    let next = |from: usize| {
+                        (1..=segments.len())
+                            .map(|step| (from + step) % segments.len())
+                            .find(|&index| !segments[index].trim().is_empty())
+                            .unwrap_or(0)
+                    };
+                    let index = match app.artist_cycle {
+                        Some((current, _)) => next(current),
+                        None => next(segments.len() - 1),
+                    };
+                    app.artist_cycle = Some((index, Instant::now()));
+                }
+            }
         }
         Action::OpenAlbumPage => {
             app.exit_request = Some(crate::tmplayer::FullscreenExit::BackToHostOpenAlbum);

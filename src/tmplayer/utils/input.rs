@@ -19,6 +19,8 @@ pub enum Action {
     OpenAuthorPage(usize),
     /// 信息区里点了专辑名：退出全屏页，由宿主打开该专辑页。
     OpenAlbumPage,
+    /// 全屏进入歌手键：多作者时在各段间轮询选中，停按后由 tick 提交进入。
+    CycleOpenArtist,
     /// 弹窗条目行被点击（序号）；单击聚焦，双击等同 Enter。
     ModalSelect(usize),
     TogglePlaylist,
@@ -230,6 +232,14 @@ pub fn map_key(ev: KeyEvent, overlay: Overlay, config: &Config) -> Action {
     // 否则 Ctrl+D 会落进 Char('d') 之类的分支。
     if keybind_matches(&config.keybind_download_fullscreen, ev) {
         return Action::ToggleDownload;
+    }
+
+    if keybind_matches(&config.keybind_fullscreen_open_artist, ev) {
+        return Action::CycleOpenArtist;
+    }
+
+    if keybind_matches(&config.keybind_fullscreen_open_album, ev) {
+        return Action::OpenAlbumPage;
     }
 
     if keybind_matches(&config.keybind_fullscreen, ev) {

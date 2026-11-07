@@ -142,6 +142,45 @@ pub fn artist_row_hits(meta: Rect, artist: &str) -> Vec<(usize, Rect)> {
     hits
 }
 
+/// 作者行：进入歌手键轮询中时，选中的那段用与播放列表选中行相同的配色（与 `artist_row_hits` 同源裁剪）。
+fn artist_row_line(app: &AppState, artist: &str, budget: usize, sub_style: Style) -> Line<'static> {
+    let Some((selected, _)) = app.artist_cycle else {
+        return Line::styled(clip_to_display_width(artist, budget), sub_style);
+    };
+    let selected_style = Style::default()
+        .fg(app.theme.color_base())
+        .bg(app.theme.color_accent())
+        .add_modifier(Modifier::BOLD);
+    let separator = crate::app::tracks::ARTIST_SEPARATOR;
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    for (index, name) in crate::app::tracks::artist_name_segments(artist)
+        .into_iter()
+        .enumerate()
+    {
+        if index > 0 {
+            if used >= budget {
+                break;
+            }
+            let clipped = clip_to_display_width(separator, budget - used);
+            used += clipped.width();
+            spans.push(Span::styled(clipped, sub_style));
+        }
+        if used >= budget {
+            break;
+        }
+        let clipped = clip_to_display_width(name, budget - used);
+        used += clipped.width();
+        let style = if index == selected {
+            selected_style
+        } else {
+            sub_style
+        };
+        spans.push(Span::styled(clipped, style));
+    }
+    Line::from(spans)
+}
+
 /// 专辑行的命中矩形（meta 块第 3 行画出来的字符范围）。
 pub fn album_row_rect(meta: Rect, album: &str) -> Rect {
     meta_text_rect(meta, META_ALBUM_ROW, album)
@@ -446,8 +485,7 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
         let t = Paragraph::new(Line::from(title_spans)).alignment(Alignment::Left);
         f.render_widget(t, meta_rect);
 
-        let a = Paragraph::new(clip_to_display_width(artist, meta_rect.width as usize))
-            .style(sub_style)
+        let a = Paragraph::new(artist_row_line(app, artist, meta_rect.width as usize, sub_style))
             .alignment(Alignment::Left);
         if l.meta.height > META_ARTIST_ROW {
             f.render_widget(
