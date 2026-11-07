@@ -362,12 +362,10 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ));
             }
-            let remaining = progress_w.saturating_sub(filled);
-            if remaining > 0 {
-                spans.push(Span::styled(
-                    "▁".repeat(remaining as usize),
-                    Style::default().fg(app.theme.color_surface()),
-                ));
+            let all_buffered = buffer_ratio.is_none() && !app.is_retrying();
+            for x in filled..progress_w {
+                let color = unplayed_cell_color(&app.theme, all_buffered || x < buffer_filled, 0.0);
+                spans.push(Span::styled("▁", Style::default().fg(color)));
             }
         } else if app.is_retrying() {
             // 后台重试下载：已播放部分照常；未播放部分保留真实的已缓冲/未缓冲底色，沿用跳转加载态的脉冲带（同周期、同先慢后快缓动），脉冲颜色为真实缓冲色。

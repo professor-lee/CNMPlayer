@@ -35,10 +35,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppState, pos: Duration, dur: Dur
     };
 
     let left = "─".repeat(knob);
-    let right = if w > 0 {
-        "─".repeat(w.saturating_sub(1 + knob))
-    } else {
-        String::new()
+
+    // 未播放区域按已缓冲/未缓冲分段；首连重试还没有缓冲数据时按零缓冲画（与宿主进度条一致）。
+    let rest = w.saturating_sub(1 + knob);
+    let buffered_end = match app.player.buffered {
+        Some(ratio) => (ratio * w as f32).round() as usize,
+        None if app.player.retrying => 0,
+        None => w,
     };
 
     let line = if app.player.seeking {
@@ -65,22 +68,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppState, pos: Duration, dur: Dur
             "○",
             Style::default().fg(app.theme.color_accent()),
         ));
-        spans.push(Span::styled(
-            right,
-            Style::default().fg(app.theme.color_subtext()),
-        ));
+        for offset in 0..rest {
+            let x = knob + 1 + offset;
+            let color =
+                crate::ui::player_bar::unplayed_cell_color(&app.theme, x < buffered_end, 0.0);
+            spans.push(Span::styled("─", Style::default().fg(color)));
+        }
         Line::from(spans)
     } else {
         // 未播放区域与宿主进度条同一设计语言：已缓冲 buff、未缓冲 surface；
         // 非流式（缓存命中）或总长未知时整段视作已缓冲。后台重试时叠加
         // 跳转加载态的脉冲带（同周期、同缓动），脉冲颜色为真实缓冲色 buff。
-        // 首连重试还没有缓冲数据时按零缓冲画（与宿主进度条一致），脉冲才看得见。
-        let rest = w.saturating_sub(1 + knob);
-        let buffered_end = match app.player.buffered {
-            Some(ratio) => (ratio * w as f32).round() as usize,
-            None if app.player.retrying => 0,
-            None => w,
-        };
         let elapsed = crate::ui::player_bar::anim_elapsed_secs();
         let mut spans = Vec::with_capacity(rest + 2);
         spans.push(Span::styled(
