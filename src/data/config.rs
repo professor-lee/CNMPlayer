@@ -113,6 +113,12 @@ pub struct Config {
     pub keybind_download: String,
     /// 全屏页：下载当前播放的单曲。
     pub keybind_download_fullscreen: String,
+    /// 主应用：收藏 / 取消收藏当前歌手页的歌手或歌单页的歌单、专辑、EP、Single。
+    pub keybind_toggle_subscribe: String,
+    /// 全屏页：进入当前歌曲的歌手页（多歌手时连按轮询，停按后进入）。
+    pub keybind_fullscreen_open_artist: String,
+    /// 全屏页：进入当前歌曲的专辑页。
+    pub keybind_fullscreen_open_album: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

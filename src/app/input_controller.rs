@@ -613,6 +613,8 @@ impl App {
                 | KeybindAction::FullscreenEq
                 | KeybindAction::FullscreenEqReset
                 | KeybindAction::SmallWindowToggle
+                | KeybindAction::FullscreenOpenArtist
+                | KeybindAction::FullscreenOpenAlbum
         ) {
             return false;
         }
@@ -669,6 +671,8 @@ impl App {
             KeybindAction::Download => self.download_focused_song().await,
             // 全屏页专用：宿主侧不处理（与其余 Fullscreen* 动作同理）。
             KeybindAction::DownloadFullscreen => {}
+            KeybindAction::ToggleSubscribe => self.toggle_subscription_hotkey(),
+            KeybindAction::FullscreenOpenArtist | KeybindAction::FullscreenOpenAlbum => {}
         }
     }
 

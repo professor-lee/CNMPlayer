@@ -50,6 +50,12 @@ const DEFAULT_KEYBIND_DOWNLOAD: &str = "Ctrl+Alt+D";
 
 const DEFAULT_KEYBIND_DOWNLOAD_FULLSCREEN: &str = "Ctrl+D";
 
+const DEFAULT_KEYBIND_TOGGLE_SUBSCRIBE: &str = "L";
+
+const DEFAULT_KEYBIND_FULLSCREEN_OPEN_ARTIST: &str = "Ctrl+A";
+
+const DEFAULT_KEYBIND_FULLSCREEN_OPEN_ALBUM: &str = "Ctrl+S";
+
 #[derive(Debug, Clone, Copy)]
 pub(super) enum KeybindAction {
     SearchBox,
@@ -76,6 +82,12 @@ pub(super) enum KeybindAction {
     Download,
     /// 全屏页：下载当前播放的单曲（宿主侧不处理）。
     DownloadFullscreen,
+    /// 主应用：收藏 / 取消收藏当前歌手页的歌手或歌单页的歌单（专辑、EP、Single）。
+    ToggleSubscribe,
+    /// 全屏页：进入当前歌曲的歌手页（多歌手时轮询选择，宿主侧不处理）。
+    FullscreenOpenArtist,
+    /// 全屏页：进入当前歌曲的专辑页（宿主侧不处理）。
+    FullscreenOpenAlbum,
 }
 
 pub(super) fn keybind_matches(binding: &str, key: KeyEvent) -> bool {
@@ -265,6 +277,8 @@ fn key_code_to_keybind_token(code: KeyCode) -> Option<String> {
 impl App {
     pub(super) fn keybind_action_from_event(&self, key: KeyEvent) -> Option<KeybindAction> {
         let actions = [
+            // 与全屏收藏同默认键（L）：主应用侧必须先匹配到它，全屏页另走 `map_key`。
+            KeybindAction::ToggleSubscribe,
             KeybindAction::SearchBox,
             KeybindAction::Fullscreen,
             KeybindAction::Settings,
@@ -287,6 +301,8 @@ impl App {
             KeybindAction::SmallWindowToggle,
             KeybindAction::Download,
             KeybindAction::DownloadFullscreen,
+            KeybindAction::FullscreenOpenArtist,
+            KeybindAction::FullscreenOpenAlbum,
         ];
 
         actions
@@ -320,6 +336,9 @@ impl App {
             KeybindAction::SmallWindowToggle => &self.config.keybind_small_window_toggle,
             KeybindAction::Download => &self.config.keybind_download,
             KeybindAction::DownloadFullscreen => &self.config.keybind_download_fullscreen,
+            KeybindAction::ToggleSubscribe => &self.config.keybind_toggle_subscribe,
+            KeybindAction::FullscreenOpenArtist => &self.config.keybind_fullscreen_open_artist,
+            KeybindAction::FullscreenOpenAlbum => &self.config.keybind_fullscreen_open_album,
         }
     }
 
@@ -347,6 +366,9 @@ impl App {
             19 => Some(&mut self.config.keybind_small_window_toggle),
             20 => Some(&mut self.config.keybind_download),
             21 => Some(&mut self.config.keybind_download_fullscreen),
+            22 => Some(&mut self.config.keybind_toggle_subscribe),
+            23 => Some(&mut self.config.keybind_fullscreen_open_artist),
+            24 => Some(&mut self.config.keybind_fullscreen_open_album),
             _ => None,
         }
     }
@@ -375,6 +397,9 @@ impl App {
             19 => Some(self.config.keybind_small_window_toggle.as_str()),
             20 => Some(self.config.keybind_download.as_str()),
             21 => Some(self.config.keybind_download_fullscreen.as_str()),
+            22 => Some(self.config.keybind_toggle_subscribe.as_str()),
+            23 => Some(self.config.keybind_fullscreen_open_artist.as_str()),
+            24 => Some(self.config.keybind_fullscreen_open_album.as_str()),
             _ => None,
         }
     }
@@ -385,8 +410,16 @@ impl App {
         binding: &str,
     ) -> Option<usize> {
         let normalized = normalize_keybind_text(binding)?;
+        let current_scope = keybind_scope(current_index);
         for other_index in 0..SETTINGS_KEYBIND_ITEMS {
             if other_index == current_index {
+                continue;
+            }
+            // 只在同一处生效的两个键才算冲突：主应用收藏与全屏收藏可以同为 L。
+            let other_scope = keybind_scope(other_index);
+            if !(current_scope.host && other_scope.host
+                || current_scope.fullscreen && other_scope.fullscreen)
+            {
                 continue;
             }
             let Some(other_binding) = self.keybind_value_for_index(other_index) else {
@@ -426,6 +459,9 @@ impl App {
             19 => self.lang_text("小窗口切换显示", "Small Window Switch"),
             20 => self.lang_text("主应用下载歌曲", "Host Download Song"),
             21 => self.lang_text("全屏页下载歌曲", "Fullscreen Download Song"),
+            22 => self.lang_text("收藏歌手/歌单", "Follow Artist/Collect Playlist"),
+            23 => self.lang_text("全屏进入歌手", "Fullscreen Open Artist"),
+            24 => self.lang_text("全屏进入专辑", "Fullscreen Open Album"),
             _ => self.lang_text("未知", "Unknown"),
         }
     }
@@ -457,6 +493,11 @@ impl App {
         self.config.keybind_small_window_toggle = DEFAULT_KEYBIND_SMALL_WINDOW_TOGGLE.to_string();
         self.config.keybind_download = DEFAULT_KEYBIND_DOWNLOAD.to_string();
         self.config.keybind_download_fullscreen = DEFAULT_KEYBIND_DOWNLOAD_FULLSCREEN.to_string();
+        self.config.keybind_toggle_subscribe = DEFAULT_KEYBIND_TOGGLE_SUBSCRIBE.to_string();
+        self.config.keybind_fullscreen_open_artist =
+            DEFAULT_KEYBIND_FULLSCREEN_OPEN_ARTIST.to_string();
+        self.config.keybind_fullscreen_open_album =
+            DEFAULT_KEYBIND_FULLSCREEN_OPEN_ALBUM.to_string();
     }
 
     pub(crate) fn keybind_label_for_index(&self, index: usize) -> String {
@@ -483,8 +524,39 @@ impl App {
             19 => KeybindAction::SmallWindowToggle,
             20 => KeybindAction::Download,
             21 => KeybindAction::DownloadFullscreen,
+            22 => KeybindAction::ToggleSubscribe,
+            23 => KeybindAction::FullscreenOpenArtist,
+            24 => KeybindAction::FullscreenOpenAlbum,
             _ => KeybindAction::SearchBox,
         });
         format!("{}: {}", self.keybind_name_for_index(index), value)
+    }
+}
+
+/// 一个快捷键槽位在哪一侧生效（冲突检测只比较作用域有交集的槽位）。
+#[derive(Debug, Clone, Copy)]
+pub(super) struct KeybindScope {
+    pub(super) host: bool,
+    pub(super) fullscreen: bool,
+}
+
+pub(super) fn keybind_scope(index: usize) -> KeybindScope {
+    const HOST: KeybindScope = KeybindScope {
+        host: true,
+        fullscreen: false,
+    };
+    const FULLSCREEN: KeybindScope = KeybindScope {
+        host: false,
+        fullscreen: true,
+    };
+    const BOTH: KeybindScope = KeybindScope {
+        host: true,
+        fullscreen: true,
+    };
+    match index {
+        // 搜索框 / 全屏开关 / 设置 / 侧边栏：两侧都读这几个键。
+        0..=3 => BOTH,
+        10..=16 | 21 | 23 | 24 => FULLSCREEN,
+        _ => HOST,
     }
 }

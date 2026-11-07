@@ -62,6 +62,9 @@ keybind_toggle_like_collapsed = "Alt+L"
 keybind_small_window_toggle = "Alt+X"
 keybind_download = "Ctrl+Alt+D"
 keybind_download_fullscreen = "Ctrl+D"
+keybind_toggle_subscribe = "L"
+keybind_fullscreen_open_artist = "Ctrl+A"
+keybind_fullscreen_open_album = "Ctrl+S"
  
 [cache]
 # 缓存根目录 (默认使用系统标准路径)

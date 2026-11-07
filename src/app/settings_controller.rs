@@ -61,7 +61,7 @@ pub(crate) fn step_lyrics_settings(current: usize, forward: bool, drag_enabled: 
 
 pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 
-pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 22;
+pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 25;
 
 /// 设置行的文本编辑状态（光标按字符计数，横向窗口按显示列算）。
 #[derive(Debug, Clone, Default)]

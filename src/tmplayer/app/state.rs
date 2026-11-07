@@ -19,6 +19,10 @@ use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
+/// 进入歌手键（默认 Ctrl+A）停按多久视为“松手”并提交进入当前选中的歌手。
+/// 须长于终端按键重复的起始延迟（常见 250~660ms），否则按住不放会在首次重复前就提交。
+pub const ARTIST_CYCLE_COMMIT_AFTER: Duration = Duration::from_millis(800);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
     Playing,
@@ -268,6 +272,9 @@ pub struct AppState {
     /// 全屏页里点了作者名/专辑名这类"交给宿主接着做"的请求：
     /// `Some` 即请求退出，落点由 `FullscreenExit` 说明（`Tui::draw` 据此置 `should_quit`）。
     pub exit_request: Option<crate::tmplayer::FullscreenExit>,
+    /// `Ctrl+A`（进入歌手键）的多作者轮询：`(当前选中的段序号, 最近一次按键时刻)`。
+    /// 终端收不到松键事件，停按 `ARTIST_CYCLE_COMMIT_AFTER` 即视为松手并进入该歌手页。
+    pub artist_cycle: Option<(usize, Instant)>,
 
     pub last_mouse_click: Option<(Instant, u16, u16)>,
     /// 播放列表上一次点击的条目序号（双击切歌判定）。
@@ -381,6 +388,7 @@ impl AppState {
             toast: None,
             request_host_settings_open: false,
             exit_request: None,
+            artist_cycle: None,
             last_mouse_click: None,
             last_playlist_click: None,
             playlist_list_scroll: 0,
@@ -522,6 +530,13 @@ impl AppState {
             self.toast = None;
         }
 
+        if let Some((index, at)) = self.artist_cycle
+            && now.duration_since(at) >= ARTIST_CYCLE_COMMIT_AFTER
+        {
+            self.artist_cycle = None;
+            self.exit_request = Some(crate::tmplayer::FullscreenExit::BackToHostOpenAuthor(index));
+        }
+
         self.tick_playlist_slide(now);
         self.tick_theme_transition(now);
         if self.config.visualize == VisualizeMode::Oscilloscope {
@@ -618,7 +633,7 @@ impl AppState {
             return true;
         }
 
-        if self.toast.is_some() {
+        if self.toast.is_some() || self.artist_cycle.is_some() {
             return true;
         }
 
