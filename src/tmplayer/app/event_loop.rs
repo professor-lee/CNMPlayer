@@ -322,6 +322,11 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         changed = true;
     }
 
+    if app.player.buffered != runtime.buffered {
+        app.player.buffered = runtime.buffered;
+        changed = true;
+    }
+
     if app.download_state != runtime.download {
         app.download_state = runtime.download;
         changed = true;

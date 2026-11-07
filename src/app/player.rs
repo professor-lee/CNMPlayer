@@ -479,6 +479,14 @@ impl AudioPlayer {
         self.progress_rx.as_mut().map(|rx| *rx.borrow())
     }
 
+    /// 已缓冲比例（0..=1）；非流式或总长未知时为 None。只读，供 `&self` 的快照使用。
+    pub(super) fn buffer_ratio(&self) -> Option<f32> {
+        self.progress_rx.as_ref().and_then(|rx| {
+            let (downloaded, total) = *rx.borrow();
+            (total > 0).then(|| (downloaded as f32 / total as f32).clamp(0.0, 1.0))
+        })
+    }
+
     pub(super) fn seek_to_ratio(
         &mut self,
         ratio: f32,

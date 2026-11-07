@@ -70,14 +70,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppState, pos: Duration, dur: Dur
             Style::default().fg(app.theme.color_subtext()),
         ));
         Line::from(spans)
-    } else if app.player.retrying {
-        // 宿主正在后台重试下载：已播放部分照常；未播放部分沿用跳转加载态的脉冲带（同周期、同先慢后快缓动），高光色为“已加载”色（buff）。
-        let rest = right.chars().count();
-        let cycle = (ANIM_EPOCH.elapsed().as_secs_f32() / PULSE_PERIOD_SECS).fract();
-        let eased = cycle * cycle;
-        let width = rest.max(1) as f32;
-        let center = eased * (width - 1.0);
-        let band_half = (width * 0.08).max(1.0);
+    } else {
+        // 未播放区域与宿主进度条同一设计语言：已缓冲 buff、未缓冲 surface；
+        // 非流式（缓存命中）或总长未知时整段视作已缓冲。后台重试时叠加
+        // 跳转加载态的脉冲带（同周期、同缓动），脉冲颜色为真实缓冲色 buff。
+        let rest = w.saturating_sub(1 + knob);
+        let buffered_end = app
+            .player
+            .buffered
+            .map_or(w, |ratio| (ratio * w as f32).round() as usize);
+        let elapsed = crate::ui::player_bar::anim_elapsed_secs();
         let mut spans = Vec::with_capacity(rest + 2);
         spans.push(Span::styled(
             left,
@@ -87,23 +89,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &AppState, pos: Duration, dur: Dur
             "○",
             Style::default().fg(app.theme.color_accent()),
         ));
-        for x in 0..rest {
-            let d = (x as f32 - center).abs();
-            let color = if d <= band_half {
-                let amount = 0.25 * (d / band_half * std::f32::consts::FRAC_PI_2).cos();
-                app.theme.lighten(app.theme.palette.buff, amount)
+        for offset in 0..rest {
+            let x = knob + 1 + offset;
+            let pulse = if app.player.retrying {
+                crate::ui::player_bar::retry_pulse_weight(offset, rest, elapsed)
             } else {
-                app.theme.color_buff()
+                0.0
             };
+            let color =
+                crate::ui::player_bar::unplayed_cell_color(&app.theme, x < buffered_end, pulse);
             spans.push(Span::styled("─", Style::default().fg(color)));
         }
         Line::from(spans)
-    } else {
-        Line::from(vec![
-            Span::styled(left, Style::default().fg(app.theme.color_accent2())),
-            Span::styled("○", Style::default().fg(app.theme.color_accent())),
-            Span::styled(right, Style::default().fg(app.theme.color_subtext())),
-        ])
     };
 
     f.render_widget(Paragraph::new(line), area);

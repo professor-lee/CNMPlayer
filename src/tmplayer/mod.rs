@@ -94,6 +94,8 @@ pub struct HostPlaybackRuntimeSnapshot {
     pub seeking: bool,
     /// 宿主正在后台重试下载：未播放区域显示加载态。
     pub retrying: bool,
+    /// 已缓冲比例（0..=1）；None = 非流式或总长未知。
+    pub buffered: Option<f32>,
     /// 信息区下载图标状态（宿主每帧同步；`Hidden` = 不显示）。
     pub download: DownloadIconState,
 }

@@ -209,3 +209,22 @@ fn left_tail_handles_missing_glyph_and_missing_heart() {
     assert_eq!(split.glyph, None);
     assert_eq!(split.heart, None);
 }
+
+/// 重试脉冲峰值处恰好是真实缓冲色 buff；无脉冲时已缓冲/未缓冲各用自己的底色。
+#[test]
+fn retry_pulse_peaks_at_the_real_buffer_color() {
+    let theme = crate::ui::theme::Theme {
+        capability: crate::ui::theme::ColorCapability::TrueColor,
+        ..crate::ui::theme::Theme::default()
+    };
+    assert_ne!(theme.color_surface(), theme.color_buff());
+    assert_eq!(unplayed_cell_color(&theme, false, 1.0), theme.color_buff());
+    assert_eq!(unplayed_cell_color(&theme, true, 1.0), theme.color_buff());
+    assert_eq!(
+        unplayed_cell_color(&theme, false, 0.0),
+        theme.color_surface()
+    );
+    assert_eq!(unplayed_cell_color(&theme, true, 0.0), theme.color_buff());
+    assert_eq!(retry_pulse_weight(0, 100, 0.0), 1.0);
+    assert_eq!(retry_pulse_weight(99, 100, 0.0), 0.0);
+}

@@ -155,6 +155,8 @@ pub struct PlayerState {
     pub seeking: bool,
     /// 宿主正在后台重试下载（未播放区域显示加载态）
     pub retrying: bool,
+    /// 宿主下载的已缓冲比例（0..=1）；None = 非流式或总长未知
+    pub buffered: Option<f32>,
     pub track: TrackMetadata,
 }
 
@@ -168,6 +170,7 @@ impl Default for PlayerState {
             liked: false,
             seeking: false,
             retrying: false,
+            buffered: None,
             track: TrackMetadata::default(),
         }
     }

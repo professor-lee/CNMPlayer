@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// 脉冲动画的时间基准：进程启动时初始化。
 /// 注意不能用 Instant::now().elapsed()——那是“当前时刻到当前时刻”，恒为 0，
@@ -18,7 +19,42 @@ static ANIM_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// 单个浅色脉冲带从左端扫到右端的周期（秒）
 const PULSE_PERIOD_SECS: f32 = 1.4;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// 进度条动画的已运行秒数（与跳转脉冲同一时间基准）。
+pub(crate) fn anim_elapsed_secs() -> f32 {
+    ANIM_EPOCH.elapsed().as_secs_f32()
+}
+
+/// 重试脉冲在未播放区域第 `offset` 格（共 `width` 格）处的强度（0..=1）。
+/// 周期、先慢后快缓动与带宽都与跳转加载态的脉冲相同。
+pub(crate) fn retry_pulse_weight(offset: usize, width: usize, elapsed_secs: f32) -> f32 {
+    let cycle = (elapsed_secs / PULSE_PERIOD_SECS).fract();
+    let eased = cycle * cycle;
+    let width = width.max(1) as f32;
+    let center = eased * (width - 1.0);
+    let band_half = (width * 0.08).max(1.0);
+    let d = (offset as f32 - center).abs();
+    if d <= band_half {
+        (d / band_half * std::f32::consts::FRAC_PI_2).cos()
+    } else {
+        0.0
+    }
+}
+
+/// 未播放区域单格的颜色：已缓冲为 buff、未缓冲为 surface；重试脉冲经过时
+/// 从底色朝真实缓冲色 buff 混合，峰值处恰好是 buff。
+pub(crate) fn unplayed_cell_color(
+    theme: &crate::ui::theme::Theme,
+    buffered: bool,
+    pulse: f32,
+) -> ratatui::style::Color {
+    let base = if buffered {
+        theme.palette.buff
+    } else {
+        theme.palette.surface
+    };
+    theme.mix(base, theme.palette.buff, pulse)
+}
 
 pub const PLAYER_BAR_HEIGHT: u16 = 5;
 
@@ -334,7 +370,7 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 ));
             }
         } else if app.is_retrying() {
-            // 后台重试下载：已播放部分照常；未播放部分沿用跳转加载态的脉冲带（同周期、同先慢后快缓动），高光色为“已加载”色（buff）。
+            // 后台重试下载：已播放部分照常；未播放部分保留真实的已缓冲/未缓冲底色，沿用跳转加载态的脉冲带（同周期、同先慢后快缓动），脉冲颜色为真实缓冲色。
             if filled > 0 {
                 spans.push(Span::styled(
                     "▁".repeat(filled as usize),
@@ -343,21 +379,11 @@ pub fn draw_collapsed_player_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            let cycle = (ANIM_EPOCH.elapsed().as_secs_f32() / PULSE_PERIOD_SECS).fract();
-            let eased = cycle * cycle;
-            let width = progress_w.saturating_sub(filled).max(1) as f32;
-            let center = eased * (width - 1.0);
-            let band_half = (width * 0.08).max(1.0);
+            let rest = usize::from(progress_w.saturating_sub(filled));
+            let elapsed = anim_elapsed_secs();
             for x in filled..progress_w {
-                let d = ((x - filled) as f32 - center).abs();
-                let color = if d <= band_half {
-                    let amount = 0.25 * (d / band_half * std::f32::consts::FRAC_PI_2).cos();
-                    app.theme.lighten(app.theme.palette.buff, amount)
-                } else if x < buffer_filled {
-                    app.theme.color_buff()
-                } else {
-                    app.theme.color_surface()
-                };
+                let pulse = retry_pulse_weight(usize::from(x - filled), rest, elapsed);
+                let color = unplayed_cell_color(&app.theme, x < buffer_filled, pulse);
                 spans.push(Span::styled("▁", Style::default().fg(color)));
             }
         } else if buffer_filled == 0 {
