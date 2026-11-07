@@ -108,6 +108,7 @@ impl App {
             .on_toggle_result(&key, target, result)
         {
             ToggleOutcome::Settled { liked } => {
+                self.mark_sidebar_stale_for(&key);
                 self.set_runtime_status(format!(
                     "{} {}",
                     if liked {
@@ -118,7 +119,8 @@ impl App {
                     label
                 ));
             }
-            ToggleOutcome::Superseded | ToggleOutcome::StaleFailure => {}
+            ToggleOutcome::Superseded => self.mark_sidebar_stale_for(&key),
+            ToggleOutcome::StaleFailure => {}
             ToggleOutcome::Failed { message } => {
                 self.set_runtime_status(format!(
                     "{}: {}",
@@ -126,6 +128,13 @@ impl App {
                     message
                 ));
             }
+        }
+    }
+
+    /// 歌单收藏态已在服务端改变：主页侧边栏的「收藏歌单」分区过期，下次展开时重取。
+    fn mark_sidebar_stale_for(&mut self, key: &str) {
+        if key.starts_with("playlist:") {
+            self.browse.home_sidebar.stale = true;
         }
     }
 

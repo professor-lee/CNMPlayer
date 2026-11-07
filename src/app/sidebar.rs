@@ -243,6 +243,8 @@ pub(crate) struct HomeSidebarState {
     pub(crate) expanded: bool,
     pub(crate) loading: bool,
     pub(crate) loading_more: bool,
+    /// 歌单收藏状态在本程序内被改过：下次展开侧边栏时重新获取（脏标记）。
+    pub(super) stale: bool,
     pub(super) user_id: Option<String>,
     pub(super) liked_playlist_id: Option<String>,
     pub(crate) user_name: String,
@@ -271,6 +273,7 @@ impl Default for HomeSidebarState {
             expanded: false,
             loading: false,
             loading_more: false,
+            stale: false,
             user_id: None,
             liked_playlist_id: None,
             user_name: String::new(),
@@ -631,15 +634,20 @@ impl App {
         }
         self.browse.home_sidebar.expanded = true;
         self.animate_home_sidebar();
-        if !self.browse.home_sidebar.created_playlists.is_empty()
-            || !self.browse.home_sidebar.collected_playlists.is_empty()
-        {
+        let has_content = !self.browse.home_sidebar.created_playlists.is_empty()
+            || !self.browse.home_sidebar.collected_playlists.is_empty();
+        if has_content && !self.browse.home_sidebar.stale {
             self.browse.home_sidebar.reset_focus();
             return;
         }
         // 异步填充：立刻返回，动画照常跑，数据由 tick 搬入。
+        // 脏标记重取时旧列表继续显示，结果到达后整体替换。
         if self.browse.home_sidebar_fetch.is_none() {
+            self.browse.home_sidebar.stale = false;
             self.browse.home_sidebar.loading = true;
+            // 在途的旧分页会追加到新列表上，直接作废。
+            self.browse.home_sidebar_page_fetch = None;
+            self.browse.home_sidebar.loading_more = false;
             let fut = fetch_home_sidebar_playlists(self.api.clone(), self.config.language);
             let fut: HomeSidebarTask = Box::pin(async move { Some(fut.await) });
             self.browse.home_sidebar_fetch = Some(spawn_shared(fut, self.wake.clone()));
@@ -684,6 +692,8 @@ impl App {
                 self.browse.home_sidebar.reset_focus();
             }
             Err(err) => {
+                // 失败时保留旧列表，下次展开再试。
+                self.browse.home_sidebar.stale = true;
                 let text = format!(
                     "{}: {}",
                     self.lang_text("主页歌单加载失败", "Failed to load home playlists"),
