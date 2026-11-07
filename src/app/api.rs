@@ -446,6 +446,40 @@ impl ApiState {
         Ok(response)
     }
 
+    /// 收藏 / 取消收藏歌手（`subscribe = true` 收藏）。
+    pub(super) async fn artist_sub(&mut self, id: &str, subscribe: bool) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("t", if subscribe { "1" } else { "0" });
+        let response = self.client.artist_sub(&query).await?;
+        Ok(response)
+    }
+
+    /// 收藏 / 取消收藏歌单（`subscribe = true` 收藏）。
+    pub(super) async fn playlist_subscribe(
+        &mut self,
+        id: &str,
+        subscribe: bool,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("t", if subscribe { "1" } else { "0" });
+        let response = self.client.playlist_subscribe(&query).await?;
+        Ok(response)
+    }
+
+    /// 收藏 / 取消收藏专辑（`subscribe = true` 收藏）。
+    pub(super) async fn album_sub(&mut self, id: &str, subscribe: bool) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("t", if subscribe { "1" } else { "0" });
+        let response = self.client.album_sub(&query).await?;
+        Ok(response)
+    }
+
     pub(super) async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("uid", uid);
         let response = self.client.likelist(&query).await?;
