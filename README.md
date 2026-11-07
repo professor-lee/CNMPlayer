@@ -143,7 +143,7 @@ Entering the mode closes the sidebar and any open overlay. Settings, the search 
 
 - Themes: loaded dynamically from `themes/*.toml` — 20 built-ins, `frappe` by default; drop in your own toml and it joins the cycle. Files that fail validation are skipped, and a broken selected theme falls back to the default
 - UI language: `zh` / `en`
-- 22 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
+- 25 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
 - Transparent background, album-cover border and hint lines
 - Startup: a loading page (ASCII title plus progress bar) appears first, while login restore and recommendation fetches run in the background step by step; an unusable saved session hands over to the login page
 - About modal with braille art, and a hidden easter egg inside it (the `easter-egg` cargo feature, compiled in by default and removable with `--no-default-features`)
@@ -258,7 +258,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
 | `cache.max_age_days` | `7` | Age limit for the TTL pass |
 | `cache.clean_on_startup` | `true` | Run the cleanup while starting |
-| `keybind_*` | see below | 22 rebindable shortcuts |
+| `keybind_*` | see below | 25 rebindable shortcuts |
 
 Cleanup runs as an age pass followed by a size LRU pass, and only looks at files directly inside the directory.
 
@@ -293,8 +293,12 @@ A binding that collides with another slot is rejected, and `Ctrl+Alt+R` inside t
 | `keybind_small_window_toggle` | `Alt+X` | Switch between the flat small-window panels |
 | `keybind_download` | `Ctrl+Alt+D` | Download the focused song (press again to cancel) |
 | `keybind_download_fullscreen` | `Ctrl+D` | Download the current song (fullscreen page only; press again to cancel) |
+| `keybind_toggle_subscribe` | `L` | Follow / unfollow the artist on the artist page, or collect / uncollect the playlist, album, EP or single on the playlist page (host only; the heart right of the title does the same) |
+| `keybind_fullscreen_open_artist` | `Ctrl+A` | Open the current song's artist page (fullscreen page only). With several artists each press highlights the next one; stop pressing for 0.8 s to open the highlighted artist, any other key cancels |
+| `keybind_fullscreen_open_album` | `Ctrl+S` | Open the current song's album page (fullscreen page only) |
 
 The fullscreen-only slots are inert in the host: there they fall through to page navigation instead.
+Conflicts are only checked between slots that act on the same side, so a host-only slot may share a key with a fullscreen-only one (`L`, `Ctrl+S`).
 
 ### Fixed shortcuts
 

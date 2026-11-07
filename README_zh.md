@@ -143,7 +143,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 - 主题：从 `themes/*.toml` 动态加载——内置 20 款，默认 `frappe`；自己丢一个 toml 进去即可加入循环。校验不过的文件会被跳过，选中的主题损坏时回退默认主题
 - 界面语言：`zh` / `en`
-- 22 个可重绑快捷键，带冲突检测；`Ctrl+Alt+R` 恢复默认
+- 25 个可重绑快捷键，带冲突检测；`Ctrl+Alt+R` 恢复默认
 - 透明背景、封面边框、提示行开关
 - 启动：先出加载页（ASCII 标题 + 进度条），登录恢复、推荐加载等网络步骤在后台按步推进；登录态不可用时进入登录页
 - about 弹窗含盲文形象画，里面还藏了一个彩蛋（`easter-egg` cargo feature，默认编入，可用 `--no-default-features` 剔除）
@@ -258,7 +258,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `cache.max_size_mb` | `500` | LRU 阶段的容量上限 |
 | `cache.max_age_days` | `7` | 按时间清理阶段的有效期 |
 | `cache.clean_on_startup` | `true` | 启动时执行清理 |
-| `keybind_*` | 见下文 | 22 个可重绑快捷键 |
+| `keybind_*` | 见下文 | 25 个可重绑快捷键 |
 
 清理按「先按时间、再按容量 LRU」两遍执行，且只统计目录下直属的文件。
 
@@ -293,8 +293,12 @@ sudo apt install -y build-essential cmake pkg-config \
 | `keybind_small_window_toggle` | `Alt+X` | 在扁窗的两个面板之间切换 |
 | `keybind_download` | `Ctrl+Alt+D` | 下载当前聚焦的单曲（再按一次取消） |
 | `keybind_download_fullscreen` | `Ctrl+D` | 下载当前播放的歌曲（仅全屏页，再按一次取消） |
+| `keybind_toggle_subscribe` | `L` | 歌手页收藏 / 取消收藏歌手，歌单页收藏 / 取消收藏歌单、专辑、EP、Single（仅主程序；标题右侧的爱心同效） |
+| `keybind_fullscreen_open_artist` | `Ctrl+A` | 进入当前歌曲的歌手页（仅全屏页）。多位歌手时每按一次高亮下一位，停按 0.8 秒进入高亮的歌手，按其他键取消 |
+| `keybind_fullscreen_open_album` | `Ctrl+S` | 进入当前歌曲的专辑页（仅全屏页） |
 
 仅全屏页生效的槽位在主程序里是空操作：那些按键会继续按页面导航处理。
+冲突检测只比较作用于同一侧的槽位，所以仅主程序与仅全屏页的槽位可以同键（`L`、`Ctrl+S`）。
 
 ### 固定快捷键
 

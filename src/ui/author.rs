@@ -153,7 +153,8 @@ fn draw_author_header(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(key) = app.browse.author.subscribe_key.clone() {
         let heart = crate::ui::player_bar::subscribe_button_glyph(app.subscription_displayed(&key));
         let heart_w = UnicodeWidthStr::width(heart) as u16;
-        let title_w = (UnicodeWidthStr::width(app.browse.author.title.as_str()) as u16).min(info_area.width);
+        let title_w =
+            (UnicodeWidthStr::width(app.browse.author.title.as_str()) as u16).min(info_area.width);
         let x = info_area.x.saturating_add(title_w).saturating_add(1);
         if x.saturating_add(heart_w) <= info_area.x.saturating_add(info_area.width) {
             let rect = Rect {

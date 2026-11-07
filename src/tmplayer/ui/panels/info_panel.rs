@@ -485,8 +485,13 @@ pub fn render(f: &mut Frame, area: Rect, window_width: u16, app: &mut AppState) 
         let t = Paragraph::new(Line::from(title_spans)).alignment(Alignment::Left);
         f.render_widget(t, meta_rect);
 
-        let a = Paragraph::new(artist_row_line(app, artist, meta_rect.width as usize, sub_style))
-            .alignment(Alignment::Left);
+        let a = Paragraph::new(artist_row_line(
+            app,
+            artist,
+            meta_rect.width as usize,
+            sub_style,
+        ))
+        .alignment(Alignment::Left);
         if l.meta.height > META_ARTIST_ROW {
             f.render_widget(
                 a,

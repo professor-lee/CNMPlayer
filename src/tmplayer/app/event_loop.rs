@@ -1126,7 +1126,8 @@ async fn handle_action(
                         Some(crate::tmplayer::FullscreenExit::BackToHostOpenAuthor(0));
                 }
                 _ => {
-                    let segments = crate::app::tracks::artist_name_segments(&app.player.track.artist);
+                    let segments =
+                        crate::app::tracks::artist_name_segments(&app.player.track.artist);
                     let next = |from: usize| {
                         (1..=segments.len())
                             .map(|step| (from + step) % segments.len())

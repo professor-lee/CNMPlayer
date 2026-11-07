@@ -74,6 +74,21 @@ pub fn help_items(app: &AppState) -> Vec<(String, String)> {
             &app.config.keybind_download_fullscreen,
         ),
         item(
+            "收藏歌手/歌单（主程序）",
+            "Follow Artist/Collect Playlist (Host)",
+            &app.config.keybind_toggle_subscribe,
+        ),
+        item(
+            "全屏进入歌手",
+            "Fullscreen Open Artist",
+            &app.config.keybind_fullscreen_open_artist,
+        ),
+        item(
+            "全屏进入专辑",
+            "Fullscreen Open Album",
+            &app.config.keybind_fullscreen_open_album,
+        ),
+        item(
             "侧边栏歌单区切换",
             "Sidebar Playlist Section Switch",
             "Ctrl+Up/Down",

@@ -62,6 +62,25 @@ fn ctrl_d_maps_to_toggle_download() {
     assert_eq!(map_key(ev, Overlay::None, &config), Action::ToggleDownload);
 }
 
+/// 全屏页默认 Ctrl+A 轮询进入歌手、Ctrl+S 进入专辑（须排在后面的通配分支之前）。
+#[test]
+fn ctrl_a_and_ctrl_s_open_artist_and_album() {
+    let config = crate::data::config::Config::default();
+    assert_eq!(config.keybind_fullscreen_open_artist, "Ctrl+A");
+    assert_eq!(config.keybind_fullscreen_open_album, "Ctrl+S");
+
+    let artist = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(
+        map_key(artist, Overlay::None, &config),
+        Action::CycleOpenArtist
+    );
+    let album = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert_eq!(
+        map_key(album, Overlay::None, &config),
+        Action::OpenAlbumPage
+    );
+}
+
 /// 设置类弹窗里的 Esc 必须走"关闭弹窗"而不是退出全屏页。
 ///
 /// 曾经漏了 LyricsSettingsModal 的分支，Esc 于是落到默认的 Action::Quit，
