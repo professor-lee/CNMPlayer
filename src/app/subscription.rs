@@ -66,10 +66,6 @@ impl App {
     /// 请求由 `tick_subscription_sync` 派发，输入路径不 `await` 网络。
     pub(super) fn toggle_subscription_hotkey(&mut self) {
         let Some(key) = self.current_subscription_key() else {
-            self.set_runtime_status(self.lang_text(
-                "当前页面没有可收藏的歌手或歌单",
-                "Nothing to follow or collect on this page",
-            ));
             return;
         };
         let target = !self.browse.subscriptions.displayed(&key);

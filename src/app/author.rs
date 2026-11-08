@@ -629,6 +629,8 @@ impl App {
         if let Some(x) = section_cover {
             self.browse.playlist.cover.load(self.api.clone(), x)
         }
+        // 分区总页不是可收藏对象：清掉上一页残留的收藏键。
+        self.browse.playlist.subscribe_key = None;
         self.open_browse_page(Page::Playlist);
     }
 
