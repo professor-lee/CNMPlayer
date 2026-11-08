@@ -133,3 +133,52 @@ fn reveal_leaves_fixed_regions_untouched() {
     assert_eq!(row(&target, 8), "ghABCD");
     assert_eq!(row(&target, 9), "PLAYER");
 }
+
+// Apply actual diff writes as a terminal does: a wide glyph paints both columns,
+// even though its trailing Buffer cell may have a different background.
+fn submit_backgrounds(previous: &Buffer, next: &Buffer, visible: &mut [Color]) {
+    for (x, _, cell) in previous.diff(next) {
+        let start = usize::from(x);
+        let end = (start + cell.symbol().width()).min(visible.len());
+        visible[start..end].fill(cell.bg);
+    }
+}
+
+#[test]
+fn drawer_transitions_clear_wide_row_highlights_before_focus_moves() {
+    use ratatui::text::Span;
+    use ratatui::widgets::{Paragraph, Widget};
+
+    let area = Rect::new(0, 0, 12, 1);
+    for base in [Color::Reset, Color::Black] {
+        for text in ["album 2 首", "album 2 tr"] {
+            for opening in [true, false] {
+                let mut background = Buffer::empty(area);
+                background.set_style(area, Style::default().bg(base));
+                let mut page = background.clone();
+                Paragraph::new(Span::styled(text, Style::default().bg(Color::Blue)))
+                    .render(Rect::new(1, 0, 10, 1), &mut page);
+                let mut previous = Buffer::empty(area);
+                let mut visible = vec![Color::Reset; 12];
+                let offsets: &[u16] = if opening { &[2, 1, 0] } else { &[0, 1, 2, 12] };
+                for &offset in offsets {
+                    let mut next = page.clone();
+                    if opening {
+                        reveal_from_right(&mut next, &background, offset, area);
+                    } else {
+                        paint(&mut next, &background, i32::from(offset), area);
+                    }
+                    submit_backgrounds(&previous, &next, &mut visible);
+                    previous = next;
+                }
+                assert_eq!(visible[11], base, "{base:?}, {text:?}, opening={opening}");
+
+                let mut unfocused = background.clone();
+                Paragraph::new(Span::styled(text, Style::default().bg(base)))
+                    .render(Rect::new(1, 0, 10, 1), &mut unfocused);
+                submit_backgrounds(&previous, &unfocused, &mut visible);
+                assert_eq!(visible, vec![base; 12], "focus moved after {text:?}");
+            }
+        }
+    }
+}
