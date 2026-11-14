@@ -417,9 +417,7 @@ async fn cancellation_wakes_decoder_and_removes_only_its_temporary() {
         super::super::streaming::StreamingStatus::Cancelled
     );
     assert_eq!(reader_result.unwrap_err().kind(), ErrorKind::Interrupted);
-    // 临时文件由分离的下载任务在察觉取消、关闭文件后删除；这里只断言最终会删，
-    // 不断言耗时——CI 并行跑满时 900ms 的固定时限经常不够。
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + Duration::from_millis(900);
     while own_part.exists() && std::time::Instant::now() < deadline {
         compio::time::sleep(Duration::from_millis(10)).await;
     }
