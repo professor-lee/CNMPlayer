@@ -86,6 +86,8 @@ pub struct Config {
     pub show_hints: bool,
     pub small_window_display: bool,
     pub home_more_recommend: bool,
+    /// 听歌上报：切歌或停止时把收听时长报给网易云“听歌排行”。
+    pub scrobble: bool,
     /// MPRIS Identity 模板；留空使用 CNMPlayer，`@play` 替换为当前曲名。
     pub mpris_name: String,
     pub cache: CacheConfig,

@@ -96,12 +96,12 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 - 流式播放：边下边播，完整响应写入成功后才成为缓存文件，因此半成品或被取消的传输不会被当作缓存播放；进度条的已缓冲段就是下载进度
 - 可跳转进度（进度条点击或全屏页内操作），跳转期间进度条有脉冲动画
-- 播放记忆（`playback_memory`）：队列、当前索引、循环模式与队列来源会在每次切歌时保存，并在启动时恢复；恢复的歌曲从头开始播放
+- 播放记忆（`playback_memory`）：队列、当前索引、循环模式、队列来源，以及随机模式下的洗牌进度（已播历史与本轮剩余顺序）会在每次切歌时保存，并在启动时恢复；恢复的歌曲从头开始播放
 - 按 VIP 权限裁剪的音质（`audio_quality`）：从 `standard` 到 `jymaster` 共 9 档；非 VIP 账号会被限制到 `exhigh`
 - 10 段均衡器，±12 dB（`eq_bands_db`），在全屏 EQ 弹窗里调整，实时作用于播放
 - 收藏 / 取消收藏：全屏页与折叠播放栏都可操作
-- 循环模式：顺序 → 随机 → 列表循环 → 单曲循环
-- 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷
+- 循环模式：顺序 → 随机 → 列表循环 → 单曲循环；随机模式每轮把队列中每首歌各播一次，“上一首”沿实际播放历史回退
+- 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷。随机模式先播完已加载并洗好的曲目（剩三首时预取下一页），新加载的一页单独洗牌后接在其后播放
 - Linux 媒体控制（MPRIS，总线后缀 `cnmplayer`），包含元数据与封面
 
 ### 下载
@@ -241,6 +241,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `lyric_frame_divisor` | `2` | 歌词动画采样倍率（基于 `ui_fps`，1–8）；不改变重绘频率 |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
+| `scrobble` | `false` | 通用设置 → 听歌上报：切歌、播放停止与退出时，把 20 秒以上的实际收听时长（暂停不计）上报网易云“听歌排行”；可能存在风控风险 |
 | `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer` |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |

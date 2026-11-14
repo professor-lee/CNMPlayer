@@ -16,4 +16,27 @@ fn playback_memory_preserves_source_cover_and_accepts_older_records() {
         old_record.source_playlist_id.as_deref(),
         Some("playlist-42")
     );
+    assert!(old_record.shuffle.is_none());
+}
+
+#[test]
+fn shuffle_progress_survives_a_save_round_trip() {
+    let shuffle = PlaybackShuffleState {
+        history: vec!["1".into(), "2".into()],
+        upcoming: vec!["5".into(), "4".into()],
+        round: vec!["2".into(), "3".into(), "4".into(), "5".into()],
+    };
+    let record = PlaybackSessionRecord {
+        queue: vec![PlaybackSessionTrack {
+            song_id: "3".into(),
+            ..PlaybackSessionTrack::default()
+        }],
+        current_index: Some(0),
+        repeat_mode: Some("shuffle".into()),
+        shuffle: Some(shuffle.clone()),
+        ..PlaybackSessionRecord::default()
+    };
+    let saved = toml::to_string_pretty(&record).unwrap();
+    let restored: PlaybackSessionRecord = toml::from_str(&saved).unwrap();
+    assert_eq!(restored.shuffle, Some(shuffle));
 }

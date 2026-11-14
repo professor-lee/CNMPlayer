@@ -377,11 +377,7 @@ fn response_indicates_vip(response: &ApiResponse) -> bool {
         .pointer("/associator/expireTime")
         .and_then(|value| value.as_i64())
         .unwrap_or(0);
-    if associator_expire > now_ms {
-        return true;
-    }
-
-    false
+    associator_expire > now_ms
 }
 
 impl App {

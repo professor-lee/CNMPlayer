@@ -464,6 +464,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         }
         if app.should_quit {
             app.persist_playback_memory_on_exit();
+            app.flush_listen_session_on_exit().await;
             break Ok(());
         }
 

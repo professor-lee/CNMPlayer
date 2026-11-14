@@ -14,7 +14,7 @@ impl ApiClient {
                 "action": "play",
                 "json": {
                     "download": 0,
-                    "end": "playend",
+                    "end": query.get_or("end", "playend"),
                     "id": query.get_or("id", "0"),
                     "sourceId": query.get_or("sourceid", ""),
                     "time": query.get_or("time", "0").parse::<i64>().unwrap_or(0),

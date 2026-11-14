@@ -541,7 +541,7 @@ async fn settings_preserve_sidebar_visibility_focus_and_modal_input() {
         handle_action(&mut app, &mut host, Action::Confirm, &modal_layout)
             .await
             .unwrap();
-        app.general_settings_selected = 5;
+        app.general_settings_selected = SETTINGS_GENERAL_MPRIS_ROW;
         handle_action(&mut app, &mut host, Action::Confirm, &modal_layout)
             .await
             .unwrap();
@@ -575,7 +575,7 @@ async fn name_edit_cancels_to_general_then_root_without_saving() {
     handle_action(&mut app, &mut host, Action::ModalUp, &layout)
         .await
         .unwrap();
-    assert_eq!(app.general_settings_selected, 5);
+    assert_eq!(app.general_settings_selected, SETTINGS_GENERAL_MPRIS_ROW);
     handle_action(&mut app, &mut host, Action::Confirm, &layout)
         .await
         .unwrap();
@@ -596,7 +596,7 @@ async fn name_edit_cancels_to_general_then_root_without_saving() {
     )
     .await
     .unwrap();
-    assert_eq!(app.general_settings_selected, 5);
+    assert_eq!(app.general_settings_selected, SETTINGS_GENERAL_MPRIS_ROW);
     handle_action(&mut app, &mut host, Action::CloseOverlay, &layout)
         .await
         .unwrap();
@@ -622,7 +622,7 @@ async fn name_editor_unicode_limit_applies_at_home_and_allows_replacement() {
     );
     app.config.mpris_name = "曲".repeat(256);
     app.overlay = Overlay::GeneralSettingsModal;
-    app.general_settings_selected = 5;
+    app.general_settings_selected = SETTINGS_GENERAL_MPRIS_ROW;
     let mut host = TransitionHost {
         wake: crate::render::wake::WakeSignal::default(),
     };

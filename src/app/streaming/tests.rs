@@ -397,12 +397,16 @@ async fn cancellation_wakes_decoder_and_removes_only_its_temporary() {
     .await
     .unwrap();
     let handle = StreamingReaderHandle::from(&reader);
+    // 目录里还有一个无关的 `unrelated.part`；read_dir 的顺序由文件系统决定，
+    // 必须显式排除它，否则会把它当成本流的临时文件去等它被删除。
     let own_part = std::fs::read_dir(&directory)
         .unwrap()
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .find(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "part")
+            *path != unrelated
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "part")
         })
         .expect("reader startup creates its own temporary");
     let reader_task = compio::runtime::spawn_blocking(move || {

@@ -1503,13 +1503,14 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
 
 #[test]
 fn general_modal_scrolling_preserves_viewport_and_drawn_hit_rows() {
+    use crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW as NAME_ROW;
     let mut app = state(Overlay::GeneralSettingsModal);
     app.config.mpris_name = " \t ".into();
-    app.general_settings_selected = 5;
+    app.general_settings_selected = NAME_ROW;
     let (rows, buf) = render_to_buffer_sized(80, 10, &mut app, |f, app, rows| {
         render_general_settings_modal(f, f.area(), app, rows)
     });
-    let name_row = rows.get(5).expect("focused name remains visible");
+    let name_row = rows.get(NAME_ROW).expect("focused name remains visible");
     assert!(compact(&line_text(&buf, name_row.y)).contains("MPRIS服务名称:CNMPlayer"));
     let scroll = app.general_settings_scroll;
     assert!(scroll > 0);
@@ -1519,9 +1520,9 @@ fn general_modal_scrolling_preserves_viewport_and_drawn_hit_rows() {
     };
     assert_eq!(
         hit_test(&layout, &app, name_row.x, name_row.y),
-        Some(Action::ModalSelect(5))
+        Some(Action::ModalSelect(NAME_ROW))
     );
-    app.general_settings_selected = 4;
+    app.general_settings_selected = NAME_ROW - 1;
     render_to_buffer_sized(80, 10, &mut app, |f, app, rows| {
         render_general_settings_modal(f, f.area(), app, rows)
     });
@@ -1541,14 +1542,16 @@ fn empty_name_edit_draws_value_only_caret_and_ignores_row_clicks() {
     ] {
         let mut app = state(Overlay::MprisNameEditModal);
         app.language = language;
-        app.general_settings_selected = 5;
+        app.general_settings_selected = crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW;
         app.mpris_name_edit = Some(crate::app::settings_controller::SettingsTextEdit::new(
             String::new(),
         ));
         let (rows, buf) = render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
             render_general_settings_modal(f, f.area(), app, rows)
         });
-        let row = rows.get(5).unwrap();
+        let row = rows
+            .get(crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW)
+            .unwrap();
         let prefix = if language == crate::data::config::Language::Zh {
             "  MPRIS服务名称: "
         } else {
@@ -1579,14 +1582,16 @@ fn empty_name_edit_draws_value_only_caret_and_ignores_row_clicks() {
 #[test]
 fn long_chinese_name_edit_scrolls_only_when_caret_crosses_value_boundary() {
     let mut app = state(Overlay::MprisNameEditModal);
-    app.general_settings_selected = 5;
+    app.general_settings_selected = crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW;
     app.mpris_name_edit = Some(crate::app::settings_controller::SettingsTextEdit::new(
         "当前曲名".repeat(30),
     ));
     let (rows, buf) = render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
         render_general_settings_modal(f, f.area(), app, rows)
     });
-    let row = rows.get(5).unwrap();
+    let row = rows
+        .get(crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW)
+        .unwrap();
     let value_x = row.x + crate::ui::settings::display_width("  MPRIS服务名称: ") as u16;
     let scroll = app.mpris_name_edit.as_ref().unwrap().window_col;
     assert!(scroll > 0);
@@ -1606,7 +1611,9 @@ fn long_chinese_name_edit_scrolls_only_when_caret_crosses_value_boundary() {
         render_general_settings_modal(f, f.area(), app, rows)
     });
     assert_eq!(app.mpris_name_edit.as_ref().unwrap().window_col, 0);
-    let row = rows.get(5).unwrap();
+    let row = rows
+        .get(crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW)
+        .unwrap();
     assert_eq!(buf[(value_x, row.y)].symbol(), "当");
     assert!(
         buf[(value_x, row.y)]

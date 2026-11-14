@@ -10,6 +10,7 @@ use super::next_list_generation;
 use super::owned_task::SharedTask;
 use super::owned_task::peek_shared;
 use super::owned_task::spawn_shared;
+use super::playback_controller::PlaybackRepeatMode;
 use super::playback_controller::PlaybackRuntimeState;
 use super::playback_controller::PlaybackTrack;
 use super::playlist_pagination;
@@ -633,6 +634,12 @@ impl App {
                         self.playback.pagination.as_ref(),
                         &mut self.playback.playback_queue,
                     ) {
+                        if self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle {
+                            // 新一页立刻排到本轮之后，预取判定与播放记忆都基于最新待播。
+                            self.playback
+                                .shuffle
+                                .sync(&self.playback.playback_queue, self.playback.playback_index);
+                        }
                         self.persist_playback_memory();
                     }
                 }
@@ -666,10 +673,16 @@ impl App {
     }
 
     pub(super) fn maybe_prefetch_playback_page(&self) {
-        if let Some(index) = self.playback.playback_index
-            && index.saturating_add(3) >= self.playback.playback_queue.len()
-            && let Some(pagination) = &self.playback.pagination
-        {
+        let Some(index) = self.playback.playback_index else {
+            return;
+        };
+        let near_end = if self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle {
+            // 随机模式按本轮剩余曲目判断，而不是按随机落到的下标。
+            self.playback.shuffle.remaining() <= 3
+        } else {
+            index.saturating_add(3) >= self.playback.playback_queue.len()
+        };
+        if near_end && let Some(pagination) = &self.playback.pagination {
             pagination.prefetch(self.api.clone());
         }
     }
