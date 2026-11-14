@@ -241,6 +241,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `lyric_frame_divisor` | `2` | 歌词动画采样倍率（基于 `ui_fps`，1–8）；不改变重绘频率 |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
+| `scrobble` | `false` | 通用设置 → 听歌上报：切歌、播放停止与退出时，把 20 秒以上的实际收听时长（暂停不计）上报网易云“听歌排行”；可能存在风控风险 |
 | `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer` |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |

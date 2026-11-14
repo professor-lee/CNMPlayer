@@ -26,6 +26,7 @@ mod playlist_pagination;
 pub(crate) mod presentation;
 mod response;
 mod roam;
+mod scrobble;
 pub(crate) mod search_controller;
 pub(crate) mod settings_controller;
 mod shuffle;

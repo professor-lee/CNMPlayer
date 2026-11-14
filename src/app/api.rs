@@ -611,6 +611,24 @@ impl ApiState {
         .into())
     }
 
+    /// 听歌上报（网易云“听歌排行”）：`end` 为 `playend`（播完）或 `ui`（用户切走）。
+    pub(super) async fn scrobble(
+        &self,
+        song_id: &str,
+        source_id: &str,
+        listened_secs: u64,
+        end: &str,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", song_id)
+            .param("sourceid", source_id)
+            .param("time", &listened_secs.to_string())
+            .param("end", end);
+        let response = self.client.scrobble(&query).await?;
+        Ok(response)
+    }
+
     pub(super) async fn vip_info(&mut self) -> Result<ApiResponse> {
         let query = self.query_with_cookie();
         let response = self.client.vip_info(&query).await?;

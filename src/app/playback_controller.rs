@@ -12,6 +12,7 @@ use super::roam::bound_private_roam_queue;
 use super::roam::private_roam_continuation_start;
 use super::roam::private_roam_restored_index;
 use super::roam::private_roam_window;
+use super::scrobble::ListenSession;
 use super::search_controller::SearchItem;
 use super::shuffle::ShuffleOrder;
 use super::streaming::Origin;
@@ -389,6 +390,11 @@ impl App {
     }
 
     pub(super) async fn tick_audio(&mut self) {
+        self.tick_playback().await;
+        self.observe_listen_session();
+    }
+
+    async fn tick_playback(&mut self) {
         self.tick_playlist_page_fetch();
         self.maybe_prefetch_playback_page();
         self.poll_pending_start();
@@ -556,6 +562,7 @@ impl App {
             return;
         };
         self.playback.page_advance = None;
+        self.finish_listen_session();
         self.playback.cancel_pending_start();
         self.playback.audio_player.stop();
         self.playback.playback_index = Some(index);
@@ -786,6 +793,7 @@ impl App {
                                 pending.track.title,
                                 pending.track.artist
                             ));
+                            self.start_listen_session(&pending.track);
                         }
                     }
                     Err(err) => {
@@ -1104,6 +1112,8 @@ pub(crate) struct PlaybackController {
     pending_start: Option<PendingPlayback>,
     playback_generation: u64,
     shuffle: ShuffleOrder,
+    /// 当前歌曲的听歌上报记录；`scrobble` 关闭时为空。
+    pub(super) listen: Option<ListenSession>,
     pub(super) roam_append: Option<super::owned_task::SharedTask<Vec<PlaylistTrack>>>,
 }
 
@@ -1128,6 +1138,7 @@ impl PlaybackController {
             pending_start: None,
             playback_generation: 0,
             shuffle: ShuffleOrder::new(),
+            listen: None,
             roam_append: None,
         }
     }
@@ -1204,6 +1215,8 @@ impl PlaybackController {
         self.restoring_memory = false;
         self.pagination = None;
         self.page_advance = None;
+        // 登出等清空路径不再以旧账号身份上报。
+        self.listen = None;
     }
 
     fn replace_queue(
