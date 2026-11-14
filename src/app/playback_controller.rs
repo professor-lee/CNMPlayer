@@ -427,9 +427,9 @@ impl App {
         }
         if let Some(announce) = self.playback.page_advance {
             let current = self.playback.playback_index.unwrap_or(0);
-            if current + 1 < self.playback.playback_queue.len() {
+            if let Some(target) = self.page_advance_target(current) {
                 self.playback.page_advance = None;
-                self.play_queue_index(current + 1, announce).await;
+                self.play_queue_index(target, announce).await;
             } else if !self
                 .playback
                 .pagination
@@ -543,10 +543,18 @@ impl App {
     }
 
     fn defer_playlist_advance(&mut self, current: usize, announce: bool) -> bool {
-        if matches!(
-            self.playback.playback_repeat_mode,
-            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll
-        ) && current + 1 >= self.playback.playback_queue.len()
+        let loaded_exhausted = match self.playback.playback_repeat_mode {
+            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll => {
+                current + 1 >= self.playback.playback_queue.len()
+            }
+            // 随机模式先播完已加载并洗好的曲目，再加载下一页单独洗牌。
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .round_exhausted(&self.playback.playback_queue, Some(current)),
+            PlaybackRepeatMode::LoopOne => false,
+        };
+        if loaded_exhausted
             && let Some(pagination) = &self.playback.pagination
             && pagination.has_more()
         {
@@ -555,6 +563,18 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// 等待续页时的下一首：新一页到达、出现可播的新歌才有结果。
+    fn page_advance_target(&mut self, current: usize) -> Option<usize> {
+        if self.playback.playback_repeat_mode != PlaybackRepeatMode::Shuffle {
+            return (current + 1 < self.playback.playback_queue.len()).then_some(current + 1);
+        }
+        let queue = &self.playback.playback_queue;
+        if self.playback.shuffle.round_exhausted(queue, Some(current)) {
+            return None;
+        }
+        self.playback.shuffle.next(queue, Some(current))
     }
 
     pub(crate) async fn play_queue_index(&mut self, index: usize, announce: bool) {
@@ -1124,7 +1144,7 @@ pub(crate) struct PlaybackController {
     roam_advance: Option<bool>,
     pending_start: Option<PendingPlayback>,
     playback_generation: u64,
-    shuffle: ShuffleOrder,
+    pub(super) shuffle: ShuffleOrder,
     /// 当前歌曲的听歌上报记录；`scrobble` 关闭时为空。
     pub(super) listen: Option<ListenSession>,
     pub(super) roam_append: Option<super::owned_task::SharedTask<Vec<PlaylistTrack>>>,

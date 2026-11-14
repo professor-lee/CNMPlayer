@@ -64,7 +64,7 @@ fn previous_walks_back_real_history_and_next_returns_forward() {
 }
 
 #[test]
-fn appended_page_joins_the_current_round_without_repeating_played_songs() {
+fn appended_page_plays_after_the_loaded_songs_finish() {
     let mut queue = queue(0..5);
     let mut order = ShuffleOrder::with_seed(11);
     let mut current = Some(2);
@@ -74,11 +74,21 @@ fn appended_page_joins_the_current_round_without_repeating_played_songs() {
         seen.insert(id(&queue, current).to_string());
     }
     queue.extend(self::queue(5..12));
-    for _ in seen.len()..queue.len() {
+    assert!(!order.round_exhausted(&queue, current));
+    assert_eq!(order.remaining(), 9);
+    // 已加载的 5 首先播完，新一页再按自己的洗牌顺序播。
+    let mut new_page = HashSet::new();
+    for step in seen.len()..queue.len() {
         current = order.next(&queue, current);
-        assert!(seen.insert(id(&queue, current).to_string()));
+        let song: u32 = id(&queue, current).parse().unwrap();
+        assert_eq!(song >= 5, step >= 5, "step {step} played {song}");
+        assert!(seen.insert(song.to_string()));
+        if song >= 5 {
+            new_page.insert(song);
+        }
     }
-    assert_eq!(seen.len(), 12);
+    assert_eq!(new_page.len(), 7);
+    assert!(order.round_exhausted(&queue, current));
 }
 
 #[test]

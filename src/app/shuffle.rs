@@ -2,7 +2,7 @@
 //!
 //! 序列按歌曲 id 记账而不是按队列下标，所以分页追加、漫游裁剪前缀等改动
 //! 队列的路径不需要逐个通知；每次取下一首/上一首前与当前队列对账即可：
-//! 移出队列的歌从历史和待播中删去，新加入的歌随机插进本轮尚未播放的部分。
+//! 移出队列的歌从历史和待播中删去，新加入的歌单独洗牌后排在本轮剩余曲目之后。
 
 use super::playback_controller::PlaybackTrack;
 use crate::data::playback_session::PlaybackShuffleState;
@@ -135,15 +135,39 @@ impl ShuffleOrder {
             self.current = current_id.map(str::to_string);
         }
 
-        let mut added = HashSet::new();
-        for track in queue {
-            let id = track.song_id.as_str();
-            if !self.round.contains(id) && added.insert(id) {
-                let slot = self.rng.below(self.upcoming.len() + 1);
-                self.upcoming.insert(slot, id.to_string());
-            }
+        let mut seen = HashSet::new();
+        let mut added: Vec<String> = queue
+            .iter()
+            .map(|track| track.song_id.as_str())
+            .filter(|id| !self.round.contains(*id) && seen.insert(*id))
+            .map(str::to_string)
+            .collect();
+        self.shuffle(&mut added);
+        self.round.extend(added.iter().cloned());
+        // 待播从末尾取，插到开头即排在本轮已洗好的曲目之后。
+        self.upcoming.splice(0..0, added);
+    }
+
+    /// 本轮还没播的歌数（截至上次对账）。
+    pub(super) fn remaining(&self) -> usize {
+        self.upcoming.len()
+    }
+
+    /// 对账后本轮是否已经播完。
+    pub(super) fn round_exhausted(
+        &mut self,
+        queue: &[PlaybackTrack],
+        current: Option<usize>,
+    ) -> bool {
+        self.sync(queue, current);
+        self.upcoming.is_empty()
+    }
+
+    fn shuffle(&mut self, ids: &mut [String]) {
+        for i in (1..ids.len()).rev() {
+            let j = self.rng.below(i + 1);
+            ids.swap(i, j);
         }
-        self.round.extend(added.into_iter().map(str::to_string));
     }
 
     fn start_round(&mut self, queue: &[PlaybackTrack]) {
@@ -155,10 +179,9 @@ impl ShuffleOrder {
                 self.upcoming.push(track.song_id.clone());
             }
         }
-        for i in (1..self.upcoming.len()).rev() {
-            let j = self.rng.below(i + 1);
-            self.upcoming.swap(i, j);
-        }
+        let mut upcoming = std::mem::take(&mut self.upcoming);
+        self.shuffle(&mut upcoming);
+        self.upcoming = upcoming;
     }
 
     fn push_history(&mut self, id: String) {
