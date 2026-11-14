@@ -576,6 +576,12 @@ impl App {
         self.playback.now_playing = Some(enriched.clone());
         self.refresh_now_playing_like_state();
         self.playback.playback_index = Some(index);
+        if self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle {
+            // 点播等不经洗牌序列的切歌也要先对账，播放记忆才记下正确的历史。
+            self.playback
+                .shuffle
+                .sync(&self.playback.playback_queue, Some(index));
+        }
         self.maybe_prefetch_playback_page();
         self.cover_fetch_inflight_url = None;
         self.cover_fetch_last_attempt_at = None;
@@ -970,6 +976,8 @@ impl App {
                 .pagination
                 .as_ref()
                 .map(PlaylistPagination::cursor),
+            shuffle: (self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle)
+                .then(|| self.playback.shuffle.snapshot()),
             updated_at: 0,
         };
 
@@ -1082,6 +1090,11 @@ impl App {
             record.source_playlist_id,
             pagination,
         );
+        if self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle
+            && let Some(shuffle) = record.shuffle
+        {
+            self.playback.shuffle.restore(shuffle);
+        }
         let target = target.unwrap_or(0);
         self.play_queue_index(target, false).await;
         self.playback.restoring_memory = false;

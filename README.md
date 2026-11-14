@@ -96,7 +96,7 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 
 - Streaming: the song is downloaded into the local audio cache while it plays, and only becomes the cached file after the complete response is written — a partial or cancelled transfer is never played from the cache. The buffered part of the progress bar shows download progress.
 - Seeking from the progress bar or inside the fullscreen page, with a pulse animation while the position catches up
-- Queue memory (`playback_memory`): queue, current index, repeat mode and the queue's origin list are saved on every track change and restored on startup; the restored track starts from the beginning
+- Queue memory (`playback_memory`): queue, current index, repeat mode, the queue's origin list and, in shuffle mode, the shuffle progress (played history and the rest of the current round) are saved on every track change and restored on startup; the restored track starts from the beginning
 - VIP-aware audio quality (`audio_quality`): 9 levels from `standard` to `jymaster`; a non-VIP account is clamped to `exhigh`
 - 10-band EQ, ±12 dB (`eq_bands_db`), edited from the fullscreen EQ modal and applied to the live stream
 - Like / unlike from the fullscreen page and from the collapsed player bar

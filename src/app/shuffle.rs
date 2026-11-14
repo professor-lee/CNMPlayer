@@ -5,6 +5,7 @@
 //! 移出队列的歌从历史和待播中删去，新加入的歌随机插进本轮尚未播放的部分。
 
 use super::playback_controller::PlaybackTrack;
+use crate::data::playback_session::PlaybackShuffleState;
 use std::collections::HashSet;
 use std::hash::BuildHasher;
 use std::hash::RandomState;
@@ -45,6 +46,28 @@ impl ShuffleOrder {
         self.history.clear();
         self.upcoming.clear();
         self.round.clear();
+    }
+
+    /// 播放记忆用的洗牌进度；`current` 由记忆里的当前曲恢复。
+    pub(super) fn snapshot(&self) -> PlaybackShuffleState {
+        let mut round: Vec<String> = self.round.iter().cloned().collect();
+        round.sort_unstable();
+        PlaybackShuffleState {
+            history: self.history.clone(),
+            upcoming: self.upcoming.clone(),
+            round,
+        }
+    }
+
+    /// 恢复播放记忆里的洗牌进度；下次对账时以队列当前曲为准。
+    pub(super) fn restore(&mut self, state: PlaybackShuffleState) {
+        self.reset();
+        let skip = state.history.len().saturating_sub(HISTORY_LIMIT);
+        self.history = state.history.into_iter().skip(skip).collect();
+        // 待播必须算在本轮内，否则对账会把它们当作新歌再排一次。
+        self.round = state.round.into_iter().collect();
+        self.round.extend(state.upcoming.iter().cloned());
+        self.upcoming = state.upcoming;
     }
 
     /// 本轮下一首；本轮播完后重新洗一轮。队列只有一首时重播当前曲。
@@ -88,7 +111,8 @@ impl ShuffleOrder {
         None
     }
 
-    fn sync(&mut self, queue: &[PlaybackTrack], current: Option<usize>) {
+    /// 与队列对账：去掉已移出队列的歌、记下点播、把新加入的歌排进待播。
+    pub(super) fn sync(&mut self, queue: &[PlaybackTrack], current: Option<usize>) {
         let ids: HashSet<&str> = queue.iter().map(|track| track.song_id.as_str()).collect();
         self.history.retain(|id| ids.contains(id.as_str()));
         self.upcoming.retain(|id| ids.contains(id.as_str()));

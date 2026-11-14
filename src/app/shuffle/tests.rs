@@ -133,3 +133,33 @@ fn single_song_queue_replays_it() {
     assert_eq!(order.next(&queue, Some(0)), Some(0));
     assert_eq!(order.next(&queue, Some(0)), Some(0));
 }
+
+#[test]
+fn restored_progress_continues_the_same_round_and_history() {
+    let queue = queue(0..12);
+    let mut order = ShuffleOrder::with_seed(21);
+    let mut current = Some(4);
+    for _ in 0..4 {
+        current = order.next(&queue, current);
+    }
+    // 模拟持久化：play_queue_index 在保存前对账。
+    order.sync(&queue, current);
+    let saved = order.snapshot();
+
+    // 重启后种子不同，剩余顺序与历史都必须来自存档。
+    let mut restored = ShuffleOrder::with_seed(99);
+    restored.restore(saved);
+    let (mut original_current, mut restored_current) = (current, current);
+    for _ in 4..queue.len() - 1 {
+        original_current = order.next(&queue, original_current);
+        restored_current = restored.next(&queue, restored_current);
+        assert_eq!(restored_current, original_current);
+    }
+
+    let mut fresh = ShuffleOrder::with_seed(99);
+    fresh.restore(order.snapshot());
+    assert_eq!(
+        fresh.previous(&queue, original_current),
+        order.previous(&queue, original_current)
+    );
+}
