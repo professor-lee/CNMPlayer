@@ -28,6 +28,7 @@ mod response;
 mod roam;
 pub(crate) mod search_controller;
 pub(crate) mod settings_controller;
+mod shuffle;
 pub(crate) mod sidebar;
 mod startup;
 mod startup_controller;

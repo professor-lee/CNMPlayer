@@ -13,6 +13,7 @@ use super::roam::private_roam_continuation_start;
 use super::roam::private_roam_restored_index;
 use super::roam::private_roam_window;
 use super::search_controller::SearchItem;
+use super::shuffle::ShuffleOrder;
 use super::streaming::Origin;
 use super::streaming::RetryPolicy;
 use super::streaming::StreamingReader;
@@ -35,8 +36,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 enum PrepareEvent {
     ReaderReady(StreamingReaderHandle),
@@ -198,22 +197,6 @@ pub(super) fn map_audio_state(state: AudioPlayerState) -> PlaybackRuntimeState {
     }
 }
 
-fn pick_shuffle_index(len: usize, current: usize) -> usize {
-    if len <= 1 {
-        return 0;
-    }
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as usize;
-    let mut index = now % len;
-    if index == current {
-        index = (index + 1) % len;
-    }
-    index
-}
-
 impl App {
     pub(crate) fn playback_position(&self) -> Duration {
         if self.playback.has_pending_start() {
@@ -326,10 +309,10 @@ impl App {
                     % self.playback.playback_queue.len(),
             ),
             PlaybackRepeatMode::LoopOne => Some(current),
-            PlaybackRepeatMode::Shuffle => Some(pick_shuffle_index(
-                self.playback.playback_queue.len(),
-                current,
-            )),
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .previous(&self.playback.playback_queue, Some(current)),
         };
 
         if let Some(index) = target {
@@ -371,10 +354,10 @@ impl App {
             }
             PlaybackRepeatMode::LoopAll => Some((current + 1) % self.playback.playback_queue.len()),
             PlaybackRepeatMode::LoopOne => Some(current),
-            PlaybackRepeatMode::Shuffle => Some(pick_shuffle_index(
-                self.playback.playback_queue.len(),
-                current,
-            )),
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .next(&self.playback.playback_queue, Some(current)),
         };
 
         if let Some(index) = target {
@@ -539,10 +522,10 @@ impl App {
             }
             PlaybackRepeatMode::LoopAll => Some((current + 1) % self.playback.playback_queue.len()),
             PlaybackRepeatMode::LoopOne => Some(current),
-            PlaybackRepeatMode::Shuffle => Some(pick_shuffle_index(
-                self.playback.playback_queue.len(),
-                current,
-            )),
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .next(&self.playback.playback_queue, Some(current)),
         };
 
         if let Some(index) = target {
@@ -1120,6 +1103,7 @@ pub(crate) struct PlaybackController {
     roam_advance: Option<bool>,
     pending_start: Option<PendingPlayback>,
     playback_generation: u64,
+    shuffle: ShuffleOrder,
     pub(super) roam_append: Option<super::owned_task::SharedTask<Vec<PlaylistTrack>>>,
 }
 
@@ -1143,6 +1127,7 @@ impl PlaybackController {
             roam_advance: None,
             pending_start: None,
             playback_generation: 0,
+            shuffle: ShuffleOrder::new(),
             roam_append: None,
         }
     }
@@ -1165,6 +1150,7 @@ impl PlaybackController {
 
     fn cycle_repeat_mode(&mut self) {
         self.playback_repeat_mode = self.playback_repeat_mode.next();
+        self.shuffle.reset();
     }
 
     pub(super) fn clear_like_state(&mut self) {
@@ -1206,6 +1192,7 @@ impl PlaybackController {
 
     pub(super) fn clear_queue(&mut self) {
         self.cancel_pending_start();
+        self.shuffle.reset();
         self.roam_append = None;
         self.playback_queue.clear();
         self.playback_index = None;
@@ -1228,6 +1215,7 @@ impl PlaybackController {
         pagination: Option<PlaylistPagination>,
     ) {
         self.cancel_pending_start();
+        self.shuffle.reset();
         self.roam_append = None;
         self.playback_queue = queue;
         self.playback_index = index;

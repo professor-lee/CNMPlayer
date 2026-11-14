@@ -100,7 +100,7 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 - VIP-aware audio quality (`audio_quality`): 9 levels from `standard` to `jymaster`; a non-VIP account is clamped to `exhigh`
 - 10-band EQ, ±12 dB (`eq_bands_db`), edited from the fullscreen EQ modal and applied to the live stream
 - Like / unlike from the fullscreen page and from the collapsed player bar
-- Repeat modes: sequence → shuffle → loop all → loop one
+- Repeat modes: sequence → shuffle → loop all → loop one; shuffle plays every song in the queue once per round, previous walks back the songs actually played, and newly loaded pages join the unplayed part of the current round
 - Playlist playback prefetches the next page when entering the last three loaded tracks, and waits for an unfinished page instead of stopping or wrapping early
 - Linux media control (MPRIS, bus suffix `cnmplayer`) with metadata and cover art
 

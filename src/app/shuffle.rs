@@ -1,0 +1,170 @@
+//! 随机播放序列：一轮内每首歌只出现一次，“上一首”沿真实播放历史回退。
+//!
+//! 序列按歌曲 id 记账而不是按队列下标，所以分页追加、漫游裁剪前缀等改动
+//! 队列的路径不需要逐个通知；每次取下一首/上一首前与当前队列对账即可：
+//! 移出队列的歌从历史和待播中删去，新加入的歌随机插进本轮尚未播放的部分。
+
+use super::playback_controller::PlaybackTrack;
+use std::collections::HashSet;
+use std::hash::BuildHasher;
+use std::hash::RandomState;
+
+/// 历史只用于“上一首”回退，长度设上限避免长时间随机播放无限增长。
+const HISTORY_LIMIT: usize = 1024;
+
+pub(super) struct ShuffleOrder {
+    /// 序列认定的当前歌曲；与队列当前项不同说明用户直接点播了别的歌。
+    current: Option<String>,
+    /// 已播放的歌，末尾为最近一首（不含 `current`）。
+    history: Vec<String>,
+    /// 本轮待播的歌，末尾为下一首。
+    upcoming: Vec<String>,
+    /// 本轮已经排过的歌（已播 + 待播 + 当前）；不在其中的队列歌曲视为新加入。
+    round: HashSet<String>,
+    rng: SplitMix64,
+}
+
+impl ShuffleOrder {
+    pub(super) fn new() -> Self {
+        Self::with_seed(RandomState::new().hash_one(0u64))
+    }
+
+    pub(super) fn with_seed(seed: u64) -> Self {
+        Self {
+            current: None,
+            history: Vec::new(),
+            upcoming: Vec::new(),
+            round: HashSet::new(),
+            rng: SplitMix64(seed),
+        }
+    }
+
+    /// 换队列、清空队列或切换播放模式时丢弃旧序列与历史。
+    pub(super) fn reset(&mut self) {
+        self.current = None;
+        self.history.clear();
+        self.upcoming.clear();
+        self.round.clear();
+    }
+
+    /// 本轮下一首；本轮播完后重新洗一轮。队列只有一首时重播当前曲。
+    pub(super) fn next(
+        &mut self,
+        queue: &[PlaybackTrack],
+        current: Option<usize>,
+    ) -> Option<usize> {
+        self.sync(queue, current);
+        if queue.is_empty() {
+            return None;
+        }
+        if self.upcoming.is_empty() {
+            self.start_round(queue);
+        }
+        let Some(id) = self.upcoming.pop() else {
+            return current.filter(|&index| index < queue.len());
+        };
+        if let Some(previous) = self.current.replace(id) {
+            self.push_history(previous);
+        }
+        self.current.as_deref().and_then(|id| position(queue, id))
+    }
+
+    /// 回到上一首实际播放过的歌；没有历史时返回 `None`（与顺序播放在首曲时一致）。
+    /// 被回退的当前曲放回待播末尾，再按下一首会回到它。
+    pub(super) fn previous(
+        &mut self,
+        queue: &[PlaybackTrack],
+        current: Option<usize>,
+    ) -> Option<usize> {
+        self.sync(queue, current);
+        while let Some(id) = self.history.pop() {
+            if let Some(index) = position(queue, &id) {
+                if let Some(now) = self.current.replace(id) {
+                    self.upcoming.push(now);
+                }
+                return Some(index);
+            }
+        }
+        None
+    }
+
+    fn sync(&mut self, queue: &[PlaybackTrack], current: Option<usize>) {
+        let ids: HashSet<&str> = queue.iter().map(|track| track.song_id.as_str()).collect();
+        self.history.retain(|id| ids.contains(id.as_str()));
+        self.upcoming.retain(|id| ids.contains(id.as_str()));
+        self.round.retain(|id| ids.contains(id.as_str()));
+
+        let current_id = current
+            .and_then(|index| queue.get(index))
+            .map(|track| track.song_id.as_str());
+        if self.current.as_deref() != current_id {
+            if let Some(previous) = self.current.take()
+                && ids.contains(previous.as_str())
+            {
+                self.push_history(previous);
+            }
+            if let Some(id) = current_id {
+                // 直接点播的歌算作本轮已播，不再从待播里排到它。
+                self.upcoming.retain(|upcoming| upcoming != id);
+                self.round.insert(id.to_string());
+            }
+            self.current = current_id.map(str::to_string);
+        }
+
+        let mut added = HashSet::new();
+        for track in queue {
+            let id = track.song_id.as_str();
+            if !self.round.contains(id) && added.insert(id) {
+                let slot = self.rng.below(self.upcoming.len() + 1);
+                self.upcoming.insert(slot, id.to_string());
+            }
+        }
+        self.round.extend(added.into_iter().map(str::to_string));
+    }
+
+    fn start_round(&mut self, queue: &[PlaybackTrack]) {
+        self.round.clear();
+        for track in queue {
+            if self.round.insert(track.song_id.clone())
+                && self.current.as_deref() != Some(track.song_id.as_str())
+            {
+                self.upcoming.push(track.song_id.clone());
+            }
+        }
+        for i in (1..self.upcoming.len()).rev() {
+            let j = self.rng.below(i + 1);
+            self.upcoming.swap(i, j);
+        }
+    }
+
+    fn push_history(&mut self, id: String) {
+        if self.history.len() == HISTORY_LIMIT {
+            self.history.remove(0);
+        }
+        self.history.push(id);
+    }
+}
+
+fn position(queue: &[PlaybackTrack], id: &str) -> Option<usize> {
+    queue.iter().position(|track| track.song_id == id)
+}
+
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// `0..n` 内的均匀整数（`n` 远小于 2^64，取模偏差可忽略）。
+    fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
+    }
+}
+
+#[cfg(test)]
+mod tests;
