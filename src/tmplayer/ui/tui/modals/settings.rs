@@ -164,6 +164,11 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
             lang_text(app, "主页更多推荐", "More Home Recommendations"),
             lang_on_off(app, app.config.home_more_recommend)
         ),
+        format!(
+            "{}: {}",
+            lang_text(app, "听歌上报", "Scrobble to NetEase"),
+            lang_on_off(app, app.config.scrobble)
+        ),
     ];
     let name_prefix = format!(
         "  {}: ",
@@ -177,7 +182,7 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
     let visible = usize::from(rows[1].height);
     app.general_settings_scroll = crate::ui::settings::scroll_for_focus(
         app.general_settings_scroll,
-        6,
+        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
         visible,
         app.general_settings_selected,
     );

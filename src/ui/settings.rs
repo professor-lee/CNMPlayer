@@ -226,6 +226,11 @@ fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             l(app, "主页更多推荐", "More Home Recommendations"),
             on_off(app, app.config.home_more_recommend)
         ),
+        format!(
+            "{}: {}",
+            l(app, "听歌上报", "Scrobble to NetEase"),
+            on_off(app, app.config.scrobble)
+        ),
     ];
     let name_prefix = format!("{}: ", l(app, "MPRIS服务名称", "MPRIS Service Name"));
     let selected = app.settings.general_selected;

@@ -25,7 +25,9 @@ use std::time::Instant;
 const DOWNLOAD_PATH_MAX_CHARS: usize = 4096;
 
 const SETTINGS_ROOT_ITEMS: usize = 9;
-pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 6;
+pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 7;
+/// 通用设置末行是 MPRIS 服务名称输入框，其余行均为开关/循环项。
+pub(crate) const SETTINGS_GENERAL_MPRIS_ROW: usize = SETTINGS_GENERAL_ITEMS - 1;
 const MPRIS_NAME_MAX_CHARS: usize = 256;
 
 const SETTINGS_PLAYBACK_ITEMS: usize = 7;
@@ -310,7 +312,7 @@ impl App {
     }
 
     async fn activate_settings_general_item(&mut self, delta: i32) {
-        if self.settings.general_selected == 5 {
+        if self.settings.general_selected == SETTINGS_GENERAL_MPRIS_ROW {
             self.settings.mpris_name_edit =
                 Some(SettingsTextEdit::new(self.config.mpris_name.clone()));
         } else {
@@ -913,6 +915,10 @@ impl App {
                         err
                     );
                 }
+            }
+            5 => {
+                self.config.scrobble = !self.config.scrobble;
+                self.persist_config();
             }
             _ => {}
         }
