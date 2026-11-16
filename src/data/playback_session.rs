@@ -23,6 +23,20 @@ pub struct PlaylistCursor {
     pub has_more: bool,
 }
 
+/// 随机播放的洗牌进度（按歌曲 id），只在随机模式下保存。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PlaybackShuffleState {
+    /// 已播放的歌，末尾为最近一首。
+    #[serde(default)]
+    pub history: Vec<String>,
+    /// 本轮待播的歌，末尾为下一首。
+    #[serde(default)]
+    pub upcoming: Vec<String>,
+    /// 本轮已排过的歌（已播 + 待播 + 当前）。
+    #[serde(default)]
+    pub round: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlaybackSessionRecord {
     #[serde(default)]
@@ -36,6 +50,9 @@ pub struct PlaybackSessionRecord {
     pub source_cover_url: Option<String>,
     #[serde(default)]
     pub source_cursor: Option<PlaylistCursor>,
+    /// 旧存档或非随机模式为空，恢复时重新洗牌。
+    #[serde(default)]
+    pub shuffle: Option<PlaybackShuffleState>,
     pub updated_at: i64,
 }
 

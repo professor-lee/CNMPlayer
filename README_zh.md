@@ -96,12 +96,12 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 - 流式播放：边下边播，完整响应写入成功后才成为缓存文件，因此半成品或被取消的传输不会被当作缓存播放；进度条的已缓冲段就是下载进度
 - 可跳转进度（进度条点击或全屏页内操作），跳转期间进度条有脉冲动画
-- 播放记忆（`playback_memory`）：队列、当前索引、循环模式与队列来源会在每次切歌时保存，并在启动时恢复；恢复的歌曲从头开始播放
+- 播放记忆（`playback_memory`）：队列、当前索引、循环模式、队列来源，以及随机模式下的洗牌进度（已播历史与本轮剩余顺序）会在每次切歌时保存，并在启动时恢复；恢复的歌曲从头开始播放
 - 按 VIP 权限裁剪的音质（`audio_quality`）：从 `standard` 到 `jymaster` 共 9 档；非 VIP 账号会被限制到 `exhigh`
 - 10 段均衡器，±12 dB（`eq_bands_db`），在全屏 EQ 弹窗里调整，实时作用于播放
 - 收藏 / 取消收藏：全屏页与折叠播放栏都可操作
-- 循环模式：顺序 → 随机 → 列表循环 → 单曲循环
-- 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷
+- 循环模式：顺序 → 随机 → 列表循环 → 单曲循环；随机模式每轮把队列中每首歌各播一次，“上一首”沿实际播放历史回退
+- 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷。随机模式先播完已加载并洗好的曲目（剩三首时预取下一页），新加载的一页单独洗牌后接在其后播放
 - Linux 媒体控制（MPRIS，总线后缀 `cnmplayer`），包含元数据与封面
 
 ### 下载
@@ -143,7 +143,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 - 主题：从 `themes/*.toml` 动态加载——内置 20 款，默认 `frappe`；自己丢一个 toml 进去即可加入循环。校验不过的文件会被跳过，选中的主题损坏时回退默认主题
 - 界面语言：`zh` / `en`
-- 22 个可重绑快捷键，带冲突检测；`Ctrl+Alt+R` 恢复默认
+- 25 个可重绑快捷键，带冲突检测；`Ctrl+Alt+R` 恢复默认
 - 透明背景、封面边框、提示行开关
 - 启动：先出加载页（ASCII 标题 + 进度条），登录恢复、推荐加载等网络步骤在后台按步推进；登录态不可用时进入登录页
 - about 弹窗含盲文形象画，里面还藏了一个彩蛋（`easter-egg` cargo feature，默认编入，可用 `--no-default-features` 剔除）
@@ -241,6 +241,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `lyric_frame_divisor` | `2` | 歌词动画采样倍率（基于 `ui_fps`，1–8）；不改变重绘频率 |
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
+| `scrobble` | `false` | 通用设置 → 听歌上报：切歌、播放停止与退出时，把 20 秒以上的实际收听时长（暂停不计）上报网易云“听歌排行”；可能存在风控风险 |
 | `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer` |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |
@@ -258,7 +259,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `cache.max_size_mb` | `500` | LRU 阶段的容量上限 |
 | `cache.max_age_days` | `7` | 按时间清理阶段的有效期 |
 | `cache.clean_on_startup` | `true` | 启动时执行清理 |
-| `keybind_*` | 见下文 | 22 个可重绑快捷键 |
+| `keybind_*` | 见下文 | 25 个可重绑快捷键 |
 
 清理按「先按时间、再按容量 LRU」两遍执行，且只统计目录下直属的文件。
 
@@ -293,14 +294,19 @@ sudo apt install -y build-essential cmake pkg-config \
 | `keybind_small_window_toggle` | `Alt+X` | 在扁窗的两个面板之间切换 |
 | `keybind_download` | `Ctrl+Alt+D` | 下载当前聚焦的单曲（再按一次取消） |
 | `keybind_download_fullscreen` | `Ctrl+D` | 下载当前播放的歌曲（仅全屏页，再按一次取消） |
+| `keybind_toggle_subscribe` | `L` | 歌手页收藏 / 取消收藏歌手，歌单页收藏 / 取消收藏歌单、专辑、EP、Single（仅主程序；标题右侧的爱心同效） |
+| `keybind_fullscreen_open_artist` | `Ctrl+A` | 进入当前歌曲的歌手页（仅全屏页）。多位歌手时每按一次高亮下一位，停按 0.8 秒进入高亮的歌手，按其他键取消 |
+| `keybind_fullscreen_open_album` | `Ctrl+S` | 进入当前歌曲的专辑页（仅全屏页） |
 
 仅全屏页生效的槽位在主程序里是空操作：那些按键会继续按页面导航处理。
+冲突检测只比较作用于同一侧的槽位，所以仅主程序与仅全屏页的槽位可以同键（`L`、`Ctrl+S`）。
+关闭弹窗的键跟随对应槽位：设置弹窗由 `keybind_settings` 关闭、搜索框由 `keybind_search_box` 关闭，重绑后旧键随之失效。
 
 ### 固定快捷键
 
 - `Esc`：关闭当前浮层，或从当前页面返回
 - `Ctrl+C`：任意状态下退出
-- `Ctrl+K`：打开按键绑定列表；列表内再次按下时，两端均直接关闭整窗，不回到设置根页。`Esc` 仍保留返回上级的行为。
+- `Ctrl+K`：打开按键绑定列表；列表内再次按下时，两端均直接关闭整窗，不回到设置根页。`Esc` 仍保留返回上级的行为。主程序列表按功能分组（常规、播放控制、收藏与下载、跳转、均衡器、窗口、固定键）列出全部按键，只在一侧生效的条目标注「（主程序）」/「（全屏）」，聚焦切换会跳过分组标题；全屏页列表只显示全屏页可用的按键。
 - `Ctrl+Up` / `Ctrl+Down`：侧边栏展开时切换歌单分区（用户创建 / 用户收藏）
 - `Ctrl+Alt+R`：恢复默认快捷键（在按键绑定弹窗内）
 - `F1` / `F2` / `F3`：登录方式（二维码 / 账号 / 手机号）
@@ -328,7 +334,7 @@ sudo apt install -y build-essential cmake pkg-config \
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` 移动，`Left` / `Right` / `Enter` 修改取值，`Esc` 逐级返回
 - 鼠标：滚轮移动选中行，单击聚焦、双击执行；「歌词设置」子页为单击直接改值
-- 按键绑定页：`Enter` 开始重绑，等待输入时按 `Esc` 取消；`Ctrl+K` 关闭整窗并取消待输入的重绑，不修改原快捷键
+- 按键绑定页：`Enter` 开始重绑，等待输入时按 `Esc` 取消；`Ctrl+K` 关闭整窗并取消待输入的重绑，不修改原快捷键；固定键只读展示
 
 全屏播放页：
 

@@ -62,6 +62,25 @@ fn ctrl_d_maps_to_toggle_download() {
     assert_eq!(map_key(ev, Overlay::None, &config), Action::ToggleDownload);
 }
 
+/// 全屏页默认 Ctrl+A 轮询进入歌手、Ctrl+S 进入专辑（须排在后面的通配分支之前）。
+#[test]
+fn ctrl_a_and_ctrl_s_open_artist_and_album() {
+    let config = crate::data::config::Config::default();
+    assert_eq!(config.keybind_fullscreen_open_artist, "Ctrl+A");
+    assert_eq!(config.keybind_fullscreen_open_album, "Ctrl+S");
+
+    let artist = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(
+        map_key(artist, Overlay::None, &config),
+        Action::CycleOpenArtist
+    );
+    let album = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert_eq!(
+        map_key(album, Overlay::None, &config),
+        Action::OpenAlbumPage
+    );
+}
+
 /// 设置类弹窗里的 Esc 必须走"关闭弹窗"而不是退出全屏页。
 ///
 /// 曾经漏了 LyricsSettingsModal 的分支，Esc 于是落到默认的 Action::Quit，
@@ -157,4 +176,50 @@ fn general_settings_tab_navigation_and_toggle_close_do_not_leak() {
         ),
         Action::None
     );
+}
+
+/// 重绑后旧键失效：全屏页不再有写死的 M/L/←/→/Space 兜底，设置弹窗也不再写死 T。
+#[test]
+fn rebinding_disables_the_default_key() {
+    let key = |ch| KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE);
+    let config = Config {
+        keybind_fullscreen_toggle_mode: "R".into(),
+        keybind_toggle_like_fullscreen: "K".into(),
+        keybind_fullscreen_toggle_play_pause: "Enter".into(),
+        keybind_settings: "Y".into(),
+        keybind_fullscreen_prev: "A".into(),
+        keybind_fullscreen_next: "D".into(),
+        ..Config::default()
+    };
+
+    assert_eq!(map_key(key('m'), Overlay::None, &config), Action::None);
+    assert_eq!(
+        map_key(key('r'), Overlay::None, &config),
+        Action::ToggleRepeatMode
+    );
+    assert_eq!(map_key(key('l'), Overlay::None, &config), Action::None);
+    assert_eq!(map_key(key(' '), Overlay::None, &config), Action::None);
+    for overlay in [Overlay::SettingsModal, Overlay::GeneralSettingsModal] {
+        assert_eq!(
+            map_key(key('t'), overlay, &config),
+            Action::None,
+            "{overlay:?}"
+        );
+        assert_ne!(
+            map_key(key('y'), overlay, &config),
+            Action::None,
+            "{overlay:?}"
+        );
+    }
+
+    for code in [KeyCode::Left, KeyCode::Right] {
+        assert_eq!(
+            map_key(
+                KeyEvent::new(code, KeyModifiers::NONE),
+                Overlay::None,
+                &config
+            ),
+            Action::None
+        );
+    }
 }

@@ -269,6 +269,20 @@ impl ApiState {
         Ok(response)
     }
 
+    /// 当前账号收藏的专辑（含 EP、Single），分页。
+    pub(super) async fn album_sublist(
+        &mut self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("limit", &limit.max(1).to_string())
+            .param("offset", &offset.to_string());
+        let response = self.client.album_sublist(&query).await?;
+        Ok(response)
+    }
+
     pub(super) async fn login_email(&mut self, email: &str, password: &str) -> Result<ApiResponse> {
         let query = Query::new()
             .param("email", email)
@@ -446,6 +460,54 @@ impl ApiState {
         Ok(response)
     }
 
+    /// 收藏 / 取消收藏歌手（`subscribe = true` 收藏）。
+    pub(super) async fn artist_sub(&mut self, id: &str, subscribe: bool) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("t", if subscribe { "1" } else { "0" });
+        let response = self.client.artist_sub(&query).await?;
+        Ok(response)
+    }
+
+    /// 收藏 / 取消收藏歌单（`subscribe = true` 收藏）。
+    pub(super) async fn playlist_subscribe(
+        &mut self,
+        id: &str,
+        subscribe: bool,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("t", if subscribe { "1" } else { "0" });
+        let response = self.client.playlist_subscribe(&query).await?;
+        Ok(response)
+    }
+
+    /// 收藏 / 取消收藏专辑（`subscribe = true` 收藏）。
+    pub(super) async fn album_sub(&mut self, id: &str, subscribe: bool) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", id)
+            .param("t", if subscribe { "1" } else { "0" });
+        let response = self.client.album_sub(&query).await?;
+        Ok(response)
+    }
+
+    /// 歌手动态信息（含当前账号是否已收藏该歌手）。
+    pub(super) async fn artist_detail_dynamic(&mut self, id: &str) -> Result<ApiResponse> {
+        let query = self.query_with_cookie().param("id", id);
+        let response = self.client.artist_detail_dynamic(&query).await?;
+        Ok(response)
+    }
+
+    /// 专辑动态信息（含当前账号是否已收藏该专辑）。
+    pub(super) async fn album_detail_dynamic(&mut self, id: &str) -> Result<ApiResponse> {
+        let query = self.query_with_cookie().param("id", id);
+        let response = self.client.album_detail_dynamic(&query).await?;
+        Ok(response)
+    }
+
     pub(super) async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
         let query = self.query_with_cookie().param("uid", uid);
         let response = self.client.likelist(&query).await?;
@@ -542,11 +604,29 @@ impl ApiState {
             return Ok(url.to_string());
         }
 
-        Err(anyhow!(
-            "song stream url not found for id {} at level {}",
-            song_id,
-            level
-        ))
+        Err(NoStreamUrl {
+            song_id: song_id.to_string(),
+            level: level.to_string(),
+        }
+        .into())
+    }
+
+    /// 听歌上报（网易云“听歌排行”）：`end` 为 `playend`（播完）或 `ui`（用户切走）。
+    pub(super) async fn scrobble(
+        &self,
+        song_id: &str,
+        source_id: &str,
+        listened_secs: u64,
+        end: &str,
+    ) -> Result<ApiResponse> {
+        let query = self
+            .query_with_cookie()
+            .param("id", song_id)
+            .param("sourceid", source_id)
+            .param("time", &listened_secs.to_string())
+            .param("end", end);
+        let response = self.client.scrobble(&query).await?;
+        Ok(response)
     }
 
     pub(super) async fn vip_info(&mut self) -> Result<ApiResponse> {
@@ -776,6 +856,26 @@ pub(super) fn error_for_status(resp: Response) -> Result<Response> {
         Ok(resp)
     }
 }
+
+/// 接口正常返回但没有可播放的直链（版权/会员限制）：重试也不会变，
+/// 播放准备据此跳过后台重试。
+#[derive(Debug)]
+pub(super) struct NoStreamUrl {
+    song_id: String,
+    level: String,
+}
+
+impl std::fmt::Display for NoStreamUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "song stream url not found for id {} at level {}",
+            self.song_id, self.level
+        )
+    }
+}
+
+impl std::error::Error for NoStreamUrl {}
 
 #[cfg(test)]
 mod tests;

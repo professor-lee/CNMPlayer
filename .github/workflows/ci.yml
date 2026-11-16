@@ -30,7 +30,7 @@ jobs:
             feature_name: no-default-features
             feature_args: --no-default-features
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -62,7 +62,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -100,7 +100,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -118,11 +118,11 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install packaging check dependencies
         run: |
-          pacman -Syu --noconfirm git python
+          pacman -Syu --noconfirm --needed git python
           useradd -m builder
 
       - name: Exercise packaging with isolated local remotes

@@ -13,7 +13,6 @@ use crate::ui::page_lyrics;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
-use crossterm::event::KeyModifiers;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
@@ -114,9 +113,7 @@ impl App {
             return;
         }
 
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
-        {
+        if keybind_matches(crate::data::keymap::KEY_FORCE_QUIT, key) {
             self.should_quit = true;
             return;
         }
@@ -145,8 +142,7 @@ impl App {
         }
 
         if self.page != Page::Login
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('K'))
+            && keybind_matches(crate::data::keymap::KEY_TOGGLE_KEYBINDS, key)
         {
             if self.overlay == Some(Overlay::SettingsKeybinds) {
                 self.close_overlay();
@@ -436,9 +432,14 @@ impl App {
         self.playlist_track_hits.clear();
         self.playlist_track_download_hits.clear();
         self.author_tile_hits.clear();
+        self.subscribe_button_hit = None;
         self.search_item_hits.clear();
         self.search_item_download_hits.clear();
         self.page_lyrics_layout = None;
+    }
+
+    pub(crate) fn set_subscribe_button_hit(&mut self, rect: HitRect) {
+        self.subscribe_button_hit = Some(rect);
     }
 
     /// 歌词浮窗位置（归一化，内容区内左上角）。
@@ -608,6 +609,8 @@ impl App {
                 | KeybindAction::FullscreenEq
                 | KeybindAction::FullscreenEqReset
                 | KeybindAction::SmallWindowToggle
+                | KeybindAction::FullscreenOpenArtist
+                | KeybindAction::FullscreenOpenAlbum
         ) {
             return false;
         }
@@ -664,6 +667,8 @@ impl App {
             KeybindAction::Download => self.download_focused_song().await,
             // 全屏页专用：宿主侧不处理（与其余 Fullscreen* 动作同理）。
             KeybindAction::DownloadFullscreen => {}
+            KeybindAction::ToggleSubscribe => self.toggle_subscription_hotkey(),
+            KeybindAction::FullscreenOpenArtist | KeybindAction::FullscreenOpenAlbum => {}
         }
     }
 
@@ -741,6 +746,13 @@ impl App {
     }
 
     async fn handle_content_click(&mut self, col: u16, row: u16) -> bool {
+        if let Some(rect) = self.subscribe_button_hit
+            && rect.contains(col, row)
+            && matches!(self.page, Page::Playlist | Page::Author)
+        {
+            self.toggle_subscription_hotkey();
+            return true;
+        }
         match self.page {
             Page::Home => {
                 if self.browse.home_sidebar.is_visible() {

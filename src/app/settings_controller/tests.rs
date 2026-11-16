@@ -89,7 +89,11 @@ fn general_viewport_keeps_offset_until_focus_crosses_a_boundary() {
     assert_eq!(scroll, 1);
     assert_eq!(scroll_for_focus(scroll, SETTINGS_GENERAL_ITEMS, 2, 1), 1);
     assert_eq!(scroll_for_focus(scroll, SETTINGS_GENERAL_ITEMS, 2, 0), 0);
-    assert_eq!(scroll_for_focus(4, SETTINGS_GENERAL_ITEMS, 6, 5), 0);
+    // 列表整体放得下时，越界的旧偏移回到顶部。
+    assert_eq!(
+        scroll_for_focus(4, SETTINGS_GENERAL_ITEMS, SETTINGS_GENERAL_ITEMS, 5),
+        0
+    );
 }
 
 #[test]

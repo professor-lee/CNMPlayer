@@ -92,6 +92,8 @@ impl tmplayer::HostPlaybackBridge for AppFullscreenBridge<'_> {
             position: runtime.position,
             volume: runtime.volume,
             seeking: runtime.seeking,
+            retrying: runtime.retrying,
+            buffered: runtime.buffered,
             download: match runtime.download {
                 None => tmplayer::DownloadIconState::Hidden,
                 Some(app::download::DownloadState::NotDownloaded) => {
@@ -462,6 +464,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut Ap
         }
         if app.should_quit {
             app.persist_playback_memory_on_exit();
+            app.flush_listen_session_on_exit().await;
             break Ok(());
         }
 

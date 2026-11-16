@@ -155,6 +155,18 @@ triggered by a `v*` tag, the tag must equal the version in `Cargo.toml`, and
 `release.yml` tests both workspace crates before publishing amd64/aarch64 tarballs,
 their `SHA256SUMS`, and the AUR packages.
 
+### Release backmerge
+
+After a `v*` tag push completes builds, release tests, GitHub publication and AUR synchronization, `release.yml` creates a PR from `release-backmerge/<tag>` into `develop`. The branch is pinned to the released commit, not the moving `main` branch. If `develop` already contains that commit, the job does nothing. Dispatch dry runs and manual AUR synchronization never backmerge.
+
+The dedicated private GitHub App is installed only on this repository. Configure repository variable `RELEASE_BACKMERGE_APP_ID` and secret `RELEASE_BACKMERGE_APP_PRIVATE_KEY`; grant the App Contents, Pull requests and Workflows read/write permissions (Metadata read is implicit). Workflows permission permits synchronizing release commits that change workflow files. Do not grant Administration permission or add the App to any ruleset bypass list. Installation tokens are repository-scoped and revoked when the job ends. Missing credentials fail the backmerge job rather than silently skipping it.
+
+Enable repository auto-merge. The `develop-ci-protect` ruleset requires PRs and these five GitHub Actions checks: `stable / default`, `stable / no-default-features`, `fmt and clippy`, `ncm-api tests`, and `AUR packaging integration`. The repository administrator retains bypass for maintainer version/documentation pushes; the App does not. Feature PRs may still squash, but release backmerge requests use only native merge-commit auto-merge, without bypass. Do not enable a merge queue for this path. Required checks are not strict/up-to-date: the released head stays immutable while PR CI checks the merge with the current base.
+
+If all required checks have already passed when the job inspects the PR, it requests a normal merge commit with an expected-head SHA instead of enabling auto-merge on an already-ready PR. GitHub still enforces the same rules; the App has no bypass.
+
+Tag/SHA mismatch, a moved `main` before scheduling, a changed backmerge head, absent required checks, conflicts or unresolved mergeability stop automation for maintainer action. Existing matching PRs are reused; closed PRs are not silently reopened or replaced. No branch is force-pushed or deleted. Resolve conflicts through a separate reviewed PR rather than modifying the pinned head; rerunning then skips once the released commit is contained. `develop` to `main` releases still require the maintainer's manual web PR confirmation. Only tags containing this workflow support automatic backmerge; rerunning an older release does not retrofit it.
+
 ### AUR packaging
 
 Maintain the three package recipes under `packaging/aur/`; the AUR repositories are publishing destinations, not a second source of recipe changes. Do not add nested Git repositories or generated `.SRCINFO` files here.

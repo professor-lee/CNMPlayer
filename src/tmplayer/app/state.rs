@@ -19,6 +19,10 @@ use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
+/// 进入歌手键（默认 Ctrl+A）停按多久视为“松手”并提交进入当前选中的歌手。
+/// 须长于终端按键重复的起始延迟（常见 250~660ms），否则按住不放会在首次重复前就提交。
+pub const ARTIST_CYCLE_COMMIT_AFTER: Duration = Duration::from_millis(800);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
     Playing,
@@ -153,6 +157,10 @@ pub struct PlayerState {
     pub liked: bool,
     /// 宿主正在后台加载跳转目标（进度条显示脉冲加载动画）
     pub seeking: bool,
+    /// 宿主正在后台重试下载（未播放区域显示加载态）
+    pub retrying: bool,
+    /// 宿主下载的已缓冲比例（0..=1）；None = 非流式或总长未知
+    pub buffered: Option<f32>,
     pub track: TrackMetadata,
 }
 
@@ -165,6 +173,8 @@ impl Default for PlayerState {
             repeat_mode: RepeatMode::Sequence,
             liked: false,
             seeking: false,
+            retrying: false,
+            buffered: None,
             track: TrackMetadata::default(),
         }
     }
@@ -262,6 +272,9 @@ pub struct AppState {
     /// 全屏页里点了作者名/专辑名这类"交给宿主接着做"的请求：
     /// `Some` 即请求退出，落点由 `FullscreenExit` 说明（`Tui::draw` 据此置 `should_quit`）。
     pub exit_request: Option<crate::tmplayer::FullscreenExit>,
+    /// `Ctrl+A`（进入歌手键）的多作者轮询：`(当前选中的段序号, 最近一次按键时刻)`。
+    /// 终端收不到松键事件，停按 `ARTIST_CYCLE_COMMIT_AFTER` 即视为松手并进入该歌手页。
+    pub artist_cycle: Option<(usize, Instant)>,
 
     pub last_mouse_click: Option<(Instant, u16, u16)>,
     /// 播放列表上一次点击的条目序号（双击切歌判定）。
@@ -355,7 +368,9 @@ impl AppState {
             mpris_name_edit: None,
             bar_settings_selected: 0,
             lyrics_settings_selected: 0,
-            help_keybind_selected: 0,
+            help_keybind_selected: crate::data::keymap::first_focusable(
+                crate::tmplayer::ui::tui::modals::help::help_rows(),
+            ),
             help_keybind_scroll: 0,
             vip_audio_unlocked: false,
             download_state: crate::tmplayer::DownloadIconState::Hidden,
@@ -375,6 +390,7 @@ impl AppState {
             toast: None,
             request_host_settings_open: false,
             exit_request: None,
+            artist_cycle: None,
             last_mouse_click: None,
             last_playlist_click: None,
             playlist_list_scroll: 0,
@@ -516,6 +532,13 @@ impl AppState {
             self.toast = None;
         }
 
+        if let Some((index, at)) = self.artist_cycle
+            && now.duration_since(at) >= ARTIST_CYCLE_COMMIT_AFTER
+        {
+            self.artist_cycle = None;
+            self.exit_request = Some(crate::tmplayer::FullscreenExit::BackToHostOpenAuthor(index));
+        }
+
         self.tick_playlist_slide(now);
         self.tick_theme_transition(now);
         if self.config.visualize == VisualizeMode::Oscilloscope {
@@ -592,7 +615,7 @@ impl AppState {
         }
 
         // 后台加载跳转目标时保持重绘，驱动进度条脉冲动画
-        if self.player.seeking {
+        if self.player.seeking || self.player.retrying {
             return true;
         }
 
@@ -612,7 +635,7 @@ impl AppState {
             return true;
         }
 
-        if self.toast.is_some() {
+        if self.toast.is_some() || self.artist_cycle.is_some() {
             return true;
         }
 
@@ -683,9 +706,13 @@ impl AppState {
             self.close_overlay();
         } else {
             self.open_modal(Overlay::HelpModal);
-            self.help_keybind_selected = self.help_keybind_selected.min(
-                crate::tmplayer::ui::tui::modals::help::help_item_count(self).saturating_sub(1),
-            );
+            let rows = crate::tmplayer::ui::tui::modals::help::help_rows();
+            if rows
+                .get(self.help_keybind_selected)
+                .is_none_or(|row| row.is_header())
+            {
+                self.help_keybind_selected = crate::data::keymap::first_focusable(rows);
+            }
             self.help_keybind_scroll = 0;
         }
     }

@@ -1,5 +1,6 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) fn translated_clip(area: Rect, dx: i32, clip: Rect) -> Rect {
@@ -19,17 +20,29 @@ pub(crate) fn translated_clip(area: Rect, dx: i32, clip: Rect) -> Rect {
 pub(crate) fn paint(target: &mut Buffer, source: &Buffer, dx: i32, clip: Rect) {
     let clip = translated_clip(source.area, dx, clip.intersection(target.area));
     for y in clip.top()..clip.bottom() {
+        let mut trailing_style = None;
         for x in clip.left()..clip.right() {
             let source_x = (i32::from(x) - dx) as u16;
             let cell = &source[(source_x, y)];
             let dest = &mut target[(x, y)];
             dest.clone_from(cell);
+            if let Some((end, style)) = trailing_style {
+                if x < end {
+                    dest.set_style(style);
+                    continue;
+                }
+                trailing_style = None;
+            }
+            let glyph_width = cell.symbol().width();
             // Never expose half a wide title character at either clipping boundary.
             let cut_left = x == clip.left()
                 && source_x > source.area.left()
                 && source[(source_x - 1, y)].symbol().width() > 1;
-            if cut_left || usize::from(x) + cell.symbol().width() > usize::from(clip.right()) {
+            if cut_left || usize::from(x) + glyph_width > usize::from(clip.right()) {
                 dest.set_char(' ');
+            } else if glyph_width > 1 {
+                // The terminal paints the entire glyph with its leading style.
+                trailing_style = Some((x + glyph_width as u16, Style::reset().patch(cell.style())));
             }
         }
     }
@@ -58,10 +71,17 @@ pub(crate) fn reveal_from_right(target: &mut Buffer, background: &Buffer, offset
         for destination in (shift.max(left)..right).rev() {
             let (source, destination_cells) = row.split_at_mut(destination);
             let cell = &source[destination - shift];
-            let dest = &mut destination_cells[0];
-            dest.clone_from(cell);
-            if destination + cell.symbol().width() > right {
-                dest.set_char(' ');
+            destination_cells[0].clone_from(cell);
+            let glyph_width = cell.symbol().width();
+            if destination + glyph_width > right {
+                destination_cells[0].set_char(' ');
+            } else if glyph_width > 1 {
+                // Trailing cells were copied first. Match their visible style so
+                // the next diff clears it when the wide glyph moves away.
+                let style = Style::reset().patch(cell.style());
+                for trailing in &mut destination_cells[1..glyph_width] {
+                    trailing.set_style(style);
+                }
             }
         }
     }

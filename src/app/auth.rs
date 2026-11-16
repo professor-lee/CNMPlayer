@@ -377,22 +377,28 @@ fn response_indicates_vip(response: &ApiResponse) -> bool {
         .pointer("/associator/expireTime")
         .and_then(|value| value.as_i64())
         .unwrap_or(0);
-    if associator_expire > now_ms {
-        return true;
-    }
-
-    false
+    associator_expire > now_ms
 }
 
 impl App {
     pub(super) async fn handle_login_key(&mut self, key: KeyEvent) {
+        use crate::data::keymap::{
+            KEY_LOGIN_ACCOUNT, KEY_LOGIN_PHONE, KEY_LOGIN_QR, keybind_matches,
+        };
+        if keybind_matches(KEY_LOGIN_QR, key) {
+            self.login.set_method(LoginMethod::Qr);
+            self.refresh_qr_login().await;
+            return;
+        }
+        if keybind_matches(KEY_LOGIN_ACCOUNT, key) {
+            self.login.set_method(LoginMethod::Username);
+            return;
+        }
+        if keybind_matches(KEY_LOGIN_PHONE, key) {
+            self.login.set_method(LoginMethod::Phone);
+            return;
+        }
         match key.code {
-            KeyCode::F(1) => {
-                self.login.set_method(LoginMethod::Qr);
-                self.refresh_qr_login().await;
-            }
-            KeyCode::F(2) => self.login.set_method(LoginMethod::Username),
-            KeyCode::F(3) => self.login.set_method(LoginMethod::Phone),
             KeyCode::Tab | KeyCode::Down => self.login.next_focus(),
             KeyCode::BackTab | KeyCode::Up => self.login.prev_focus(),
             KeyCode::Enter => self.submit_login_action().await,

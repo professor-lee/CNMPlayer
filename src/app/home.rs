@@ -16,7 +16,6 @@ use super::roam::fetch_private_roam_page;
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
 use ncm_api::ApiResponse;
 use serde_json::Value;
 
@@ -499,18 +498,19 @@ fn parse_personalized_cards(response: &ApiResponse, limit: usize) -> Vec<Recomme
 impl App {
     pub(super) async fn handle_home_key(&mut self, key: KeyEvent) {
         if self.browse.home_sidebar.is_visible() {
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                match key.code {
-                    KeyCode::Up => {
-                        self.browse.home_sidebar.switch_section_prev();
-                        return;
-                    }
-                    KeyCode::Down => {
-                        self.browse.home_sidebar.switch_section_next();
-                        return;
-                    }
-                    _ => {}
-                }
+            if crate::data::keymap::keybind_matches(
+                crate::data::keymap::KEY_SIDEBAR_SECTION_PREV,
+                key,
+            ) {
+                self.browse.home_sidebar.switch_section_prev();
+                return;
+            }
+            if crate::data::keymap::keybind_matches(
+                crate::data::keymap::KEY_SIDEBAR_SECTION_NEXT,
+                key,
+            ) {
+                self.browse.home_sidebar.switch_section_next();
+                return;
             }
             match key.code {
                 KeyCode::Esc => {
@@ -597,24 +597,33 @@ impl App {
                 )
             })
         };
-        self.dispatch_home_playlist_fetch(title, task);
+        self.dispatch_home_playlist_fetch(title, task, PlaylistPageKind::Playlist);
     }
 
     /// 首页磁贴和侧栏共用入口：先切占位页，网络结果统一由 tick 搬运。
-    pub(super) fn dispatch_home_playlist_fetch(&mut self, title: String, task: PlaylistFetchTask) {
+    /// `kind` 决定占位文案与成功提示（侧栏收藏的专辑走专辑页）。
+    pub(super) fn dispatch_home_playlist_fetch(
+        &mut self,
+        title: String,
+        task: PlaylistFetchTask,
+        kind: PlaylistPageKind,
+    ) {
         self.browse.home.status_line =
             format!("{} {}", self.lang_text("正在加载", "Loading"), title);
         self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
-            self.lang_text("正在加载歌单…", "Loading playlist…")
-                .to_string(),
+            match kind {
+                PlaylistPageKind::Album => self.lang_text("正在加载专辑…", "Loading album…"),
+                PlaylistPageKind::Playlist => self.lang_text("正在加载歌单…", "Loading playlist…"),
+            }
+            .to_string(),
         );
         self.playlist_return_page = Page::Home;
         self.playlist_section_return_snapshot = None;
-        self.downloads.page_kind = PlaylistPageKind::Playlist;
+        self.downloads.page_kind = kind;
         self.browse.playlist_fetch = Some(PlaylistFetchSlot {
-            kind: PlaylistPageKind::Playlist,
+            kind,
             future: spawn_shared(task, self.wake.clone()),
         });
         self.open_browse_page(Page::Playlist);

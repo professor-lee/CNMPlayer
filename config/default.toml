@@ -36,6 +36,8 @@ eq_bands_db = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 show_hints = true
 small_window_display = true
 home_more_recommend = false
+# 听歌上报：把实际收听时长（≥20 秒，暂停不计）报给网易云“听歌排行”；可能存在风控风险，默认关闭。
+scrobble = false
 # MPRIS 播放器显示名；留空为 CNMPlayer，@play 替换为当前曲名。
 mpris_name = ""
 
@@ -62,6 +64,9 @@ keybind_toggle_like_collapsed = "Alt+L"
 keybind_small_window_toggle = "Alt+X"
 keybind_download = "Ctrl+Alt+D"
 keybind_download_fullscreen = "Ctrl+D"
+keybind_toggle_subscribe = "L"
+keybind_fullscreen_open_artist = "Ctrl+A"
+keybind_fullscreen_open_album = "Ctrl+S"
  
 [cache]
 # 缓存根目录 (默认使用系统标准路径)

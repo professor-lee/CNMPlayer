@@ -122,6 +122,18 @@ cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 
 版本号与打包不属于普通 PR 的范围：发布由 `v*` tag 触发，tag 必须与 `Cargo.toml` 里的版本号一致；`release.yml` 会在发布前测试 workspace 两个 crate，再发布 amd64/aarch64 压缩包、`SHA256SUMS` 与 AUR 包。
 
+### 发版后回合并
+
+`v*` tag 推送完成构建、发版测试、GitHub 发布和 AUR 同步后，`release.yml` 从 `release-backmerge/<tag>` 向 `develop` 创建 PR。分支固定在本次发布提交，不跟随移动中的 `main`。若 `develop` 已包含该提交，则不作修改。手动空跑与补同步 AUR 不触发回合并。
+
+专用私有 GitHub App 仅安装到本仓库。配置仓库变量 `RELEASE_BACKMERGE_APP_ID` 和 secret `RELEASE_BACKMERGE_APP_PRIVATE_KEY`；App 授予 Contents、Pull requests、Workflows 读写权限，Metadata 只读为隐含权限。Workflows 权限用于同步包含工作流文件改动的发布提交。不要授予 Administration 权限，也不要将 App 加入任何规则的 bypass 名单。安装令牌限制在本仓库，job 结束后撤销。缺少凭据时回合并 job 明确失败，不静默跳过。
+
+仓库需开启 auto-merge。`develop-ci-protect` 规则要求 PR 及五项 GitHub Actions 检查：`stable / default`、`stable / no-default-features`、`fmt and clippy`、`ncm-api tests`、`AUR packaging integration`。管理员保留 bypass，以兼容维护者直接推送版本号或文档；App 不可绕过。功能 PR 仍可 squash，但发版回合并只启用原生 merge-commit auto-merge，不绕过检查。此路径不要启用 merge queue。必需检查不要求 head 更新至最新 base：发布 head 保持不变，PR CI 检查与当前 base 的合并结果。
+
+若 job 检查 PR 时必需检查已全部通过，则使用预期 head SHA 请求正常 merge commit，不对已经可合并的 PR 再启用 auto-merge。GitHub 仍执行相同门禁，App 没有 bypass 权限。
+
+tag/SHA 不符、调度前 `main` 已前进、回合并 head 被改动、必需检查缺失、冲突或合并性迟迟未确定，都会停止自动化并交维护者处理。已有匹配 PR 会复用；关闭的 PR 不会被静默重开或替换。不强推、不删分支。冲突应通过另一条经审查的 PR 解决，不修改固定 head；发布提交已被包含后重跑即可跳过。`develop → main` 发版仍须维护者在网页手动确认 PR。仅包含本工作流的新 tag 支持自动回合并，重跑旧发布不会补装该功能。
+
 ### AUR 打包维护
 
 统一维护 `packaging/aur/` 下的三个包配方；AUR 仓库是发布出口，不是另一份独立维护的配方来源。不要在这里加入嵌套 Git 仓库或生成的 `.SRCINFO`。

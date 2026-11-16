@@ -15,6 +15,8 @@ pub(crate) struct BrowseController {
     pub(super) home_sidebar_page_fetch: Option<super::sidebar::HomeSidebarPageFetchFuture>,
     pub(super) author_fetch: Option<super::author::AuthorFetchFuture>,
     pub(super) playlist_fetch: Option<super::playlist::PlaylistFetchSlot>,
+    /// 歌手 / 歌单 / 专辑收藏的期望 / 已确认状态（键见 `subscription`）。
+    pub(super) subscriptions: super::likes::LikeMachine,
 }
 
 impl BrowseController {
@@ -28,6 +30,7 @@ impl BrowseController {
         self.home_sidebar = HomeSidebarState::default();
         self.private_roam = PrivateRoamState::default();
         self.playlist = PlaylistState::default();
+        self.subscriptions = super::likes::LikeMachine::default();
     }
 
     pub(super) fn apply_playlist(
@@ -38,6 +41,10 @@ impl BrowseController {
         self.playlist_fetch = None;
         self.playlist.cancel_pagination();
         self.playlist.id = Some(fetch.id);
+        self.playlist.subscribe_key = fetch.subscribed.map(|(key, subscribed)| {
+            self.subscriptions.set_confirmed(&key, subscribed);
+            key
+        });
         self.playlist.title = fetch.title;
         self.playlist.artist = fetch.artist;
         self.playlist.description = fetch.description;
@@ -66,6 +73,10 @@ impl BrowseController {
     ) {
         self.author_fetch = None;
         self.author.id = Some(fetch.id);
+        self.author.subscribe_key = fetch.subscribed.map(|(key, subscribed)| {
+            self.subscriptions.set_confirmed(&key, subscribed);
+            key
+        });
         self.author.title = fetch.title;
         self.author.artist = fetch.artist;
         self.author.description = fetch.description;

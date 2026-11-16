@@ -549,7 +549,10 @@ fn draw_home_sidebar_section(
             let clipped_left = clip_to_display_width(&left, left_max);
             let used = display_width(&clipped_left) + display_width(&right);
             let spaces = usize::from(inner.width).saturating_sub(used).max(1);
-            let is_focused = section_focused && idx == app.browse.home_sidebar.focused_index;
+            // 同步（含脏标记重取）期间旧列表照常显示，但不画聚焦条；同步完成后再显示。
+            let is_focused = section_focused
+                && !app.browse.home_sidebar.loading
+                && idx == app.browse.home_sidebar.focused_index;
 
             let text_style = if is_focused {
                 Style::default()

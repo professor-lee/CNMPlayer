@@ -96,12 +96,12 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 
 - Streaming: the song is downloaded into the local audio cache while it plays, and only becomes the cached file after the complete response is written — a partial or cancelled transfer is never played from the cache. The buffered part of the progress bar shows download progress.
 - Seeking from the progress bar or inside the fullscreen page, with a pulse animation while the position catches up
-- Queue memory (`playback_memory`): queue, current index, repeat mode and the queue's origin list are saved on every track change and restored on startup; the restored track starts from the beginning
+- Queue memory (`playback_memory`): queue, current index, repeat mode, the queue's origin list and, in shuffle mode, the shuffle progress (played history and the rest of the current round) are saved on every track change and restored on startup; the restored track starts from the beginning
 - VIP-aware audio quality (`audio_quality`): 9 levels from `standard` to `jymaster`; a non-VIP account is clamped to `exhigh`
 - 10-band EQ, ±12 dB (`eq_bands_db`), edited from the fullscreen EQ modal and applied to the live stream
 - Like / unlike from the fullscreen page and from the collapsed player bar
-- Repeat modes: sequence → shuffle → loop all → loop one
-- Playlist playback prefetches the next page when entering the last three loaded tracks, and waits for an unfinished page instead of stopping or wrapping early
+- Repeat modes: sequence → shuffle → loop all → loop one; shuffle plays every song in the queue once per round and previous walks back the songs actually played
+- Playlist playback prefetches the next page when entering the last three loaded tracks, and waits for an unfinished page instead of stopping or wrapping early. In shuffle mode the loaded songs are played through first (the next page is prefetched when three of them remain); each newly loaded page is shuffled on its own and played after them
 - Linux media control (MPRIS, bus suffix `cnmplayer`) with metadata and cover art
 
 ### Downloads
@@ -143,7 +143,7 @@ Entering the mode closes the sidebar and any open overlay. Settings, the search 
 
 - Themes: loaded dynamically from `themes/*.toml` — 20 built-ins, `frappe` by default; drop in your own toml and it joins the cycle. Files that fail validation are skipped, and a broken selected theme falls back to the default
 - UI language: `zh` / `en`
-- 22 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
+- 25 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
 - Transparent background, album-cover border and hint lines
 - Startup: a loading page (ASCII title plus progress bar) appears first, while login restore and recommendation fetches run in the background step by step; an unusable saved session hands over to the login page
 - About modal with braille art, and a hidden easter egg inside it (the `easter-egg` cargo feature, compiled in by default and removable with `--no-default-features`)
@@ -241,6 +241,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `lyric_frame_divisor` | `2` | Lyric animation sampling divisor on top of `ui_fps` (1–8); does not change the redraw rate |
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
+| `scrobble` | `false` | General Settings → Scrobble to NetEase: report each listen of 20 s or more (paused time excluded) to NetEase listening history when switching songs, when playback stops and on exit; may carry account risk-control risk |
 | `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer` |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
 | `audio_quality` | `exhigh` | `standard`, `higher`, `exhigh`, `lossless`, `hires`, `jyeffect`, `sky`, `dolby`, `jymaster`; clamped to `exhigh` without VIP |
@@ -258,7 +259,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
 | `cache.max_age_days` | `7` | Age limit for the TTL pass |
 | `cache.clean_on_startup` | `true` | Run the cleanup while starting |
-| `keybind_*` | see below | 22 rebindable shortcuts |
+| `keybind_*` | see below | 25 rebindable shortcuts |
 
 Cleanup runs as an age pass followed by a size LRU pass, and only looks at files directly inside the directory.
 
@@ -293,14 +294,19 @@ A binding that collides with another slot is rejected, and `Ctrl+Alt+R` inside t
 | `keybind_small_window_toggle` | `Alt+X` | Switch between the flat small-window panels |
 | `keybind_download` | `Ctrl+Alt+D` | Download the focused song (press again to cancel) |
 | `keybind_download_fullscreen` | `Ctrl+D` | Download the current song (fullscreen page only; press again to cancel) |
+| `keybind_toggle_subscribe` | `L` | Follow / unfollow the artist on the artist page, or collect / uncollect the playlist, album, EP or single on the playlist page (host only; the heart right of the title does the same) |
+| `keybind_fullscreen_open_artist` | `Ctrl+A` | Open the current song's artist page (fullscreen page only). With several artists each press highlights the next one; stop pressing for 0.8 s to open the highlighted artist, any other key cancels |
+| `keybind_fullscreen_open_album` | `Ctrl+S` | Open the current song's album page (fullscreen page only) |
 
 The fullscreen-only slots are inert in the host: there they fall through to page navigation instead.
+Conflicts are only checked between slots that act on the same side, so a host-only slot may share a key with a fullscreen-only one (`L`, `Ctrl+S`).
+Keys that close a modal follow their slot: the settings modal closes on `keybind_settings` and the search box on `keybind_search_box`, so rebinding a slot also retires its old key.
 
 ### Fixed shortcuts
 
 - `Esc` — close the current overlay, or go back from the current page
 - `Ctrl+C` — quit from any state
-- `Ctrl+K` — open the keybind list; press it again inside the list to close the whole modal on either UI, not return to settings. `Esc` retains its parent-navigation behavior.
+- `Ctrl+K` — open the keybind list; press it again inside the list to close the whole modal on either UI, not return to settings. `Esc` retains its parent-navigation behavior. The host list shows every key grouped by function (General, Playback, Like & Download, Jump, Equalizer, Window, Fixed Keys); one-sided entries are tagged `(Host)` / `(Fullscreen)`, and focus skips the group headers. The fullscreen list shows only the keys that work on the fullscreen page.
 - `Ctrl+Up` / `Ctrl+Down` — switch the sidebar playlist section (Created / Collected) while the sidebar is open
 - `Ctrl+Alt+R` — restore the default keybinds (inside the keybind modal)
 - `F1` / `F2` / `F3` — login method (QR / account / phone)
@@ -328,7 +334,7 @@ Settings modal:
 
 - `Up` / `Down` / `Tab` / `Shift+Tab` move, `Left` / `Right` / `Enter` change a value, `Esc` steps back
 - Mouse: the wheel moves the selection, a single click focuses a row and a double click activates it — except in the Lyrics Settings subpage, where a single click flips the switch
-- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding.
+- Keybind modal: `Enter` starts rebinding, `Esc` cancels it while waiting for input; `Ctrl+K` closes the whole modal and cancels any pending rebinding without changing the binding. Fixed keys are listed read-only.
 
 Fullscreen page:
 

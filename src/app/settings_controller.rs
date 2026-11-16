@@ -6,12 +6,14 @@ use super::input_controller::HitRect;
 use super::keybinds::RESERVED_RESET_KEYBIND;
 use super::keybinds::is_reserved_reset_combo;
 use super::keybinds::key_event_to_keybind_text;
+use super::keybinds::keybind_matches;
 use super::text::byte_index_for_char;
 use super::text::char_count;
 use crate::data::config::BarChannels;
 use crate::data::config::BarNumber;
 use crate::data::config::Config;
 use crate::data::config::Language;
+use crate::data::keymap::{self, KeyRow, KeyView, SLOTS};
 use crate::data::theme_loader::ThemeLoader;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -23,7 +25,9 @@ use std::time::Instant;
 const DOWNLOAD_PATH_MAX_CHARS: usize = 4096;
 
 const SETTINGS_ROOT_ITEMS: usize = 9;
-pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 6;
+pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 7;
+/// 通用设置末行是 MPRIS 服务名称输入框，其余行均为开关/循环项。
+pub(crate) const SETTINGS_GENERAL_MPRIS_ROW: usize = SETTINGS_GENERAL_ITEMS - 1;
 const MPRIS_NAME_MAX_CHARS: usize = 256;
 
 const SETTINGS_PLAYBACK_ITEMS: usize = 7;
@@ -61,7 +65,10 @@ pub(crate) fn step_lyrics_settings(current: usize, forward: bool, drag_enabled: 
 
 pub(crate) const SETTINGS_DOWNLOAD_ITEMS: usize = 3;
 
-pub(crate) const SETTINGS_KEYBIND_ITEMS: usize = 22;
+/// 主程序按键绑定页的行（分组标题 + 可重绑槽位 + 固定键）。
+pub(crate) fn keybind_rows() -> &'static [KeyRow] {
+    keymap::key_rows(KeyView::Host)
+}
 
 /// 设置行的文本编辑状态（光标按字符计数，横向窗口按显示列算）。
 #[derive(Debug, Clone, Default)]
@@ -146,7 +153,7 @@ impl App {
     }
 
     pub(super) fn open_keybind_settings(&mut self) {
-        self.settings.keybind_selected = 0;
+        self.settings.keybind_selected = keymap::first_focusable(keybind_rows());
         self.settings.keybind_rebinding = None;
         self.settings.keybind_scroll = 0;
         self.overlay = Some(Overlay::SettingsKeybinds);
@@ -208,7 +215,7 @@ impl App {
             Overlay::SettingsKeybinds => {
                 self.settings.keybind_selected = index;
                 if self.is_double_settings_click(overlay, index) {
-                    self.begin_keybind_rebind(index);
+                    self.activate_keybind_row(index);
                 }
             }
             _ => {}
@@ -256,7 +263,8 @@ impl App {
                 );
             }
             Some(Overlay::SettingsKeybinds) => {
-                step(&mut self.settings.keybind_selected, SETTINGS_KEYBIND_ITEMS)
+                self.settings.keybind_selected =
+                    keymap::step_focus(keybind_rows(), self.settings.keybind_selected, forward);
             }
             _ => {}
         }
@@ -304,7 +312,7 @@ impl App {
     }
 
     async fn activate_settings_general_item(&mut self, delta: i32) {
-        if self.settings.general_selected == 5 {
+        if self.settings.general_selected == SETTINGS_GENERAL_MPRIS_ROW {
             self.settings.mpris_name_edit =
                 Some(SettingsTextEdit::new(self.config.mpris_name.clone()));
         } else {
@@ -349,9 +357,7 @@ impl App {
 
         match key.code {
             KeyCode::Esc => self.overlay = Some(Overlay::Settings),
-            KeyCode::Char('t') | KeyCode::Char('T')
-                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
-            {
+            _ if keybind_matches(&self.config.keybind_settings, key) => {
                 self.close_overlay();
             }
             KeyCode::Up | KeyCode::BackTab => {
@@ -369,7 +375,18 @@ impl App {
         }
     }
 
-    /// 开始重绑某条快捷键（键盘 Enter 与双击共用）。
+    /// 按键绑定页选中行的执行（键盘 Enter 与双击共用）：槽位开始重绑，固定键只提示。
+    fn activate_keybind_row(&mut self, row: usize) {
+        match keybind_rows().get(row) {
+            Some(KeyRow::Slot(index)) => self.begin_keybind_rebind(*index),
+            Some(KeyRow::Fixed(_)) => self.set_runtime_status(
+                self.lang_text("固定键不可修改", "Fixed keys cannot be rebound"),
+            ),
+            _ => {}
+        }
+    }
+
+    /// 开始重绑某个槽位。
     fn begin_keybind_rebind(&mut self, index: usize) {
         self.settings.keybind_rebinding = Some(index);
         self.set_runtime_status(format!(
@@ -423,11 +440,7 @@ impl App {
             // 五行都是开关（值行）：与播放设置页同构，Left/Right 都用来改值，
             // 返回上一级只走 Esc。
             KeyCode::Esc => self.overlay = Some(Overlay::Settings),
-            KeyCode::Char('t') | KeyCode::Char('T')
-                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
-            {
-                self.close_overlay();
-            }
+            _ if keybind_matches(&self.config.keybind_settings, key) => self.close_overlay(),
             KeyCode::Left => self.apply_settings_lyrics_delta(-1),
             KeyCode::Right | KeyCode::Enter => self.apply_settings_lyrics_delta(1),
             KeyCode::Up | KeyCode::BackTab => {
@@ -684,9 +697,7 @@ impl App {
                 self.settings.download_reset_armed = false;
                 self.overlay = Some(Overlay::Settings);
             }
-            KeyCode::Char('t') | KeyCode::Char('T')
-                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
-            {
+            _ if keybind_matches(&self.config.keybind_settings, key) => {
                 self.settings.download_reset_armed = false;
                 self.close_overlay();
             }
@@ -701,11 +712,7 @@ impl App {
     pub(super) async fn handle_settings_root_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.close_overlay(),
-            KeyCode::Char('t') | KeyCode::Char('T')
-                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
-            {
-                self.close_overlay();
-            }
+            _ if keybind_matches(&self.config.keybind_settings, key) => self.close_overlay(),
             KeyCode::Up | KeyCode::BackTab => {
                 if self.settings.selected == 0 {
                     self.settings.selected = SETTINGS_ROOT_ITEMS - 1;
@@ -726,11 +733,7 @@ impl App {
     pub(super) fn handle_settings_playback_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.overlay = Some(Overlay::Settings),
-            KeyCode::Char('t') | KeyCode::Char('T')
-                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
-            {
-                self.close_overlay();
-            }
+            _ if keybind_matches(&self.config.keybind_settings, key) => self.close_overlay(),
             KeyCode::Left => {
                 self.apply_settings_playback_delta(-1);
             }
@@ -790,17 +793,16 @@ impl App {
                         return;
                     }
 
-                    if let Some(slot) = self.keybind_value_mut_for_index(index) {
-                        *slot = binding.clone();
-                        self.persist_config();
-                        self.set_runtime_status(format!(
-                            "{} [{}] {} {}",
-                            self.lang_text("已将", "Bound"),
-                            self.keybind_name_for_index(index),
-                            self.lang_text("绑定为", "to"),
-                            binding
-                        ));
-                    }
+                    let name = self.keybind_name_for_index(index);
+                    (SLOTS[index].get_mut)(&mut self.config).clone_from(&binding);
+                    self.persist_config();
+                    self.set_runtime_status(format!(
+                        "{} [{}] {} {}",
+                        self.lang_text("已将", "Bound"),
+                        name,
+                        self.lang_text("绑定为", "to"),
+                        binding
+                    ));
                     self.settings.keybind_rebinding = None;
                 }
             }
@@ -821,9 +823,7 @@ impl App {
                 self.settings.keybind_rebinding = None;
                 self.overlay = Some(Overlay::Settings);
             }
-            KeyCode::Char('t') | KeyCode::Char('T')
-                if (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
-            {
+            _ if keybind_matches(&self.config.keybind_settings, key) => {
                 self.settings.keybind_rebinding = None;
                 self.close_overlay();
             }
@@ -832,20 +832,14 @@ impl App {
                 self.overlay = Some(Overlay::Settings);
             }
             KeyCode::Up | KeyCode::BackTab => {
-                if self.settings.keybind_selected == 0 {
-                    self.settings.keybind_selected = SETTINGS_KEYBIND_ITEMS - 1;
-                } else {
-                    self.settings.keybind_selected -= 1;
-                }
+                self.settings.keybind_selected =
+                    keymap::step_focus(keybind_rows(), self.settings.keybind_selected, false);
             }
             KeyCode::Down | KeyCode::Tab => {
                 self.settings.keybind_selected =
-                    (self.settings.keybind_selected + 1) % SETTINGS_KEYBIND_ITEMS;
+                    keymap::step_focus(keybind_rows(), self.settings.keybind_selected, true);
             }
-            KeyCode::Enter => {
-                let idx = self.settings.keybind_selected;
-                self.begin_keybind_rebind(idx);
-            }
+            KeyCode::Enter => self.activate_keybind_row(self.settings.keybind_selected),
             _ => {}
         }
     }
@@ -922,6 +916,10 @@ impl App {
                     );
                 }
             }
+            5 => {
+                self.config.scrobble = !self.config.scrobble;
+                self.persist_config();
+            }
             _ => {}
         }
     }
@@ -984,7 +982,9 @@ pub(crate) struct SettingsController {
     pub(crate) mpris_name_edit: Option<SettingsTextEdit>,
     pub(crate) playback_selected: usize,
     pub(crate) lyrics_selected: usize,
+    /// 按键绑定页聚焦的行序号（[`keybind_rows`] 下标，永不落在分组标题上）。
     pub(crate) keybind_selected: usize,
+    /// 正在重绑的槽位序号（[`SLOTS`] 下标）。
     pub(crate) keybind_rebinding: Option<usize>,
     pub(crate) keybind_scroll: usize,
     pub(crate) download_selected: usize,
@@ -1006,7 +1006,7 @@ impl SettingsController {
         self.mpris_name_edit = None;
         self.playback_selected = 0;
         self.lyrics_selected = 0;
-        self.keybind_selected = 0;
+        self.keybind_selected = keymap::first_focusable(keybind_rows());
         self.keybind_rebinding = None;
         self.keybind_scroll = 0;
         self.download_selected = 0;

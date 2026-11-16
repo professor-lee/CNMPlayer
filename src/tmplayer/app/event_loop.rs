@@ -1,3 +1,4 @@
+use crate::app::settings_controller::{SETTINGS_GENERAL_ITEMS, SETTINGS_GENERAL_MPRIS_ROW};
 use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
@@ -317,6 +318,16 @@ fn apply_host_runtime_snapshot(app: &mut AppState, runtime: HostPlaybackRuntimeS
         changed = true;
     }
 
+    if app.player.retrying != runtime.retrying {
+        app.player.retrying = runtime.retrying;
+        changed = true;
+    }
+
+    if app.player.buffered != runtime.buffered {
+        app.player.buffered = runtime.buffered;
+        changed = true;
+    }
+
     if app.download_state != runtime.download {
         app.download_state = runtime.download;
         changed = true;
@@ -603,6 +614,10 @@ async fn handle_action(
     ) {
         return Ok(());
     }
+    // 轮询选歌手期间按了别的键（含 Esc）就放弃这次选择，免得停按后意外跳页。
+    if !matches!(action, Action::CycleOpenArtist | Action::None) {
+        app.artist_cycle = None;
+    }
     match action {
         Action::Quit => {}
         Action::OpenSettingsModal => {
@@ -723,6 +738,9 @@ async fn handle_action(
                     app.overlay = Overlay::BarSettingsModal;
                 }
                 4 => {
+                    app.help_keybind_selected = crate::data::keymap::first_focusable(
+                        crate::tmplayer::ui::tui::modals::help::help_rows(),
+                    );
                     app.help_keybind_scroll = 0;
                     app.overlay = Overlay::HelpModal;
                 }
@@ -745,7 +763,7 @@ async fn handle_action(
                 _ => {}
             },
             Overlay::GeneralSettingsModal => {
-                if app.general_settings_selected == 5 {
+                if app.general_settings_selected == SETTINGS_GENERAL_MPRIS_ROW {
                     app.mpris_name_edit =
                         Some(crate::app::settings_controller::SettingsTextEdit::new(
                             app.config.mpris_name.clone(),
@@ -852,7 +870,9 @@ async fn handle_action(
                     app.settings_selected -= 1;
                 }
             } else if app.overlay == Overlay::GeneralSettingsModal {
-                app.general_settings_selected = (app.general_settings_selected + 5) % 6;
+                app.general_settings_selected =
+                    (app.general_settings_selected + SETTINGS_GENERAL_ITEMS - 1)
+                        % SETTINGS_GENERAL_ITEMS;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, -1);
             } else if app.overlay == Overlay::BarSettingsModal {
@@ -877,15 +897,11 @@ async fn handle_action(
                 }
                 sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
-                let count = crate::tmplayer::ui::tui::modals::help::help_item_count(app);
-                if count == 0 {
-                    return Ok(());
-                }
-                if app.help_keybind_selected == 0 {
-                    app.help_keybind_selected = count - 1;
-                } else {
-                    app.help_keybind_selected -= 1;
-                }
+                app.help_keybind_selected = crate::data::keymap::step_focus(
+                    crate::tmplayer::ui::tui::modals::help::help_rows(),
+                    app.help_keybind_selected,
+                    false,
+                );
             }
         }
         Action::ModalDown => {
@@ -893,7 +909,8 @@ async fn handle_action(
                 let count = 9;
                 app.settings_selected = (app.settings_selected + 1) % count;
             } else if app.overlay == Overlay::GeneralSettingsModal {
-                app.general_settings_selected = (app.general_settings_selected + 1) % 6;
+                app.general_settings_selected =
+                    (app.general_settings_selected + 1) % SETTINGS_GENERAL_ITEMS;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, 1);
             } else if app.overlay == Overlay::BarSettingsModal {
@@ -914,10 +931,11 @@ async fn handle_action(
                 }
                 sync_eq_config(app, host_bridge).await;
             } else if app.overlay == Overlay::HelpModal {
-                let count = crate::tmplayer::ui::tui::modals::help::help_item_count(app);
-                if count > 0 {
-                    app.help_keybind_selected = (app.help_keybind_selected + 1) % count;
-                }
+                app.help_keybind_selected = crate::data::keymap::step_focus(
+                    crate::tmplayer::ui::tui::modals::help::help_rows(),
+                    app.help_keybind_selected,
+                    true,
+                );
             }
         }
         Action::ModalLeft => {
@@ -977,7 +995,7 @@ async fn handle_action(
             if app.overlay == Overlay::SettingsModal {
                 apply_settings_delta(app, host_bridge, 1).await;
             } else if app.overlay == Overlay::GeneralSettingsModal {
-                if app.general_settings_selected == 5 {
+                if app.general_settings_selected == SETTINGS_GENERAL_MPRIS_ROW {
                     return Box::pin(handle_action(app, host_bridge, Action::Confirm, layout))
                         .await;
                 }
@@ -1096,6 +1114,38 @@ async fn handle_action(
         Action::OpenAuthorPage(index) => {
             app.exit_request = Some(crate::tmplayer::FullscreenExit::BackToHostOpenAuthor(index));
         }
+        Action::CycleOpenArtist => {
+            let count = crate::app::tracks::artist_name_segments(&app.player.track.artist)
+                .iter()
+                .filter(|name| !name.trim().is_empty())
+                .count();
+            match count {
+                0 => app.set_toast(match app.config.language {
+                    crate::data::config::Language::Zh => "当前歌曲没有歌手信息",
+                    crate::data::config::Language::En => "The current song has no artist",
+                }),
+                // 只有一位歌手：无需轮询，直接进入。
+                1 => {
+                    app.exit_request =
+                        Some(crate::tmplayer::FullscreenExit::BackToHostOpenAuthor(0));
+                }
+                _ => {
+                    let segments =
+                        crate::app::tracks::artist_name_segments(&app.player.track.artist);
+                    let next = |from: usize| {
+                        (1..=segments.len())
+                            .map(|step| (from + step) % segments.len())
+                            .find(|&index| !segments[index].trim().is_empty())
+                            .unwrap_or(0)
+                    };
+                    let index = match app.artist_cycle {
+                        Some((current, _)) => next(current),
+                        None => next(segments.len() - 1),
+                    };
+                    app.artist_cycle = Some((index, Instant::now()));
+                }
+            }
+        }
         Action::OpenAlbumPage => {
             app.exit_request = Some(crate::tmplayer::FullscreenExit::BackToHostOpenAlbum);
         }
@@ -1167,7 +1217,7 @@ async fn handle_action(
             match app.overlay {
                 Overlay::SettingsModal => app.settings_selected = idx,
                 Overlay::GeneralSettingsModal => {
-                    app.general_settings_selected = idx.min(5);
+                    app.general_settings_selected = idx.min(SETTINGS_GENERAL_MPRIS_ROW);
                     return Box::pin(handle_action(app, host_bridge, Action::Confirm, layout))
                         .await;
                 }
@@ -1265,6 +1315,7 @@ async fn apply_general_settings_delta(
         2 => app.config.show_hints = !app.config.show_hints,
         3 => app.config.small_window_display = !app.config.small_window_display,
         4 => app.config.home_more_recommend = !app.config.home_more_recommend,
+        5 => app.config.scrobble = !app.config.scrobble,
         _ => return,
     }
     save_and_sync_host_config(app, host_bridge).await;

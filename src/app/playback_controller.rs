@@ -12,10 +12,15 @@ use super::roam::bound_private_roam_queue;
 use super::roam::private_roam_continuation_start;
 use super::roam::private_roam_restored_index;
 use super::roam::private_roam_window;
+use super::scrobble::ListenSession;
 use super::search_controller::SearchItem;
+use super::shuffle::ShuffleOrder;
+use super::streaming::Origin;
+use super::streaming::RetryPolicy;
 use super::streaming::StreamingReader;
 use super::streaming::StreamingReaderHandle;
 use super::streaming::StreamingStatus;
+use super::streaming::UrlSource;
 use super::tracks::PlaylistTrack;
 use super::tracks::PlaylistTrackKind;
 use super::tracks::format_duration;
@@ -29,10 +34,9 @@ use rodio::decoder::DecoderBuilder;
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 enum PrepareEvent {
     ReaderReady(StreamingReaderHandle),
@@ -54,6 +58,8 @@ struct PendingPlayback {
     _task: compio::runtime::JoinHandle<()>,
     cancel: Option<StreamingReaderHandle>,
     start_paused: bool,
+    /// 首连阶段（还没有读取器句柄）的后台重试标志，与 `Origin` 共享。
+    retrying: Arc<AtomicBool>,
 }
 impl Drop for PendingPlayback {
     fn drop(&mut self) {
@@ -192,22 +198,6 @@ pub(super) fn map_audio_state(state: AudioPlayerState) -> PlaybackRuntimeState {
     }
 }
 
-fn pick_shuffle_index(len: usize, current: usize) -> usize {
-    if len <= 1 {
-        return 0;
-    }
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as usize;
-    let mut index = now % len;
-    if index == current {
-        index = (index + 1) % len;
-    }
-    index
-}
-
 impl App {
     pub(crate) fn playback_position(&self) -> Duration {
         if self.playback.has_pending_start() {
@@ -220,6 +210,14 @@ impl App {
     /// 是否正在后台加载跳转目标（进度条据此显示脉冲加载动画）。
     pub(crate) fn is_seeking(&self) -> bool {
         self.playback.audio_player.is_seeking()
+    }
+
+    /// 后台重试下载（首连阶段或播放中途续传）：进度条显示加载态。
+    pub(crate) fn is_retrying(&self) -> bool {
+        if let Some(pending) = self.playback.pending_start.as_ref() {
+            return pending.retrying.load(std::sync::atomic::Ordering::SeqCst);
+        }
+        self.playback.audio_player.is_retrying()
     }
 
     pub(crate) fn playback_duration(&self) -> Duration {
@@ -312,10 +310,10 @@ impl App {
                     % self.playback.playback_queue.len(),
             ),
             PlaybackRepeatMode::LoopOne => Some(current),
-            PlaybackRepeatMode::Shuffle => Some(pick_shuffle_index(
-                self.playback.playback_queue.len(),
-                current,
-            )),
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .previous(&self.playback.playback_queue, Some(current)),
         };
 
         if let Some(index) = target {
@@ -357,10 +355,10 @@ impl App {
             }
             PlaybackRepeatMode::LoopAll => Some((current + 1) % self.playback.playback_queue.len()),
             PlaybackRepeatMode::LoopOne => Some(current),
-            PlaybackRepeatMode::Shuffle => Some(pick_shuffle_index(
-                self.playback.playback_queue.len(),
-                current,
-            )),
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .next(&self.playback.playback_queue, Some(current)),
         };
 
         if let Some(index) = target {
@@ -392,6 +390,11 @@ impl App {
     }
 
     pub(super) async fn tick_audio(&mut self) {
+        self.tick_playback().await;
+        self.observe_listen_session();
+    }
+
+    async fn tick_playback(&mut self) {
         self.tick_playlist_page_fetch();
         self.maybe_prefetch_playback_page();
         self.poll_pending_start();
@@ -424,9 +427,9 @@ impl App {
         }
         if let Some(announce) = self.playback.page_advance {
             let current = self.playback.playback_index.unwrap_or(0);
-            if current + 1 < self.playback.playback_queue.len() {
+            if let Some(target) = self.page_advance_target(current) {
                 self.playback.page_advance = None;
-                self.play_queue_index(current + 1, announce).await;
+                self.play_queue_index(target, announce).await;
             } else if !self
                 .playback
                 .pagination
@@ -525,10 +528,10 @@ impl App {
             }
             PlaybackRepeatMode::LoopAll => Some((current + 1) % self.playback.playback_queue.len()),
             PlaybackRepeatMode::LoopOne => Some(current),
-            PlaybackRepeatMode::Shuffle => Some(pick_shuffle_index(
-                self.playback.playback_queue.len(),
-                current,
-            )),
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .next(&self.playback.playback_queue, Some(current)),
         };
 
         if let Some(index) = target {
@@ -540,10 +543,18 @@ impl App {
     }
 
     fn defer_playlist_advance(&mut self, current: usize, announce: bool) -> bool {
-        if matches!(
-            self.playback.playback_repeat_mode,
-            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll
-        ) && current + 1 >= self.playback.playback_queue.len()
+        let loaded_exhausted = match self.playback.playback_repeat_mode {
+            PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll => {
+                current + 1 >= self.playback.playback_queue.len()
+            }
+            // 随机模式先播完已加载并洗好的曲目，再加载下一页单独洗牌。
+            PlaybackRepeatMode::Shuffle => self
+                .playback
+                .shuffle
+                .round_exhausted(&self.playback.playback_queue, Some(current)),
+            PlaybackRepeatMode::LoopOne => false,
+        };
+        if loaded_exhausted
             && let Some(pagination) = &self.playback.pagination
             && pagination.has_more()
         {
@@ -554,11 +565,24 @@ impl App {
         false
     }
 
+    /// 等待续页时的下一首：新一页到达、出现可播的新歌才有结果。
+    fn page_advance_target(&mut self, current: usize) -> Option<usize> {
+        if self.playback.playback_repeat_mode != PlaybackRepeatMode::Shuffle {
+            return (current + 1 < self.playback.playback_queue.len()).then_some(current + 1);
+        }
+        let queue = &self.playback.playback_queue;
+        if self.playback.shuffle.round_exhausted(queue, Some(current)) {
+            return None;
+        }
+        self.playback.shuffle.next(queue, Some(current))
+    }
+
     pub(crate) async fn play_queue_index(&mut self, index: usize, announce: bool) {
         let Some(track) = self.playback.playback_queue.get(index).cloned() else {
             return;
         };
         self.playback.page_advance = None;
+        self.finish_listen_session();
         self.playback.cancel_pending_start();
         self.playback.audio_player.stop();
         self.playback.playback_index = Some(index);
@@ -572,6 +596,12 @@ impl App {
         self.playback.now_playing = Some(enriched.clone());
         self.refresh_now_playing_like_state();
         self.playback.playback_index = Some(index);
+        if self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle {
+            // 点播等不经洗牌序列的切歌也要先对账，播放记忆才记下正确的历史。
+            self.playback
+                .shuffle
+                .sync(&self.playback.playback_queue, Some(index));
+        }
         self.maybe_prefetch_playback_page();
         self.cover_fetch_inflight_url = None;
         self.cover_fetch_last_attempt_at = None;
@@ -598,6 +628,8 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let wake = self.api.wake_signal();
         let song_id = track.song_id.clone();
+        let retrying = Arc::new(AtomicBool::new(false));
+        let task_retrying = retrying.clone();
         let task = compio::runtime::spawn(async move {
             let preparation = async {
                 if is_nonempty_file(&path).await {
@@ -628,21 +660,23 @@ impl App {
                     // A removed or undecodable cache entry is a cache miss,
                     // as before background preparation was introduced.
                 }
-                let mut api = api;
-                let url = api
-                    .song_stream_url_with_quality(&song_id, &quality)
-                    .await
-                    .map_err(|err| err.to_string())?;
-                let reader = StreamingReader::new(
-                    api.http_client(),
-                    &url,
-                    path,
-                    cookie.as_deref(),
-                    progress_tx,
-                    cache_maintenance.clone(),
-                )
-                .await
-                .map_err(|err| err.to_string())?;
+                // 取直链、等响应头、正文各自限时并在后台静默重试，
+                // 断线时从断点续传；不再用一个总超时把它们一起掐断。
+                let http = api.http_client().clone();
+                let source: UrlSource = Box::new(move || {
+                    let mut api = api.clone();
+                    let song_id = song_id.clone();
+                    let quality = quality.clone();
+                    Box::pin(
+                        async move { api.song_stream_url_with_quality(&song_id, &quality).await },
+                    )
+                });
+                let origin = Origin::new(http, cookie, None, source, RetryPolicy::DEFAULT)
+                    .with_retrying(task_retrying);
+                let reader =
+                    StreamingReader::new(origin, path, progress_tx, cache_maintenance.clone())
+                        .await
+                        .map_err(|err| err.to_string())?;
                 let stream_handle = StreamingReaderHandle::from(&reader);
                 struct DecodeCancellation(Option<StreamingReaderHandle>);
                 impl Drop for DecodeCancellation {
@@ -677,11 +711,7 @@ impl App {
                     cache_lease,
                 })
             };
-            let result: Result<PreparedPlayback, String> =
-                match compio::time::timeout(Duration::from_secs(30), preparation).await {
-                    Ok(result) => result,
-                    Err(_) => Err("playback preparation timed out after 30s".to_string()),
-                };
+            let result: Result<PreparedPlayback, String> = preparation.await;
             let _ = tx.send(PrepareEvent::Ready(result));
             wake.notify();
         });
@@ -693,6 +723,7 @@ impl App {
             rx,
             _task: task,
             cancel: None,
+            retrying,
         });
         self.playback.playback_state = PlaybackRuntimeState::Stopped;
         self.set_runtime_status(format!(
@@ -788,6 +819,7 @@ impl App {
                                 pending.track.title,
                                 pending.track.artist
                             ));
+                            self.start_listen_session(&pending.track);
                         }
                     }
                     Err(err) => {
@@ -964,6 +996,8 @@ impl App {
                 .pagination
                 .as_ref()
                 .map(PlaylistPagination::cursor),
+            shuffle: (self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle)
+                .then(|| self.playback.shuffle.snapshot()),
             updated_at: 0,
         };
 
@@ -1076,6 +1110,11 @@ impl App {
             record.source_playlist_id,
             pagination,
         );
+        if self.playback.playback_repeat_mode == PlaybackRepeatMode::Shuffle
+            && let Some(shuffle) = record.shuffle
+        {
+            self.playback.shuffle.restore(shuffle);
+        }
         let target = target.unwrap_or(0);
         self.play_queue_index(target, false).await;
         self.playback.restoring_memory = false;
@@ -1105,6 +1144,9 @@ pub(crate) struct PlaybackController {
     roam_advance: Option<bool>,
     pending_start: Option<PendingPlayback>,
     playback_generation: u64,
+    pub(super) shuffle: ShuffleOrder,
+    /// 当前歌曲的听歌上报记录；`scrobble` 关闭时为空。
+    pub(super) listen: Option<ListenSession>,
     pub(super) roam_append: Option<super::owned_task::SharedTask<Vec<PlaylistTrack>>>,
 }
 
@@ -1128,6 +1170,8 @@ impl PlaybackController {
             roam_advance: None,
             pending_start: None,
             playback_generation: 0,
+            shuffle: ShuffleOrder::new(),
+            listen: None,
             roam_append: None,
         }
     }
@@ -1150,6 +1194,7 @@ impl PlaybackController {
 
     fn cycle_repeat_mode(&mut self) {
         self.playback_repeat_mode = self.playback_repeat_mode.next();
+        self.shuffle.reset();
     }
 
     pub(super) fn clear_like_state(&mut self) {
@@ -1191,6 +1236,7 @@ impl PlaybackController {
 
     pub(super) fn clear_queue(&mut self) {
         self.cancel_pending_start();
+        self.shuffle.reset();
         self.roam_append = None;
         self.playback_queue.clear();
         self.playback_index = None;
@@ -1202,6 +1248,8 @@ impl PlaybackController {
         self.restoring_memory = false;
         self.pagination = None;
         self.page_advance = None;
+        // 登出等清空路径不再以旧账号身份上报。
+        self.listen = None;
     }
 
     fn replace_queue(
@@ -1213,6 +1261,7 @@ impl PlaybackController {
         pagination: Option<PlaylistPagination>,
     ) {
         self.cancel_pending_start();
+        self.shuffle.reset();
         self.roam_append = None;
         self.playback_queue = queue;
         self.playback_index = index;

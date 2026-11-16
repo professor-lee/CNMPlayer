@@ -126,6 +126,11 @@ fn encrypted_response_decodes_fixed_vector_or_returns_error() {
         decode_response_body(&malformed, true),
         Err(NcmError::ResponseDecode { .. })
     ));
+    // 服务端对加密请求返回的明文错误回包要保留原文，而不是报解密错误。
+    assert_eq!(
+        decode_response_body(b"{\"code\":-460,\"msg\":\"cheating\"}", true).unwrap(),
+        serde_json::json!({"code": -460, "msg": "cheating"})
+    );
 }
 
 #[test]
