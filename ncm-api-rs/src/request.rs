@@ -513,10 +513,13 @@ impl ApiClient {
 
                 headers.insert(COOKIE, header_value(&header_cookie_str));
 
-                let ua = options
-                    .ua
-                    .as_deref()
-                    .unwrap_or_else(|| choose_user_agent("api", "iphone"));
+                let ua = options.ua.as_deref().unwrap_or_else(|| {
+                    if cookie_map.get("os").map(String::as_str) == Some("osx") {
+                        OSX_EAPI_USER_AGENT
+                    } else {
+                        choose_user_agent("api", "iphone")
+                    }
+                });
                 headers.insert(USER_AGENT, header_value(ua));
 
                 if crypto_type == CryptoType::Eapi {

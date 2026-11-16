@@ -72,11 +72,22 @@ pub const OS_IPHONE: OsConfig = OsConfig {
     channel: "distribution",
 };
 
+pub const OS_OSX: OsConfig = OsConfig {
+    os: "osx",
+    appver: "3.1.10.5100",
+    osver: "15.5",
+    channel: "netease",
+};
+
+/// cookie os=osx 时 eapi 请求使用的 macOS 浏览器 UA（上游 request.js）
+pub const OSX_EAPI_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
 pub fn get_os_config(os_name: &str) -> &'static OsConfig {
     match os_name {
         "linux" => &OS_LINUX,
         "android" => &OS_ANDROID,
         "iphone" => &OS_IPHONE,
+        "osx" => &OS_OSX,
         _ => &OS_PC,
     }
 }

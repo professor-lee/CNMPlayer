@@ -1081,11 +1081,11 @@ let result = client.song_like_check(&query).await?;
 
 #### 听歌打卡
 
-说明 : 调用此接口，传入音乐 id，来源 id，歌曲时间 time，更新听歌排行数据
+说明 : 调用此接口，传入音乐 id，来源 id，歌曲时间 time，更新听歌排行数据。与上游一致以 `os=osx` 身份经 `clientlog.music.163.com` 的 eapi 连续上报两条日志：`startplay`（进「最近播放」）与 `play`（涨「听歌排行」计数），返回 `{code: 200, data: "success", details: {startplay, play}}`
 
 **必选参数 :** `id` : 歌曲 id ; `sourceid` : 歌单或专辑 id
 
-**可选参数 :** `time` : 歌曲播放时间，单位为秒
+**可选参数 :** `time` : 歌曲播放时间，单位为秒 ; `end` : 结束原因，默认 `playend`
 
 **方法名 :** `scrobble`
 
