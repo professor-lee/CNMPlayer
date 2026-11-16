@@ -7,6 +7,25 @@ fn eapi_response_decodes_fixed_vector() {
     assert_eq!(body, serde_json::json!({"code": 200}));
 }
 
+// 与上游 buildXeapiPlaintext 的输出一致：去掉 e_r，表单体进 content，固定 queryString。
+#[test]
+fn xeapi_plaintext_matches_upstream_envelope() {
+    let data = serde_json::json!({
+        "ids": "[347230]",
+        "level": "exhigh",
+        "encodeType": "flac",
+        "e_r": false
+    });
+    assert_eq!(
+        xeapi_plaintext(&data).unwrap(),
+        r#"{"content":"encodeType=flac&ids=%5B347230%5D&level=exhigh","queryString":"e_r=true"}"#
+    );
+    assert_eq!(
+        xeapi_plaintext(&serde_json::json!({"e_r": true})).unwrap(),
+        r#"{"queryString":"e_r=true"}"#
+    );
+}
+
 #[test]
 fn eapi_response_rejects_invalid_hex_and_padding() {
     assert!(matches!(

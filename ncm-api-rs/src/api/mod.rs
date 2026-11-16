@@ -547,6 +547,7 @@ impl Query {
             e_r: self.e_r,
             domain: self.domain.clone(),
             check_token: false,
+            cookie_overrides: Vec::new(),
         }
     }
 }

@@ -15,7 +15,8 @@ impl ApiClient {
             "https": "true",
             "phone": query.get_or("phone", ""),
             "countrycode": query.get_or("countrycode", "86"),
-            "remember": "true"
+            "remember": "true",
+            "secureCaptcha": query.get_or("sca", "")
         });
 
         if let Some(captcha) = query.get("captcha") {
