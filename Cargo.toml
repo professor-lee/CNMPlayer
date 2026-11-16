@@ -5,7 +5,6 @@ edition = "2024"
 description = "A Rust TUI client for NetEase Cloud Music"
 license = "AGPL-3.0-only"
 repository = "https://github.com/professor-lee/CNMPlayer"
-homepage = "https://github.com/professor-lee/CNMPlayer"
 readme = "README.md"
 keywords = ["tui", "music", "netease", "player"]
 categories = ["command-line-utilities", "multimedia::audio"]

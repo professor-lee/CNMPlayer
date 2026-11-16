@@ -46,7 +46,7 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.meta.outputs.tag }}
 
@@ -85,7 +85,7 @@ jobs:
       TAG: ${{ needs.guard.outputs.tag }}
       ARCH: ${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.guard.outputs.tag }}
 
@@ -116,7 +116,7 @@ jobs:
           cp LICENSE THIRD_PARTY_NOTICES.md pkg/
           (cd pkg && tar -cJf "../CNMPlayer_${TAG}_linux_${ARCH}.tar.xz" cnmplayer LICENSE THIRD_PARTY_NOTICES.md)
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: rel-${{ matrix.arch }}
           path: CNMPlayer_${{ needs.guard.outputs.tag }}_linux_${{ matrix.arch }}.tar.xz
@@ -130,7 +130,7 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.guard.outputs.tag }}
 
@@ -153,7 +153,7 @@ jobs:
       - name: Test workspace without default features
         run: cargo test --workspace --locked --all-targets --no-default-features
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: rel-*
           merge-multiple: true
@@ -164,7 +164,7 @@ jobs:
           cd dist
           sha256sum *.tar.xz > SHA256SUMS
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-checksums
           path: dist/SHA256SUMS
@@ -181,17 +181,17 @@ jobs:
     steps:
       # gh release create --verify-tag 需要 git 仓库上下文来校验 tag，
       # 缺了 checkout 会以 "fatal: not a git repository" 失败。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.guard.outputs.tag }}
 
       # 下到子目录：避免 ./*.tar.xz 把仓库自身文件也匹配进去
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: rel-*
           merge-multiple: true
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: release-checksums
           path: dist
@@ -217,7 +217,7 @@ jobs:
     container:
       image: archlinux:base-devel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.guard.outputs.tag }}
 
@@ -241,7 +241,7 @@ jobs:
       group: release-backmerge-develop
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.guard.outputs.sha }}
           persist-credentials: false
@@ -258,9 +258,9 @@ jobs:
 
       - name: Create repository-scoped App token
         id: app
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ vars.RELEASE_BACKMERGE_APP_ID }}
+          client-id: ${{ vars.RELEASE_BACKMERGE_APP_ID }}
           private-key: ${{ secrets.RELEASE_BACKMERGE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}

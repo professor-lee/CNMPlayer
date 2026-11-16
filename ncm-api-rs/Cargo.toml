@@ -5,7 +5,6 @@ edition = "2024"
 description = "Netease Cloud Music API Rust SDK"
 license = "WTFPL"
 repository = "https://github.com/imsyy/ncm-api-rs"
-homepage = "https://github.com/imsyy/ncm-api-rs"
 keywords = ["netease", "cloud-music", "api"]
 
 [dependencies]

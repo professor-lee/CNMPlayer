@@ -2,7 +2,7 @@
 # Run as root inside the Arch Linux AUR job container.
 set -euo pipefail
 : "${AUR_SSH_KEY:?AUR_SSH_KEY is not set}"
-pacman -Syu --noconfirm git openssh curl
+pacman -Syu --noconfirm --needed git openssh curl
 useradd -m builder
 install -d -m700 -o builder -g builder /home/builder/.ssh
 printf '%s\n' "$AUR_SSH_KEY" > /home/builder/.ssh/aur_key
