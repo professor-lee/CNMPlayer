@@ -9,11 +9,16 @@ impl ApiClient {
     /// 私人 FM 模式
     /// 对应 /personal/fm/mode
     pub async fn personal_fm_mode(&self, query: &Query) -> Result<ApiResponse> {
-        let data = json!({
-            "mode": query.get_or("mode", "DEFAULT"),
-            "subMode": query.get_or("submode", ""),
-            "limit": query.get_or("limit", "3").parse::<i64>().unwrap_or(3)
+        // 上游只发送调用方给出的 mode / subMode，缺省时由服务端选默认模式。
+        let mut data = json!({
+            "limit": query.get_i64("limit", 3)
         });
+        if let Some(mode) = query.get("mode") {
+            data["mode"] = json!(mode);
+        }
+        if let Some(sub_mode) = query.get("submode") {
+            data["subMode"] = json!(sub_mode);
+        }
         self.request(
             "/api/v1/radio/get",
             data,
