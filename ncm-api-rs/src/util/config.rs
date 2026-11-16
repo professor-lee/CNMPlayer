@@ -19,7 +19,8 @@ pub const VIVID_COOKIE_OVERRIDES: [(&str, &str); 2] = [("os", "android"), ("appv
 pub const DOMAIN: &str = "https://music.163.com";
 pub const ENCRYPT: bool = true;
 pub const ENCRYPT_RESPONSE: bool = false;
-pub const CHECK_TOKEN: &str = "9ca17ae2e6ffcda170e2e6ee8af14fbabdb988f225b3868eb2c15a879b9a83d274a790ac8ff54a97b889d5d42af0feaec3b92af58cff99c470a7eafd88f75e839a9ea7c14e909da883e83fb692a3abdb6b92adee9e";
+/// 易盾反作弊 token 获取地址（上游 dunDomainV3 + 网易云 productNumber）
+pub const ANTI_CHEAT_TOKEN_URL: &str = "https://ac.dun.163yun.com/v3/b?pn=YD00000558929251";
 
 /// 资源类型映射表
 pub static RESOURCE_TYPE_MAP: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| {

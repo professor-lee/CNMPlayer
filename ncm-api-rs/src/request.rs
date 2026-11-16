@@ -17,6 +17,12 @@ use std::time::Duration;
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// 上游获取易盾 token 的超时
+const ANTI_CHEAT_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
+/// 易盾 JSONP 回包：null([状态码,时间戳,"token"])
+static ANTI_CHEAT_TOKEN_REGEX: LazyLock<regex_lite::Regex> =
+    LazyLock::new(|| regex_lite::Regex::new(r#"null\(\[(\d+),\d+,"([^"]+)"\]\)"#).unwrap());
+
 /// 特殊状态码集合（视为 200）
 static SPECIAL_STATUS_CODES: LazyLock<std::collections::HashSet<i64>> =
     LazyLock::new(|| [201, 302, 400, 502, 800, 801, 802, 803].into());
@@ -155,6 +161,7 @@ pub struct RequestOption {
     pub random_cn_ip: bool,
     pub e_r: Option<bool>,
     pub domain: Option<String>,
+    /// 为 true 时请求前实时获取易盾反作弊 token，放入 X-antiCheatToken
     pub check_token: bool,
     /// 覆盖请求 cookie 中的字段（如 scrobble 的 os=osx、vivid 的安卓客户端版本）
     pub cookie_overrides: Vec<(&'static str, &'static str)>,
@@ -237,6 +244,12 @@ impl ApiClient {
             ));
         }
         let mut headers = HeaderMap::new();
+        // 上游每次实时获取、不缓存；获取失败时与上游一致发送空 token
+        let anti_cheat_token = if options.check_token {
+            Some(self.anti_cheat_token().await)
+        } else {
+            None
+        };
 
         // IP 伪装
         let ip = options.real_ip.clone().or_else(|| {
@@ -353,6 +366,9 @@ impl ApiClient {
                     .as_deref()
                     .unwrap_or_else(|| choose_user_agent("weapi", "pc"));
                 headers.insert(USER_AGENT, header_value(ua));
+                if let Some(token) = &anti_cheat_token {
+                    headers.insert("X-antiCheatToken", header_value(token));
+                }
 
                 data["csrf_token"] = Value::String(csrf_token);
                 encrypt_data = crypto::weapi(&data);
@@ -409,6 +425,9 @@ impl ApiClient {
                 headers.insert("x-buildver", header_value(&buildver));
                 if let Some(music_u) = cookie_map.get("MUSIC_U") {
                     headers.insert("x-music-u", header_value(music_u));
+                }
+                if let Some(token) = &anti_cheat_token {
+                    headers.insert("X-antiCheatToken", header_value(token));
                 }
 
                 let mut xeapi_cookie = cookie_map.clone();
@@ -494,8 +513,8 @@ impl ApiClient {
                 );
                 header_map.insert("requestId".to_string(), request_id);
 
-                if options.check_token {
-                    header_map.insert("X-antiCheatToken".to_string(), CHECK_TOKEN.to_string());
+                if let Some(token) = &anti_cheat_token {
+                    header_map.insert("X-antiCheatToken".to_string(), token.clone());
                 }
 
                 if let Some(music_u) = cookie_map.get("MUSIC_U") {
@@ -631,6 +650,31 @@ impl ApiClient {
             decode_response_body(&bytes, encrypted_response)?
         };
         response_from_body(status_code, body, resp_cookies)
+    }
+
+    /// 易盾反作弊 token（上游 register_checktoken_v3）。
+    ///
+    /// 上游的 v2 需在浏览器环境运行易盾 Watchman JS，原生客户端无法复现；
+    /// v3 同为易盾为网易云签发的实时 token，失败时返回空串。
+    async fn anti_cheat_token(&self) -> String {
+        let fetch = async {
+            let body = self
+                .client
+                .get(ANTI_CHEAT_TOKEN_URL)?
+                .send()
+                .await?
+                .text()
+                .await?;
+            Ok::<_, NcmError>(body)
+        };
+        let Ok(Ok(body)) = compio::time::timeout(ANTI_CHEAT_TOKEN_TIMEOUT, fetch).await else {
+            return String::new();
+        };
+        ANTI_CHEAT_TOKEN_REGEX
+            .captures(&body)
+            .filter(|captures| &captures[1] == "200")
+            .map(|captures| captures[2].to_string())
+            .unwrap_or_default()
     }
 
     /// 取 xeapi 公钥（上游 register_xeapikey）：进程内缓存，首次使用时向
