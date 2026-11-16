@@ -49,9 +49,11 @@ fn api_endpoint(uri: &str) -> Result<&str> {
         })
 }
 
+/// 加密回包解密失败时与上游一致退回原文：服务端的错误回包常是未加密的明文 JSON。
 fn decode_response_body(bytes: &[u8], encrypted: bool) -> Result<Value> {
     if encrypted {
         crypto::eapi_res_decrypt_bytes(bytes)
+            .or_else(|error| serde_json::from_slice(bytes).map_err(|_| error))
     } else {
         serde_json::from_slice(bytes)
             .map_err(|source| NcmError::response_decode("plain", bytes.len(), source))
@@ -241,7 +243,7 @@ impl ApiClient {
         let mut cookie_map = cookie_to_json(cookie_str);
 
         // 注入必要的 cookie 字段
-        let ntes_nuid = random_hex(16);
+        let ntes_nuid = random_hex(32);
         let os = get_os_config(cookie_map.get("os").map(|s| s.as_str()).unwrap_or("pc"));
         let now_ts = chrono::Utc::now().timestamp_millis().to_string();
 
@@ -303,10 +305,17 @@ impl ApiClient {
         } else {
             options.crypto.clone()
         };
-        let encrypted_response =
-            crypto_type == CryptoType::Eapi && options.e_r.unwrap_or(ENCRYPT_RESPONSE);
 
+        // 与上游一致：所有加密方式都带 e_r；只有 eapi/weapi 的回包会按 e_r 加密。
         let mut data = data;
+        let e_r = options
+            .e_r
+            .or_else(|| data.get("e_r").and_then(Value::as_bool))
+            .unwrap_or(ENCRYPT_RESPONSE);
+        data["e_r"] = Value::Bool(e_r);
+        let encrypted_response =
+            matches!(crypto_type, CryptoType::Eapi | CryptoType::Weapi) && e_r;
+
         let url: String;
         let encrypt_data: HashMap<String, String>;
         let domain = options.domain.as_deref().unwrap_or("");
@@ -426,21 +435,18 @@ impl ApiClient {
                     .unwrap_or_else(|| choose_user_agent("api", "iphone"));
                 headers.insert(USER_AGENT, header_value(ua));
 
-                let api_domain = if domain.is_empty() {
-                    API_DOMAIN
-                } else {
-                    domain
-                };
-
                 if crypto_type == CryptoType::Eapi {
-                    // 注入 header 和 e_r
+                    // 注入 header
                     let header_value = serde_json::to_value(&header_map).unwrap();
                     data["header"] = header_value;
 
-                    data["e_r"] = Value::Bool(encrypted_response);
-
+                    let eapi_domain = if domain.is_empty() {
+                        EAPI_DOMAIN
+                    } else {
+                        domain
+                    };
                     encrypt_data = crypto::eapi(uri, &data);
-                    url = format!("{}/eapi/{}", api_domain, endpoint);
+                    url = format!("{}/eapi/{}", eapi_domain, endpoint);
                 } else {
                     // api 明文
                     encrypt_data = if let Value::Object(map) = &data {
@@ -457,6 +463,11 @@ impl ApiClient {
                             .collect()
                     } else {
                         HashMap::new()
+                    };
+                    let api_domain = if domain.is_empty() {
+                        API_DOMAIN
+                    } else {
+                        domain
                     };
                     url = format!("{}{}", api_domain, uri);
                 }
