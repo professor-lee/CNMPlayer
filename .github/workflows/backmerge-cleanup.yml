@@ -1,0 +1,44 @@
+name: Backmerge cleanup
+
+# 回合并 PR 合并进 develop 后删除临时分支 release-backmerge/<tag>。
+# pull_request_target 使用 develop 上的 workflow 定义，且不检出 PR 代码；
+# 只在分支仍指向 PR 合并时的 head SHA 时删除，被改动过的分支保留给维护者处理。
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  delete-branch:
+    name: Delete merged backmerge branch
+    if: >-
+      github.event.pull_request.merged == true
+      && startsWith(github.event.pull_request.head.ref, 'release-backmerge/')
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Delete branch if still at merged head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if ! current=$(gh api "repos/$GH_REPO/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null); then
+            echo "$BRANCH already absent; nothing to delete"
+            exit 0
+          fi
+          if [ "$current" != "$HEAD_SHA" ]; then
+            echo "::error::$BRANCH moved to $current (merged head $HEAD_SHA); keeping it for manual review"
+            exit 1
+          fi
+          gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$BRANCH"
+          echo "Deleted $BRANCH ($HEAD_SHA)"

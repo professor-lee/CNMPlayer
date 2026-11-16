@@ -132,7 +132,7 @@ cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 
 若 job 检查 PR 时必需检查已全部通过，则使用预期 head SHA 请求正常 merge commit，不对已经可合并的 PR 再启用 auto-merge。GitHub 仍执行相同门禁，App 没有 bypass 权限。
 
-tag/SHA 不符、调度前 `main` 已前进、回合并 head 被改动、必需检查缺失、冲突或合并性迟迟未确定，都会停止自动化并交维护者处理。已有匹配 PR 会复用；关闭的 PR 不会被静默重开或替换。不强推、不删分支。冲突应通过另一条经审查的 PR 解决，不修改固定 head；发布提交已被包含后重跑即可跳过。`develop → main` 发版仍须维护者在网页手动确认 PR。仅包含本工作流的新 tag 支持自动回合并，重跑旧发布不会补装该功能。
+tag/SHA 不符、调度前 `main` 已前进、回合并 head 被改动、必需检查缺失、冲突或合并性迟迟未确定，都会停止自动化并交维护者处理。已有匹配 PR 会复用；关闭的 PR 不会被静默重开或替换。发版 job 不强推、不删分支。`release-backmerge/<tag>` PR 合并进 `develop` 后，`backmerge-cleanup.yml` 仅在该分支仍指向合并时的 head SHA 时删除它；分支已被改动则保留并令清理 job 失败，交维护者检查。未合并或已关闭的 PR 保留分支。冲突应通过另一条经审查的 PR 解决，不修改固定 head；发布提交已被包含后重跑即可跳过。`develop → main` 发版仍须维护者在网页手动确认 PR。仅包含本工作流的新 tag 支持自动回合并，重跑旧发布不会补装该功能。
 
 ### AUR 打包维护
 
