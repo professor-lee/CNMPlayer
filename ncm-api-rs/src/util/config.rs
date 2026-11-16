@@ -5,6 +5,17 @@ use std::sync::LazyLock;
 pub const API_DOMAIN: &str = "https://interface.music.163.com";
 /// eapi 走 PC 客户端网关（上游 APP_CONF.eapiDomain）
 pub const EAPI_DOMAIN: &str = "https://interfacepc.music.163.com";
+/// xeapi 走安卓客户端网关（上游 APP_CONF.xeapiDomain）
+pub const XEAPI_DOMAIN: &str = "https://interface3.music.163.com";
+/// xeapi 请求与公钥注册使用的安卓客户端 UA（上游 userAgentMap.api.android）
+pub const XEAPI_USER_AGENT: &str = "NeteaseMusic/9.5.61.260802021928(9005061);Dalvik/2.1.0 (Linux; U; Android 12; HBN-AL00 Build/cd737a2.0)";
+/// 非安卓 cookie 走 xeapi 时使用的安卓客户端版本
+pub const XEAPI_DEFAULT_APPVER: &str = "9.1.65";
+pub const XEAPI_DEFAULT_OSVER: &str = "16";
+/// /api/bsr/sk/get 注册公钥时声明的客户端版本
+pub const XEAPI_REGISTER_APPVER: &str = "9.5.61";
+/// vivid（臻音全景声）档位必须以该安卓客户端身份请求（上游 song_url_v1 / song_download_url_v1）
+pub const VIVID_COOKIE_OVERRIDES: [(&str, &str); 2] = [("os", "android"), ("appver", "9.5.61")];
 pub const DOMAIN: &str = "https://music.163.com";
 pub const ENCRYPT: bool = true;
 pub const ENCRYPT_RESPONSE: bool = false;

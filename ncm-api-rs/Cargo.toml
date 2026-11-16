@@ -27,6 +27,11 @@ thiserror = "2"
 urlencoding = "2"
 chrono = "0.4"
 regex-lite = "0.1"
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+hmac = "0.13"
+sha2 = "0.11"
+flate2 = "1"
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 
 [dev-dependencies]
 compio = { version = "0.19", features = ["macros"] }

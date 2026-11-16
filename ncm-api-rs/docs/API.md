@@ -905,9 +905,11 @@ let result = client.song_url(&query).await?;
 
 #### 获取音乐 url - 新版
 
-说明 : 使用注意事项同上
+说明 : 使用注意事项同上。与上游一致走 xeapi（安卓客户端协议，`interface3.music.163.com`），首次调用时自动向 `/api/bsr/sk/get` 注册公钥并在进程内缓存
 
-**必选参数 :** `id` : 音乐 id ; `level` : 播放音质等级，分为 `standard` => 标准，`higher` => 较高，`exhigh` => 极高，`lossless` => 无损，`hires` => Hi-Res，`jyeffect` => 高清环绕声，`sky` => 沉浸环绕声，`dolby` => 杜比全景声，`jymaster` => 超清母带
+**必选参数 :** `id` : 音乐 id ; `level` : 播放音质等级，分为 `standard` => 标准，`higher` => 较高，`exhigh` => 极高，`lossless` => 无损，`hires` => Hi-Res，`jyeffect` => 高清环绕声，`vivid` => 臻音全景声，`sky` => 沉浸环绕声，`dolby` => 杜比全景声，`jymaster` => 超清母带
+
+**可选参数 :** `immerseType` : `level=sky` 时的沉浸声类型，支持 `c512`、`ste2`、`aac2`、`c51`、`ste`、`aac`，默认 `c51`
 
 **方法名 :** `song_url_v1`
 
