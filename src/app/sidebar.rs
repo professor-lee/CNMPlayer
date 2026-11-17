@@ -21,7 +21,7 @@ use crate::render::motion::Curve;
 use crate::render::motion::Toggle;
 use crate::render::motion::Trail;
 use anyhow::Result;
-use ncm_api::ApiResponse;
+use cria::ApiResponse;
 use std::pin::Pin;
 use std::time::Duration;
 use std::time::Instant;

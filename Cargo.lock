@@ -637,6 +637,7 @@ dependencies = [
  "anyhow",
  "compio",
  "cpal",
+ "cria-api",
  "crossterm",
  "cyper",
  "directories",
@@ -648,7 +649,6 @@ dependencies = [
  "lofty",
  "log",
  "mpris-server",
- "ncm-api",
  "parking_lot",
  "qrcode",
  "ratatui",
@@ -1081,6 +1081,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "cria-api"
+version = "0.1.0"
+source = "git+https://github.com/professor-lee/cria?rev=e49c9e2fc09b1ca73ac535f4461be8049ff1969e#e49c9e2fc09b1ca73ac535f4461be8049ff1969e"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "base64 0.23.1",
+ "cbc",
+ "chrono",
+ "compio",
+ "cyper",
+ "ecb",
+ "flate2",
+ "hex",
+ "hmac",
+ "http",
+ "md-5",
+ "rand 0.10.3",
+ "regex-lite",
+ "rsa",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sha2",
+ "thiserror 2.0.21",
+ "urlencoding",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -2564,35 +2594,6 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "tempfile",
-]
-
-[[package]]
-name = "ncm-api"
-version = "0.1.0"
-dependencies = [
- "aes",
- "aes-gcm",
- "base64 0.23.1",
- "cbc",
- "chrono",
- "compio",
- "cyper",
- "ecb",
- "flate2",
- "hex",
- "hmac",
- "http",
- "md-5",
- "rand 0.10.3",
- "regex-lite",
- "rsa",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "sha2",
- "thiserror 2.0.21",
- "urlencoding",
- "x25519-dalek",
 ]
 
 [[package]]
