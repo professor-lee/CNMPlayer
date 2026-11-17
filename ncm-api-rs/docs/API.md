@@ -8,6 +8,10 @@
 
 响应 JSON 格式错误会返回 `ResponseDecode`（仅包含格式、响应长度与底层 serde 错误，不回显响应正文）；加密响应解码失败会返回 `Crypto`。`ApiClient::request` 从 HTTP 发送到完整响应 body 共用一个 deadline（默认 `ApiClient::DEFAULT_TIMEOUT` 即 30 秒，可用 `set_timeout` 调整），超限返回 `Timeout { timeout }`；其他传输错误仍返回 `Http`。
 
+**客户端状态。** `ApiClient` 的克隆共享同一会话：经客户端发出、且未在 `Query` 中单独指定 cookie 的请求，会自动合并响应的 Set-Cookie（`Max-Age<=0` 或已过期的 `Expires` 视为删除）；`set_cookie` / `clear_cookie` 整体替换或清空会话，此前发出的请求不会再把旧 cookie 写回。`cookie()` 取出当前会话供调用方持久化，`cookie_value(name)` 读单项（如 `MUSIC_U` 判断登录态）。`Query` 里的 cookie 只作用于该次请求，不读写会话。设备 ID 在 `new` 时随机生成，调用方应持久化并通过 `set_device_id` 传入；xeapi 公钥与会话按客户端保存。
+
+**请求头与网络能力。** 库发出的每个请求都显式设置 User-Agent 与 Referer，不继承注入 `cyper::Client` 的默认请求头。TLS 与 API 回包解压由库的 `native-tls`、`gzip`、`brotli` feature（默认开启）声明。
+
 ---
 
 ## 目录

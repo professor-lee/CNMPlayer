@@ -207,7 +207,8 @@ The root holds (files appear as you use the app):
 
 - `config/default.toml` — application, playback, keybind and cache settings
 - `themes/*.toml` — theme files (the key is the file's `name` field, falling back to the file name); any extra `.toml` dropped here becomes selectable
-- `auth/session.toml` — the persisted login cookie
+- `auth/session.toml` — the persisted login cookie (refreshed cookies from the server are written back)
+- `auth/device.toml` — the persisted device ID; kept across logouts so the client keeps one device identity
 - `playback/session.toml` — the remembered queue (written while `playback_memory` is on)
 - `private_roam/session.toml` — the private-roam list, its last played position and the cached cover
 
