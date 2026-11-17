@@ -1,36 +1,73 @@
 # Third-party notices
 
-CNMPlayer includes vendored source, adaptations of third-party algorithms and Cargo dependencies.
-The notices below preserve attribution and licensing for the listed components in source and binary
-distributions. This file accompanies the executable and CNMPlayer's `LICENSE` in release archives;
+CNMPlayer includes adaptations of third-party algorithms and depends on Cargo crates, including the
+CRIA API client. The notices below preserve attribution and licensing for the listed components in source
+and binary distributions. This file accompanies the executable and CNMPlayer's `LICENSE` in release archives;
 the component licenses below are not replaced by CNMPlayer's AGPL-3.0-only license.
 
-## ncm-api-rs (crate name: ncm-api)
+## CRIA (crate name: cria-api)
 
-- Project: ncm-api-rs
-- Upstream: https://github.com/imsyy/ncm-api-rs
-- Local path in this repository: `ncm-api-rs/`
-- Declared upstream license: WTFPL (Version 2)
-- License text in this repository: `ncm-api-rs/LICENSE`
-- Usage in this project: NetEase Cloud Music API client used by CNMPlayer networking features
-- Local modification status: vendored source includes CNMPlayer maintenance changes; the local license file preserves the upstream WTFPL text
+- Project: CRIA (Cloud-music Rust Integration API)
+- Repository: https://github.com/professor-lee/cria
+- License: MIT
+- Usage in this project: NetEase Cloud Music API client used by CNMPlayer networking features; compiled into
+  the executable as a Cargo dependency
+- Origin: CRIA was maintained in this repository as the vendored `ncm-api-rs/` crate and split into its own
+  repository with its history preserved. Its code base started from [ncm-api-rs](https://github.com/imsyy/ncm-api-rs)
+  (WTFPL v2) and ports [NeteaseCloudMusicApi Enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)
+  (MIT). CRIA's `ACKNOWLEDGEMENTS.md` preserves both upstream notices; the MIT notice that applies to the
+  ported code is reproduced below as well.
 
-### Upstream license text (WTFPL v2)
+### CRIA license text
 
 ```text
-            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
-                    Version 2, December 2004
+MIT License
 
- Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>
+Copyright (c) 2026 Bingcheng Li and CRIA contributors
 
- Everyone is permitted to copy and distribute verbatim or modified
- copies of this license document, and changing it is allowed as long
- as the name is changed.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
-   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-  0. You just DO WHAT THE FUCK YOU WANT TO.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### NeteaseCloudMusicApi Enhanced license text (ported by CRIA)
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2013-2022 Binaryify
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 ```
 
 ## codex (OpenAI codex-cli, Rust TUI)

@@ -360,7 +360,7 @@ sudo apt install -y build-essential cmake pkg-config \
 - Rust 2024
 - TUI：ratatui + crossterm
 - 异步与网络：compio + cyper
-- 网易云 API：`ncm-api`（由 [ncm-api-rs](https://github.com/imsyy/ncm-api-rs) 以 path 依赖形式 vendored 进 `ncm-api-rs/`）
+- 网易云 API：[CRIA](https://github.com/professor-lee/cria)（crate `cria-api`，导入名 `cria`），由本仓库拆分而来，见「相关项目」
 - 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire
 - 元数据、封面与下载标签：image + qrcode + lofty
 - 图像渲染：ratatui-image + chafa
@@ -373,17 +373,18 @@ sudo apt install -y build-essential cmake pkg-config \
 ```bash
 cargo run                              # 开发构建
 cargo build --release                  # release 构建
-cargo test --workspace --all-targets   # 根 crate 与 vendored crate 测试
+cargo test --workspace --all-targets   # 全部 crate 测试
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI（`ci.yml`）会在 stable 上执行默认特性和 `--no-default-features` 的 check/test，并对主程序与 vendored crate 执行 fmt、clippy 门禁，外加 vendored crate 的测试。
-发版（`release.yml`）会在发布前执行根 crate 与 vendored crate 测试，随 `x86_64` 与 `aarch64` 压缩包发布 `SHA256SUMS`，并维护 AUR 包。
+CI（`ci.yml`）会在 stable 上执行默认特性和 `--no-default-features` 的 check/test，并执行 fmt、clippy 门禁；API 客户端由 CRIA 仓库自身的 CI 检查。
+发版（`release.yml`）会在发布前执行测试门禁，随 `x86_64` 与 `aarch64` 压缩包发布 `SHA256SUMS`，并维护 AUR 包。
 
 ## 相关项目
 
-- [ncm-api-rs](https://github.com/imsyy/ncm-api-rs)：vendored 在 `ncm-api-rs/` 目录中的网易云音乐 API 客户端
+- [CRIA](https://github.com/professor-lee/cria)（Cloud-music Rust Integration API）：CNMPlayer 使用的网易云音乐 API 客户端。它原先作为 vendored 的 `ncm-api-rs/` crate 在本仓库中开发，现已保留提交历史拆分为独立的 MIT 许可仓库，供其他 Rust 项目使用。接口改动与请求层修复今后提交到 CRIA；在其首次发布到 crates.io 之前，CNMPlayer 在 `Cargo.toml` 中以 Git 依赖锁定提交。
+- [ncm-api-rs](https://github.com/imsyy/ncm-api-rs)：CRIA 代码基础所源自的早期 Rust 移植
 
 ## 免责声明
 
@@ -393,7 +394,7 @@ CI（`ci.yml`）会在 stable 上执行默认特性和 `--no-default-features` �
 
 CNMPlayer 采用 [AGPL-3.0-only](LICENSE) 许可证。
 
-vendored 代码、改写算法与 FFT 依赖的第三方归属和许可证声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，预编译发布包也包含该文件。
+CRIA 依赖、改写算法与 FFT 依赖的第三方归属和许可证声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，预编译发布包也包含该文件。
 
 标准引用元数据和上游依赖请查看 [CITATION.cff](CITATION.cff)。
 

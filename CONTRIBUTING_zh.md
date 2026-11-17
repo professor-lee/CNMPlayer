@@ -16,9 +16,11 @@ CNMPlayer 是一个运行在终端中的网易云音乐客户端（Rust + TUI）
 
 ## 开发环境
 
-Rust 1.95 或更新版本。`rust-toolchain.toml` 请求当前 stable 工具链，使用 rustup 时 `cargo` 会选用已安装的最新 stable。根 crate（`cnmplayer`）与 vendored 的 `ncm-api` crate 均使用 edition 2024。
+Rust 1.95 或更新版本。`rust-toolchain.toml` 请求当前 stable 工具链，使用 rustup 时 `cargo` 会选用已安装的最新 stable。crate 使用 edition 2024。
 
-锁定依赖需要 Rust 1.95：`compio-driver 0.12.4` 使用了在 1.95 稳定的 [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html)。依赖 manifest 声明曾提示 1.90，但真实 1.90 构建在 `compio-buf 0.8.3` 的 `MaybeUninit` slice API 处失败，1.93 构建又在 `cfg_select!` 处失败。单看 edition 2024 只需要 1.85；edition 与不完整的 manifest 声明都不能代替真实依赖 MSRV 验证。根 crate 与 vendored crate 共用一个 workspace lockfile。
+锁定依赖需要 Rust 1.95：`compio-driver 0.12.4` 使用了在 1.95 稳定的 [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html)。依赖 manifest 声明曾提示 1.90，但真实 1.90 构建在 `compio-buf 0.8.3` 的 `MaybeUninit` slice API 处失败，1.93 构建又在 `cfg_select!` 处失败。单看 edition 2024 只需要 1.85；edition 与不完整的 manifest 声明都不能代替真实依赖 MSRV 验证。
+
+网易云 API 客户端是独立的 [CRIA](https://github.com/professor-lee/cria) crate（`cria-api`，导入名 `cria`）。在其首次发布到 crates.io 之前，`Cargo.toml` 按 Git 提交锁定它。新增接口与请求层改动应提交到 CRIA 仓库，合入后再在本仓库用单独的 PR 更新锁定的提交。想在本地试用尚未合入的 CRIA 改动时，用 `[patch."https://github.com/professor-lee/cria"]` 指向本地检出，且不要提交该配置。
 
 系统构建依赖 —— 与 CI 在 `ubuntu-24.04` 上安装的列表一致：
 
@@ -45,7 +47,7 @@ sudo pacman -S --needed base-devel cmake pkg-config alsa-lib chafa pipewire open
 ```bash
 cargo run                              # 开发构建
 cargo build --release                  # release 构建
-cargo test --workspace --all-targets   # 根 crate 与 vendored crate 测试
+cargo test --workspace --all-targets   # 全部 crate 测试
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
@@ -64,7 +66,7 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 | `src/data/` | 共享 `Config`，以及资产、原子持久化、会话、播放/私人漫游状态与主题加载。 |
 | `src/render/` | 封面与图形渲染，以及彩蛋形象的帧数据。 |
 | `src/tmplayer/` | 内置全屏播放 UI、渲染器与音频可视化辅助模块；播放由主程序负责，配置使用共享 `Config`。 |
-| `ncm-api-rs/` | 以 workspace path 依赖形式 vendored 的 `ncm-api` crate，来自 [imsyy/ncm-api-rs](https://github.com/imsyy/ncm-api-rs)；自带 `rustfmt.toml`、`clippy.toml` 与 `docs/API.md`。 |
+| （依赖）`cria-api` | 网易云 API 客户端，维护于 [professor-lee/cria](https://github.com/professor-lee/cria)；接口文档见该仓库的 `docs/API.md`。 |
 | `config/default.toml` | 默认配置模板。启动时程序会据此在资产根目录下写入并修复 `config/default.toml`。 |
 | `themes/` | 内置 20 款 TOML 配色主题（Catppuccin 各变体、ayu、everforest、monokai、nord、rose pine、solarized、tomorrow、zenburn、zinc 与 `system`；默认 `frappe`）。 |
 | `about/` | About 弹窗的内容 —— 链接、QQ 群、点阵图案。 |
@@ -85,18 +87,15 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 
 ## 格式与 CI
 
-格式化工具是 rustfmt，仓库自带配置：
+格式化工具是 rustfmt，仓库在根目录 `.rustfmt.toml` 中自带配置：`max_width = 100`、`edition = "2024"`。
 
-- 根目录 `.rustfmt.toml`：`max_width = 100`、`edition = "2024"`；
-- `ncm-api-rs/rustfmt.toml`：`edition = "2024"`、`max_width = 100`、`use_field_init_shorthand = true` —— 动过 vendored crate 时一并执行 `cargo fmt --manifest-path ncm-api-rs/Cargo.toml`。
-
-Clippy：`cargo clippy --all-targets` 只是本地快速检查，下面的门禁会带上 `-D warnings`；`ncm-api-rs/clippy.toml` 把 `too-many-arguments-threshold` 放宽到 8、`type-complexity-threshold` 放宽到 300。
+Clippy：`cargo clippy --all-targets` 只是本地快速检查，下面的门禁会带上 `-D warnings`。
 
 CI（`.github/workflows/ci.yml`）在面向 `main` / `develop` 的 PR 以及推送到 `develop` 时触发。所有 job 都跑在 `ubuntu-24.04` 上；`build-and-test` 与 `quality` 安装上面列出的系统依赖：
 
 - `build-and-test`：在 stable 上以默认特性与 `--no-default-features` 两组运行 `cargo check` 与 `cargo test`（`--workspace --locked --all-targets`）。
-- `quality`：在 stable 上并装好 `rustfmt`、`clippy` 组件后运行 `cargo fmt --all -- --check` 与 `cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check`，随后是三次带 `-D warnings` 的 clippy —— 根 crate 的 `--all-features`、根 crate 的 `--no-default-features`，以及经 manifest 指向 vendored crate。
-- `vendored-tests`：`cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets`。
+- `quality`：在 stable 上并装好 `rustfmt`、`clippy` 组件后运行 `cargo fmt --all -- --check`，随后是两次带 `-D warnings` 的 clippy —— `--all-features` 与 `--no-default-features`。
+- `aur-packaging`：用隔离的本地 Git 远端检查 AUR 配方（见下文「AUR 打包维护」）。
 
 对应的本地命令（按 job 分组）：
 
@@ -109,18 +108,13 @@ cargo test --workspace --locked --all-targets --no-default-features
 
 # quality（仅 stable）
 cargo fmt --all -- --check
-cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
-cargo clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
-
-# vendored-tests
-cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 ```
 
-随手一条 `cargo clippy` 不等同于门禁：`quality` 额外要求 `-D warnings`、覆盖两种特性组合，并单独对 vendored crate 执行 clippy，因此本地单独跑通并不代表该 job 会通过。
+随手一条 `cargo clippy` 不等同于门禁：`quality` 额外要求 `-D warnings` 并覆盖两种特性组合，因此本地单独跑通并不代表该 job 会通过。
 
-版本号与打包不属于普通 PR 的范围：发布由 `v*` tag 触发，tag 必须与 `Cargo.toml` 里的版本号一致；`release.yml` 会在发布前测试 workspace 两个 crate，再发布 amd64/aarch64 压缩包、`SHA256SUMS` 与 AUR 包。
+版本号与打包不属于普通 PR 的范围：发布由 `v*` tag 触发，tag 必须与 `Cargo.toml` 里的版本号一致；`release.yml` 会在发布前执行测试门禁，再发布 amd64/aarch64 压缩包、`SHA256SUMS` 与 AUR 包。
 
 ### 发版后回合并
 
@@ -128,7 +122,7 @@ cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 
 专用私有 GitHub App 仅安装到本仓库。配置仓库变量 `RELEASE_BACKMERGE_APP_ID` 和 secret `RELEASE_BACKMERGE_APP_PRIVATE_KEY`；App 授予 Contents、Pull requests、Workflows 读写权限，Metadata 只读为隐含权限。Workflows 权限用于同步包含工作流文件改动的发布提交。不要授予 Administration 权限，也不要将 App 加入任何规则的 bypass 名单。安装令牌限制在本仓库，job 结束后撤销。缺少凭据时回合并 job 明确失败，不静默跳过。
 
-仓库需开启 auto-merge。`develop-ci-protect` 规则要求 PR 及五项 GitHub Actions 检查：`stable / default`、`stable / no-default-features`、`fmt and clippy`、`ncm-api tests`、`AUR packaging integration`。管理员保留 bypass，以兼容维护者直接推送版本号或文档；App 不可绕过。功能 PR 仍可 squash，但发版回合并只启用原生 merge-commit auto-merge，不绕过检查。此路径不要启用 merge queue。必需检查不要求 head 更新至最新 base：发布 head 保持不变，PR CI 检查与当前 base 的合并结果。
+仓库需开启 auto-merge。`develop-ci-protect` 规则要求 PR 及四项 GitHub Actions 检查：`stable / default`、`stable / no-default-features`、`fmt and clippy`、`AUR packaging integration`。管理员保留 bypass，以兼容维护者直接推送版本号或文档；App 不可绕过。功能 PR 仍可 squash，但发版回合并只启用原生 merge-commit auto-merge，不绕过检查。此路径不要启用 merge queue。必需检查不要求 head 更新至最新 base：发布 head 保持不变，PR CI 检查与当前 base 的合并结果。
 
 若 job 检查 PR 时必需检查已全部通过，则使用预期 head SHA 请求正常 merge commit，不对已经可合并的 PR 再启用 auto-merge。GitHub 仍执行相同门禁，App 没有 bypass 权限。
 
