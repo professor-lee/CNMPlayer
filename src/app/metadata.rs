@@ -162,7 +162,7 @@ enum LyricResponse {
     Retryable,
 }
 
-fn classify_lyric_response(response: anyhow::Result<ncm_api::ApiResponse>) -> LyricResponse {
+fn classify_lyric_response(response: anyhow::Result<cria::ApiResponse>) -> LyricResponse {
     let Ok(response) = response else {
         return LyricResponse::Retryable;
     };
@@ -208,7 +208,7 @@ fn classify_lyric_response(response: anyhow::Result<ncm_api::ApiResponse>) -> Ly
 }
 
 async fn fetch_lyrics_from(
-    mut fetch: impl AsyncFnMut(bool) -> anyhow::Result<ncm_api::ApiResponse>,
+    mut fetch: impl AsyncFnMut(bool) -> anyhow::Result<cria::ApiResponse>,
 ) -> Option<Vec<LyricLine>> {
     let first = classify_lyric_response(fetch(true).await);
     if let LyricResponse::Present(lines) = first {

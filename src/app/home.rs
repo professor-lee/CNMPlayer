@@ -14,9 +14,9 @@ use super::response::parse_value_as_string;
 use super::response::response_code;
 use super::roam::fetch_private_roam_page;
 use anyhow::Result;
+use cria::ApiResponse;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use ncm_api::ApiResponse;
 use serde_json::Value;
 
 pub(crate) struct HomeTile {

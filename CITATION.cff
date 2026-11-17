@@ -15,5 +15,5 @@ keywords:
 abstract: "CNMPlayer (Customized Netease Music Player) is a Rust-based TUI client for NetEase Cloud Music with login, search, playlist browsing, streaming playback, and an embedded fullscreen playback page."
 references:
   - type: generic
-    title: "ncm-api-rs"
-    url: "https://github.com/imsyy/ncm-api-rs"
+    title: "CRIA (Cloud-music Rust Integration API)"
+    url: "https://github.com/alpaca-herd/cria"

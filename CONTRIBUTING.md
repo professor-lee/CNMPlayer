@@ -25,9 +25,11 @@ to a terminal UI.
 
 ## Development environment
 
-Rust 1.95 or newer. `rust-toolchain.toml` requests the current stable toolchain, so with rustup `cargo` uses the latest installed stable. The root crate (`cnmplayer`) and the vendored `ncm-api` crate both use edition 2024.
+Rust 1.95 or newer. `rust-toolchain.toml` requests the current stable toolchain, so with rustup `cargo` uses the latest installed stable. The crate uses edition 2024.
 
-The locked dependencies require Rust 1.95: `compio-driver 0.12.4` uses [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html), stabilized in 1.95. Dependency manifest declarations suggested 1.90, but an actual 1.90 build failed at `compio-buf 0.8.3`'s `MaybeUninit` slice API and a 1.93 build failed at `cfg_select!`. Edition 2024 alone would only require 1.85; neither edition nor incomplete manifest declarations establish the real dependency MSRV. The root and vendored crate share one workspace lockfile.
+The locked dependencies require Rust 1.95: `compio-driver 0.12.4` uses [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html), stabilized in 1.95. Dependency manifest declarations suggested 1.90, but an actual 1.90 build failed at `compio-buf 0.8.3`'s `MaybeUninit` slice API and a 1.93 build failed at `cfg_select!`. Edition 2024 alone would only require 1.85; neither edition nor incomplete manifest declarations establish the real dependency MSRV.
+
+The NetEase API client is the separate [CRIA](https://github.com/alpaca-herd/cria) crate (`cria-api` on crates.io, imported as `cria`). Endpoint additions and request-layer changes belong in the CRIA repository; once a CRIA release contains them, bump the `cria-api` version here in a separate pull request. To try an unreleased CRIA change locally, add `[patch.crates-io] cria-api = { path = "../cria" }` pointing at your checkout and do not commit it.
 
 System build dependencies — the same list CI installs on `ubuntu-24.04`:
 
@@ -59,7 +61,7 @@ Commands:
 ```bash
 cargo run                              # development build
 cargo build --release                  # release build
-cargo test --workspace --all-targets   # root and vendored crate tests
+cargo test --workspace --all-targets   # all crate tests
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
@@ -80,7 +82,7 @@ with `--no-default-features` to drop it.
 | `src/data/` | Shared `Config` plus assets, atomic persistence, sessions, playback/private-roam state, and theme loading. |
 | `src/render/` | Cover and graphics rendering, plus the easter-egg mascot frames. |
 | `src/tmplayer/` | Embedded fullscreen playback UI, its renderers and audio visualization helpers; playback is owned by the host and configuration uses the shared `Config`. |
-| `ncm-api-rs/` | The `ncm-api` crate vendored from [imsyy/ncm-api-rs](https://github.com/imsyy/ncm-api-rs) as a workspace path dependency. It ships `rustfmt.toml`, `clippy.toml` and `docs/API.md`. |
+| (dependency) `cria-api` | The NetEase API client, maintained in [alpaca-herd/cria](https://github.com/alpaca-herd/cria); its endpoint reference is that repository's `docs/API.md` and [docs.rs/cria-api](https://docs.rs/cria-api). |
 | `config/default.toml` | The default configuration template. At startup the app writes and repairs `config/default.toml` under the asset root from it. |
 | `themes/` | 20 built-in TOML color themes (Catppuccin variants, ayu, everforest, monokai, nord, rose pine, solarized, tomorrow, zenburn, zinc and `system`; default `frappe`). |
 | `about/` | Content of the About modal — links, QQ group, braille art. |
@@ -101,17 +103,11 @@ with `--no-default-features` to drop it.
 
 ## Formatting and CI
 
-Formatting is `rustfmt`; the repository pins its own configuration:
-
-- root `.rustfmt.toml`: `max_width = 100`, `edition = "2024"`;
-- `ncm-api-rs/rustfmt.toml`: `edition = "2024"`, `max_width = 100`,
-  `use_field_init_shorthand = true` — run
-  `cargo fmt --manifest-path ncm-api-rs/Cargo.toml` when you touch the vendored
-  crate.
+Formatting is `rustfmt`; the repository pins its own configuration in the root
+`.rustfmt.toml`: `max_width = 100`, `edition = "2024"`.
 
 Linting is `cargo clippy --all-targets` — a quick local check. The gates below
-run it with `-D warnings`; `ncm-api-rs/clippy.toml` relaxes
-`too-many-arguments-threshold` to 8 and `type-complexity-threshold` to 300.
+run it with `-D warnings`.
 
 CI (`.github/workflows/ci.yml`) runs on pull requests targeting `main` / `develop` and on pushes to `develop`. Every job runs on `ubuntu-24.04`; `build-and-test` and `quality` install the system dependencies listed above:
 
@@ -119,13 +115,10 @@ CI (`.github/workflows/ci.yml`) runs on pull requests targeting `main` / `develo
   (`--workspace --locked --all-targets`) on stable, with default features and
   with `--no-default-features`.
 - `quality` runs on stable with the `rustfmt` and `clippy` components:
-  `cargo fmt --all -- --check` and
-  `cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check`, then three
-  clippy runs with `-D warnings` — the root crate with `--all-features`, the
-  root crate with `--no-default-features`, and the vendored crate through its
-  manifest.
-- `vendored-tests` runs
-  `cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets`.
+  `cargo fmt --all -- --check`, then two clippy runs with `-D warnings` — with
+  `--all-features` and with `--no-default-features`.
+- `aur-packaging` exercises the AUR recipes with isolated local Git remotes (see
+  *AUR packaging* below).
 
 The equivalent local commands, job by job:
 
@@ -139,20 +132,15 @@ cargo test --workspace --locked --all-targets --no-default-features
 
 # quality (stable only)
 cargo fmt --all -- --check
-cargo fmt --manifest-path ncm-api-rs/Cargo.toml -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
-cargo clippy --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets -- -D warnings
-
-# vendored-tests
-cargo test --manifest-path ncm-api-rs/Cargo.toml --locked --all-targets
 ```
 
-A bare `cargo clippy` is not the gate: the `quality` job adds `-D warnings`, covers both feature sets, and lints the vendored crate through its own manifest, so passing it locally does not mean that job will pass.
+A bare `cargo clippy` is not the gate: the `quality` job adds `-D warnings` and covers both feature sets, so passing it locally does not mean that job will pass.
 
 Version bumps and packaging are not part of a normal pull request: releases are
 triggered by a `v*` tag, the tag must equal the version in `Cargo.toml`, and
-`release.yml` tests both workspace crates before publishing amd64/aarch64 tarballs,
+`release.yml` runs the test gates before publishing amd64/aarch64 tarballs,
 their `SHA256SUMS`, and the AUR packages.
 
 ### Release backmerge
@@ -161,7 +149,7 @@ After a `v*` tag push completes builds, release tests, GitHub publication and AU
 
 The dedicated private GitHub App is installed only on this repository. Configure repository variable `RELEASE_BACKMERGE_APP_ID` and secret `RELEASE_BACKMERGE_APP_PRIVATE_KEY`; grant the App Contents, Pull requests and Workflows read/write permissions (Metadata read is implicit). Workflows permission permits synchronizing release commits that change workflow files. Do not grant Administration permission or add the App to any ruleset bypass list. Installation tokens are repository-scoped and revoked when the job ends. Missing credentials fail the backmerge job rather than silently skipping it.
 
-Enable repository auto-merge. The `develop-ci-protect` ruleset requires PRs and these five GitHub Actions checks: `stable / default`, `stable / no-default-features`, `fmt and clippy`, `ncm-api tests`, and `AUR packaging integration`. The repository administrator retains bypass for maintainer version/documentation pushes; the App does not. Feature PRs may still squash, but release backmerge requests use only native merge-commit auto-merge, without bypass. Do not enable a merge queue for this path. Required checks are not strict/up-to-date: the released head stays immutable while PR CI checks the merge with the current base.
+Enable repository auto-merge. The `develop-ci-protect` ruleset requires PRs and these four GitHub Actions checks: `stable / default`, `stable / no-default-features`, `fmt and clippy`, and `AUR packaging integration`. The repository administrator retains bypass for maintainer version/documentation pushes; the App does not. Feature PRs may still squash, but release backmerge requests use only native merge-commit auto-merge, without bypass. Do not enable a merge queue for this path. Required checks are not strict/up-to-date: the released head stays immutable while PR CI checks the merge with the current base.
 
 If all required checks have already passed when the job inspects the PR, it requests a normal merge commit with an expected-head SHA instead of enabling auto-merge on an already-ready PR. GitHub still enforces the same rules; the App has no bypass.
 

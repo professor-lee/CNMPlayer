@@ -253,7 +253,7 @@ impl App {
         let (saved_cookie, device_id) = compio::runtime::spawn_blocking(|| -> Result<_> {
             let cookie = session::load_cookie()?;
             let device_id =
-                session::load_or_create_device_id(ncm_api::util::device::generate_device_id)?;
+                session::load_or_create_device_id(cria::util::device::generate_device_id)?;
             Ok((cookie, device_id))
         })
         .await

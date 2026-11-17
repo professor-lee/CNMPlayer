@@ -1,4 +1,4 @@
-use ncm_api::ApiResponse;
+use cria::ApiResponse;
 use serde_json::Value;
 
 pub(super) fn response_page_has_more(

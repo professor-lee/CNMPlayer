@@ -18,10 +18,10 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use cria::ApiResponse;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
-use ncm_api::ApiResponse;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 

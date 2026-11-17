@@ -16,9 +16,9 @@ use super::tracks::parse_tracks;
 use super::tracks::pick_artist_id;
 use crate::data::config::Language;
 use anyhow::Result;
+use cria::ApiResponse;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
-use ncm_api::ApiResponse;
 use serde_json::Value;
 use std::pin::Pin;
 
