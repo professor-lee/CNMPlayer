@@ -35,10 +35,11 @@ async fn api_network_deadline_covers_headers_and_body() {
             let _ = wait_for_release.recv_timeout(Duration::from_secs(2));
         });
         let http = cyper::Client::builder().no_proxy().build().unwrap();
-        let api = ApiClient::new(None, http);
+        let mut api = ApiClient::new(None, http);
+        api.set_timeout(timeout);
         let result = compio::time::timeout(
             Duration::from_secs(1),
-            api.request_with_timeout(
+            api.request(
                 "/api/deadline",
                 serde_json::json!({}),
                 RequestOption {
@@ -46,7 +47,6 @@ async fn api_network_deadline_covers_headers_and_body() {
                     domain: Some(format!("http://{address}")),
                     ..RequestOption::default()
                 },
-                timeout,
             ),
         )
         .await;

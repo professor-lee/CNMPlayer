@@ -6,7 +6,7 @@
 
 请求路径必须使用 `/api/<endpoint>` 形式；空 endpoint、非 `/api/` 路径以及非对象 `data` 参数会在发起网络请求前返回 `InvalidParam`。网络代理不在 `Query` 或请求选项中配置，请在外部构造并注入已配置代理的 `cyper::Client`。
 
-响应 JSON 格式错误会返回 `ResponseDecode`（仅包含格式、响应长度与底层 serde 错误，不回显响应正文）；加密响应解码失败会返回 `Crypto`。`ApiClient::request` 从 HTTP 发送到完整响应 body 共用 30 秒 deadline，超限返回 `Timeout { timeout }`；其他传输错误仍返回 `Http`。
+响应 JSON 格式错误会返回 `ResponseDecode`（仅包含格式、响应长度与底层 serde 错误，不回显响应正文）；加密响应解码失败会返回 `Crypto`。`ApiClient::request` 从 HTTP 发送到完整响应 body 共用一个 deadline（默认 `ApiClient::DEFAULT_TIMEOUT` 即 30 秒，可用 `set_timeout` 调整），超限返回 `Timeout { timeout }`；其他传输错误仍返回 `Http`。
 
 ---
 

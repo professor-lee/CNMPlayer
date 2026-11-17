@@ -15,8 +15,6 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-const NETWORK_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// 上游获取易盾 token 的超时
 const ANTI_CHEAT_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 /// 易盾 JSONP 回包：null([状态码,时间戳,"token"])
@@ -198,9 +196,14 @@ pub struct ApiClient {
     anonymous_token: Option<String>,
     /// 自定义设备 ID，None 则使用全局默认值
     device_id: Option<String>,
+    /// 单次 API 请求从发送到完整读取 body 的总 deadline
+    timeout: Duration,
 }
 
 impl ApiClient {
+    /// 默认请求 deadline，见 [`ApiClient::set_timeout`]。
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
     /// 使用外部提供的 Client 创建 API 客户端
     pub fn new(cookie: Option<String>, client: cyper::Client) -> Self {
         Self {
@@ -208,7 +211,15 @@ impl ApiClient {
             cookie,
             anonymous_token: None,
             device_id: None,
+            timeout: Self::DEFAULT_TIMEOUT,
         }
+    }
+
+    /// 设置单次 API 请求的总 deadline（连接、响应头与完整 body 共用）。
+    ///
+    /// xeapi 首次使用时的公钥注册单独计时、上限相同；易盾 token 有独立的 10 秒上限。
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     /// 设置 cookie
@@ -233,24 +244,14 @@ impl ApiClient {
         self.device_id.as_deref().unwrap_or(&DEVICE_ID)
     }
 
-    /// 发起 API 请求；HTTP 发送到完整响应 body 共用 30 秒 deadline。
+    /// 发起 API 请求；HTTP 发送到完整响应 body 共用 [`ApiClient::set_timeout`] 设置的 deadline。
     pub async fn request(
         &self,
         uri: &str,
         data: Value,
         options: RequestOption,
     ) -> Result<ApiResponse> {
-        self.request_with_timeout(uri, data, options, NETWORK_TIMEOUT)
-            .await
-    }
-
-    async fn request_with_timeout(
-        &self,
-        uri: &str,
-        data: Value,
-        options: RequestOption,
-        timeout: Duration,
-    ) -> Result<ApiResponse> {
+        let timeout = self.timeout;
         let endpoint = api_endpoint(uri)?;
         if !data.is_object() {
             return Err(NcmError::InvalidParam(
