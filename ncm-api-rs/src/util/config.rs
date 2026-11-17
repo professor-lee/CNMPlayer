@@ -21,6 +21,9 @@ pub const ENCRYPT: bool = true;
 pub const ENCRYPT_RESPONSE: bool = false;
 /// 易盾反作弊 token 获取地址（上游 dunDomainV3 + 网易云 productNumber）
 pub const ANTI_CHEAT_TOKEN_URL: &str = "https://ac.dun.163yun.com/v3/b?pn=YD00000558929251";
+/// 非 weapi 请求与直连请求携带的 Referer。上游 Node 版只给 weapi 设 Referer；
+/// 本库此前的线上请求一直带着它（经注入 client 的默认头），现由库显式发送以保持请求特征不变。
+pub const WEB_REFERER: &str = "https://music.163.com/";
 
 /// 资源类型映射表
 pub static RESOURCE_TYPE_MAP: LazyLock<HashMap<&str, &str>> = LazyLock::new(|| {

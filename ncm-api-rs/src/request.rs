@@ -61,6 +61,20 @@ fn header_value(s: &str) -> HeaderValue {
     })
 }
 
+/// 非 API 网关的直连请求（易盾 token、NOS 上传、网页抓取、听歌识曲）的基础请求头。
+///
+/// cyper 只在请求未带同名头时才补注入 client 的默认头，所以库发出的每个请求都显式
+/// 设置 UA 与 Referer，请求特征不随调用方 client 的配置变化。
+pub(crate) fn direct_request_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static(choose_user_agent("weapi", "pc")),
+    );
+    headers.insert(REFERER, HeaderValue::from_static(WEB_REFERER));
+    headers
+}
+
 fn api_endpoint(uri: &str) -> Result<&str> {
     uri.strip_prefix("/api/")
         .filter(|endpoint| !endpoint.is_empty())
@@ -244,6 +258,8 @@ impl ApiClient {
             ));
         }
         let mut headers = HeaderMap::new();
+        // weapi 下面会换成自己的 Referer；其余加密方式沿用网页端 Referer。
+        headers.insert(REFERER, HeaderValue::from_static(WEB_REFERER));
         // 上游每次实时获取、不缓存；获取失败时与上游一致发送空 token
         let anti_cheat_token = if options.check_token {
             Some(self.anti_cheat_token().await)
@@ -661,6 +677,7 @@ impl ApiClient {
             let body = self
                 .client
                 .get(ANTI_CHEAT_TOKEN_URL)?
+                .headers(direct_request_headers())
                 .send()
                 .await?
                 .text()
@@ -715,6 +732,7 @@ impl ApiClient {
             serde_urlencoded::to_string(form).map_err(|e| NcmError::Unknown(e.to_string()))?;
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static(XEAPI_USER_AGENT));
+        headers.insert(REFERER, HeaderValue::from_static(WEB_REFERER));
         headers.insert(
             http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/x-www-form-urlencoded"),

@@ -163,3 +163,81 @@ fn special_status_codes_preserve_original_response_body() {
         Err(NcmError::RateLimited(_))
     ));
 }
+
+/// 本地单次 HTTP 服务：读完请求头后回固定响应，返回小写化的请求头文本。
+fn serve_once(response: &'static str) -> (String, compio::runtime::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let server = compio::runtime::spawn_blocking(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0; 4096];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = socket.read(&mut buffer).unwrap();
+            assert_ne!(count, 0);
+            request.extend_from_slice(&buffer[..count]);
+        }
+        socket.write_all(response.as_bytes()).unwrap();
+        String::from_utf8_lossy(&request).to_ascii_lowercase()
+    });
+    (address, server)
+}
+
+const EMPTY_OK: &str =
+    "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{\"code\":200}";
+
+fn header_line<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+    request
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+}
+
+#[compio::test]
+async fn library_headers_do_not_inherit_injected_client_defaults() {
+    let mut defaults = HeaderMap::new();
+    defaults.insert(USER_AGENT, HeaderValue::from_static("Host-App/1.0"));
+    defaults.insert(REFERER, HeaderValue::from_static("https://host.invalid/"));
+    let http = cyper::Client::builder()
+        .no_proxy()
+        .default_headers(defaults)
+        .build()
+        .unwrap();
+    let api = ApiClient::new(None, http);
+
+    for crypto in [CryptoType::Api, CryptoType::Eapi, CryptoType::Linuxapi] {
+        let (address, server) = serve_once(EMPTY_OK);
+        let option = RequestOption {
+            crypto: crypto.clone(),
+            domain: Some(address),
+            e_r: Some(false),
+            ..RequestOption::default()
+        };
+        api.request("/api/probe", serde_json::json!({}), option)
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+        assert_eq!(
+            header_line(&request, "referer"),
+            Some(WEB_REFERER),
+            "{crypto:?}"
+        );
+        let ua = header_line(&request, "user-agent").unwrap();
+        assert!(!ua.contains("host-app"), "{crypto:?}: {ua}");
+    }
+
+    let (address, server) = serve_once(EMPTY_OK);
+    let option = RequestOption {
+        crypto: CryptoType::Weapi,
+        domain: Some(address.clone()),
+        e_r: Some(false),
+        ..RequestOption::default()
+    };
+    api.request("/api/probe", serde_json::json!({}), option)
+        .await
+        .unwrap();
+    let request = server.await.unwrap();
+    assert_eq!(header_line(&request, "referer"), Some(address.as_str()));
+}

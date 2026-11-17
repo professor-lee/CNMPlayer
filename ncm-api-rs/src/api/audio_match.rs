@@ -4,8 +4,8 @@ use crate::error::Result;
 /// 对应 Node.js module/audio_match.js
 ///
 /// 注意: Node.js 版本直接通过 axios GET 请求外部接口，
-/// Rust 版本同样直接发送 HTTP GET 请求。
-use crate::request::{ApiClient, ApiResponse};
+/// Rust 版本同样直接发送 HTTP GET 请求（经注入的 client，沿用调用方的代理配置）。
+use crate::request::{ApiClient, ApiResponse, direct_request_headers};
 use serde_json::json;
 
 impl ApiClient {
@@ -20,8 +20,12 @@ impl ApiClient {
             duration, encoded_fp
         );
 
-        let client = cyper::Client::new()?;
-        let res = client.get(&url)?.send().await?;
+        let res = self
+            .client
+            .get(&url)?
+            .headers(direct_request_headers())
+            .send()
+            .await?;
         let body: serde_json::Value = res.json().await?;
 
         Ok(ApiResponse {

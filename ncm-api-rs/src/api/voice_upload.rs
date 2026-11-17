@@ -5,7 +5,7 @@ use crate::error::Result;
 ///
 /// 注意: 此端点涉及复杂的分块上传流程（multipart upload 到 NOS 对象存储）。
 /// 由于 Rust SDK 是纯库，文件读取由调用者负责，需传入完整的音频二进制数据。
-use crate::request::{ApiClient, ApiResponse, CryptoType};
+use crate::request::{ApiClient, ApiResponse, CryptoType, direct_request_headers};
 use serde_json::json;
 
 impl ApiClient {
@@ -82,6 +82,7 @@ impl ApiClient {
         let init_res = self
             .client
             .post(&init_url)?
+            .headers(direct_request_headers())
             .header("x-nos-token", &token)?
             .header("X-Nos-Meta-Content-Type", mimetype)?
             .send()
@@ -120,6 +121,7 @@ impl ApiClient {
             let part_res = self
                 .client
                 .put(&part_url)?
+                .headers(direct_request_headers())
                 .header("x-nos-token", &token)?
                 .header("Content-Type", mimetype)?
                 .body(chunk)
@@ -153,6 +155,7 @@ impl ApiClient {
 
         self.client
             .post(&complete_url)?
+            .headers(direct_request_headers())
             .header("Content-Type", "text/plain;charset=UTF-8")?
             .header("X-Nos-Meta-Content-Type", mimetype)?
             .header("x-nos-token", &token)?
