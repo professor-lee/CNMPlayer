@@ -7,6 +7,14 @@ license = "WTFPL"
 repository = "https://github.com/imsyy/ncm-api-rs"
 keywords = ["netease", "cloud-music", "api"]
 
+# 库通过注入的 `cyper::Client` 发请求，但所需的 cyper 能力必须由库自己声明，
+# 不能依赖与宿主 crate 的 feature 合并：单独构建时也要能走 HTTPS 并解压 API 回包。
+[features]
+default = ["native-tls", "gzip", "brotli"]
+native-tls = ["cyper/native-tls"]
+gzip = ["cyper/gzip"]
+brotli = ["cyper/brotli"]
+
 [dependencies]
 http = "1.5"
 cyper = { version = "0.9", default-features = false, features = ["json"] }
