@@ -164,21 +164,21 @@ impl Drop for CoverGatePermit<'_> {
     }
 }
 
+/// 网易云 API 门面。会话 cookie、设备 ID 与 xeapi 状态都由 `ApiClient` 持有，
+/// 克隆共享同一份会话；这里只负责持久化所需的读取与业务参数拼装。
 #[derive(Clone)]
 pub(crate) struct ApiState {
     client: ApiClient,
-    cookie: Option<String>,
     http: Client,
     wake: crate::render::wake::WakeSignal,
 }
 
 impl ApiState {
     pub(super) fn new(cookie: Option<String>, http: Client) -> Result<Self> {
-        let client = ApiClient::new(cookie.clone(), http.clone());
+        let client = ApiClient::new(cookie, http.clone());
 
         Ok(Self {
             client,
-            cookie,
             http,
             wake: crate::render::wake::WakeSignal::default(),
         })
@@ -188,8 +188,15 @@ impl ApiState {
         self.wake.clone()
     }
 
-    pub(super) fn session_cookie(&self) -> Option<&str> {
-        self.cookie.as_deref()
+    /// 已登录（会话里有 `MUSIC_U`）时返回完整会话 cookie，用于持久化与音频 CDN 请求。
+    /// 未登录时服务端下发的匿名 cookie 不算登录态。
+    pub(super) fn session_cookie(&self) -> Option<String> {
+        self.client.cookie_value("MUSIC_U")?;
+        self.client.cookie()
+    }
+
+    pub(super) fn set_device_id(&mut self, device_id: String) {
+        self.client.set_device_id(device_id);
     }
 
     /// Get the HTTP client for streaming playback.
@@ -197,45 +204,31 @@ impl ApiState {
         &self.http
     }
 
-    pub(super) fn set_cookie(&mut self, cookie: String) {
-        self.cookie = Some(cookie.clone());
-        self.client.set_cookie(&cookie);
-    }
-
     pub(super) fn clear_cookie(&mut self) {
-        self.cookie = None;
         self.client.clear_cookie();
     }
 
-    pub(super) async fn validate_cookie(&mut self, cookie: &str) -> Result<bool> {
-        let query = Query::new().cookie(cookie);
-        let response = self.client.login_status(&query).await?;
+    /// 用当前会话（启动时载入的存档 cookie）请求登录状态；服务端刷新的 cookie 由客户端合并。
+    pub(super) async fn validate_session(&mut self) -> Result<bool> {
+        let response = self.client.login_status(&Query::new()).await?;
         let code = response
             .body
             .get("code")
             .and_then(|value| value.as_i64())
             .unwrap_or(response.status);
 
-        if code == 200 {
-            self.set_cookie(cookie.to_string());
-            self.capture_cookie(&response);
-            return Ok(true);
-        }
-
-        Ok(false)
+        Ok(code == 200)
     }
 
     pub(super) async fn login_status(&mut self) -> Result<ApiResponse> {
-        let query = self.query_with_cookie();
+        let query = Query::new();
         let response = self.client.login_status(&query).await?;
-        self.capture_cookie(&response);
         Ok(response)
     }
 
     pub(super) async fn user_account(&mut self) -> Result<ApiResponse> {
-        let query = self.query_with_cookie();
+        let query = Query::new();
         let response = self.client.user_account(&query).await?;
-        self.capture_cookie(&response);
         Ok(response)
     }
 
@@ -245,8 +238,7 @@ impl ApiState {
         limit: usize,
         offset: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("uid", uid)
             .param("limit", &limit.max(1).to_string())
             .param("offset", &offset.to_string());
@@ -260,8 +252,7 @@ impl ApiState {
         limit: usize,
         offset: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("uid", uid)
             .param("limit", &limit.max(1).to_string())
             .param("offset", &offset.to_string());
@@ -275,8 +266,7 @@ impl ApiState {
         limit: usize,
         offset: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("limit", &limit.max(1).to_string())
             .param("offset", &offset.to_string());
         let response = self.client.album_sublist(&query).await?;
@@ -288,7 +278,6 @@ impl ApiState {
             .param("email", email)
             .param("password", password);
         let response = self.client.login(&query).await?;
-        self.capture_cookie(&response);
         Ok(response)
     }
 
@@ -305,7 +294,6 @@ impl ApiState {
     ) -> Result<ApiResponse> {
         let query = Query::new().param("phone", phone).param("captcha", captcha);
         let response = self.client.login_cellphone(&query).await?;
-        self.capture_cookie(&response);
         Ok(response)
     }
 
@@ -324,25 +312,24 @@ impl ApiState {
     pub(super) async fn login_qr_check(&mut self, key: &str) -> Result<ApiResponse> {
         let query = Query::new().param("key", key);
         let response = self.client.login_qr_check(&query).await?;
-        self.capture_cookie(&response);
         Ok(response)
     }
 
     pub(super) async fn recommend_resource(&mut self) -> Result<ApiResponse> {
-        let query = self.query_with_cookie();
+        let query = Query::new();
         let response = self.client.recommend_resource(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn recommend_songs(&mut self) -> Result<ApiResponse> {
-        let query = self.query_with_cookie();
+        let query = Query::new();
         let response = self.client.recommend_songs(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn personalized(&mut self, limit: usize) -> Result<ApiResponse> {
         let limit = limit.max(1).to_string();
-        let query = self.query_with_cookie().param("limit", &limit);
+        let query = Query::new().param("limit", &limit);
         let response = self.client.personalized(&query).await?;
         Ok(response)
     }
@@ -353,8 +340,7 @@ impl ApiState {
         mode: &str,
         limit: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("mode", mode)
             .param("limit", &limit.max(1).to_string());
         let response = self.client.personal_fm_mode(&query).await?;
@@ -362,7 +348,7 @@ impl ApiState {
     }
 
     pub(super) async fn playlist_detail(&mut self, id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", id);
+        let query = Query::new().param("id", id);
         let response = self.client.playlist_detail(&query).await?;
         Ok(response)
     }
@@ -372,8 +358,7 @@ impl ApiState {
         limit: usize,
         offset: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("id", id)
             .param("limit", &limit.max(1).to_string())
             .param("offset", &offset.to_string());
@@ -382,25 +367,25 @@ impl ApiState {
     }
 
     pub(super) async fn album(&mut self, id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", id);
+        let query = Query::new().param("id", id);
         let response = self.client.album(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn artist_detail(&mut self, id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", id);
+        let query = Query::new().param("id", id);
         let response = self.client.artist_detail(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn artist_desc(&mut self, id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", id);
+        let query = Query::new().param("id", id);
         let response = self.client.artist_desc(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn artist_top_song(&mut self, id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", id);
+        let query = Query::new().param("id", id);
         let response = self.client.artist_top_song(&query).await?;
         Ok(response)
     }
@@ -411,8 +396,7 @@ impl ApiState {
         limit: usize,
         offset: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("id", id)
             .param("limit", &limit.max(1).to_string())
             .param("offset", &offset.to_string());
@@ -425,8 +409,7 @@ impl ApiState {
         limit: usize,
         offset: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("limit", &limit.max(1).to_string())
             .param("offset", &offset.to_string());
         let response = self.client.artist_sublist(&query).await?;
@@ -434,26 +417,25 @@ impl ApiState {
     }
 
     pub(super) async fn song_detail(&mut self, song_id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("ids", song_id);
+        let query = Query::new().param("ids", song_id);
         let response = self.client.song_detail(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn lyric(&mut self, song_id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", song_id);
+        let query = Query::new().param("id", song_id);
         let response = self.client.lyric(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn lyric_new(&mut self, song_id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", song_id);
+        let query = Query::new().param("id", song_id);
         let response = self.client.lyric_new(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn like_song(&mut self, song_id: &str, like: bool) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("id", song_id)
             .param("like", if like { "true" } else { "false" });
         let response = self.client.like(&query).await?;
@@ -462,8 +444,7 @@ impl ApiState {
 
     /// 收藏 / 取消收藏歌手（`subscribe = true` 收藏）。
     pub(super) async fn artist_sub(&mut self, id: &str, subscribe: bool) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("id", id)
             .param("t", if subscribe { "1" } else { "0" });
         let response = self.client.artist_sub(&query).await?;
@@ -476,8 +457,7 @@ impl ApiState {
         id: &str,
         subscribe: bool,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("id", id)
             .param("t", if subscribe { "1" } else { "0" });
         let response = self.client.playlist_subscribe(&query).await?;
@@ -486,8 +466,7 @@ impl ApiState {
 
     /// 收藏 / 取消收藏专辑（`subscribe = true` 收藏）。
     pub(super) async fn album_sub(&mut self, id: &str, subscribe: bool) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("id", id)
             .param("t", if subscribe { "1" } else { "0" });
         let response = self.client.album_sub(&query).await?;
@@ -496,54 +475,45 @@ impl ApiState {
 
     /// 歌手动态信息（含当前账号是否已收藏该歌手）。
     pub(super) async fn artist_detail_dynamic(&mut self, id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", id);
+        let query = Query::new().param("id", id);
         let response = self.client.artist_detail_dynamic(&query).await?;
         Ok(response)
     }
 
     /// 专辑动态信息（含当前账号是否已收藏该专辑）。
     pub(super) async fn album_detail_dynamic(&mut self, id: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("id", id);
+        let query = Query::new().param("id", id);
         let response = self.client.album_detail_dynamic(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn likelist(&mut self, uid: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("uid", uid);
+        let query = Query::new().param("uid", uid);
         let response = self.client.likelist(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn song_like_check(&mut self, ids_json: &str) -> Result<ApiResponse> {
-        let query = self.query_with_cookie().param("ids", ids_json);
+        let query = Query::new().param("ids", ids_json);
         let response = self.client.song_like_check(&query).await?;
         Ok(response)
     }
 
     async fn song_url(&mut self, song_id: &str) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
-            .param("id", song_id)
-            .param("br", "320000");
+        let query = Query::new().param("id", song_id).param("br", "320000");
         let response = self.client.song_url(&query).await?;
         Ok(response)
     }
 
     async fn song_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
-            .param("id", song_id)
-            .param("level", level);
+        let query = Query::new().param("id", song_id).param("level", level);
         let response = self.client.song_url_v1(&query).await?;
         Ok(response)
     }
 
     /// 客户端下载链接（新版）：登录后可用，对免费歌曲能拿到比播放更高的档位。
     async fn song_download_url_v1(&mut self, song_id: &str, level: &str) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
-            .param("id", song_id)
-            .param("level", level);
+        let query = Query::new().param("id", song_id).param("level", level);
         let response = self.client.song_download_url_v1(&query).await?;
         Ok(response)
     }
@@ -619,8 +589,7 @@ impl ApiState {
         listened_secs: u64,
         end: &str,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("id", song_id)
             .param("sourceid", source_id)
             .param("time", &listened_secs.to_string())
@@ -630,13 +599,13 @@ impl ApiState {
     }
 
     pub(super) async fn vip_info(&mut self) -> Result<ApiResponse> {
-        let query = self.query_with_cookie();
+        let query = Query::new();
         let response = self.client.vip_info(&query).await?;
         Ok(response)
     }
 
     pub(super) async fn vip_info_v2(&mut self) -> Result<ApiResponse> {
-        let query = self.query_with_cookie();
+        let query = Query::new();
         let response = self.client.vip_info_v2(&query).await?;
         Ok(response)
     }
@@ -648,8 +617,7 @@ impl ApiState {
         limit: usize,
         offset: usize,
     ) -> Result<ApiResponse> {
-        let query = self
-            .query_with_cookie()
+        let query = Query::new()
             .param("keywords", keywords)
             .param("type", &search_type.to_string())
             .param("limit", &limit.max(1).to_string())
@@ -788,23 +756,6 @@ impl ApiState {
         .map_err(|_| anyhow!("cover image validation task panicked"))?
         .with_context(|| format!("invalid cover image: {url}"))?;
         Ok(validated)
-    }
-
-    fn query_with_cookie(&self) -> Query {
-        if let Some(cookie) = self.cookie.as_deref() {
-            return Query::new().cookie(cookie);
-        }
-        Query::new()
-    }
-
-    fn capture_cookie(&mut self, response: &ApiResponse) {
-        if response.cookie.is_empty() {
-            return;
-        }
-
-        let merged = response.cookie.join("; ");
-        self.cookie = Some(merged.clone());
-        self.client.set_cookie(&merged);
     }
 }
 

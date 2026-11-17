@@ -76,6 +76,13 @@ impl CookieJar {
         self.entries.is_empty()
     }
 
+    pub(crate) fn get(&self, name: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| existing == name)
+            .map(|(_, value)| value.as_str())
+    }
+
     /// 序列化为 Cookie 请求头格式（原始值）。
     pub(crate) fn header(&self) -> String {
         self.entries

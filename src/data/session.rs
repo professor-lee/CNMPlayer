@@ -11,6 +11,44 @@ struct SessionRecord {
     updated_at: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct DeviceRecord {
+    device_id: String,
+}
+
+/// 读取持久化的设备 ID；没有或存档损坏时用 `generate` 生成并写回。
+///
+/// 设备 ID 与登录态无关，单独存放，登出（删除会话存档）不会让设备身份变化。
+/// 写回失败只影响下次启动是否复用，本次仍使用新生成的 ID。
+pub fn load_or_create_device_id(generate: impl FnOnce() -> String) -> Result<String> {
+    let path = device_path();
+    if path.is_file() {
+        let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let record: DeviceRecord = toml::from_str(&raw).unwrap_or_default();
+        if is_valid_device_id(&record.device_id) {
+            return Ok(record.device_id);
+        }
+    }
+
+    let device_id = generate();
+    let record = DeviceRecord {
+        device_id: device_id.clone(),
+    };
+    let saved = toml::to_string_pretty(&record)
+        .context("serialize device id")
+        .and_then(|raw| atomic_file::write_atomic_with_mode(&path, raw.as_bytes(), Some(0o600)));
+    if let Err(err) = saved {
+        log::warn!("设备 ID 保存失败，下次启动将重新生成: {err:#}");
+    }
+    Ok(device_id)
+}
+
+fn is_valid_device_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
 pub fn load_cookie() -> Result<Option<String>> {
     let path = session_path();
     if !path.is_file() {
@@ -49,6 +87,10 @@ pub fn clear_cookie() -> Result<()> {
 
 fn session_path() -> PathBuf {
     assets::resolve_asset_path(Path::new("auth/session.toml"))
+}
+
+fn device_path() -> PathBuf {
+    assets::resolve_asset_path(Path::new("auth/device.toml"))
 }
 
 fn now_unix() -> i64 {

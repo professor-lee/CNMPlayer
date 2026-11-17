@@ -197,7 +197,10 @@ pub(crate) struct App {
     /// about 弹窗里的形象彩蛋状态。
     #[cfg(feature = "easter-egg")]
     pub(crate) about_egg: AboutEasterEgg,
+    /// 当前登录态的会话 cookie（登录/恢复成功后才有值），兼作「已登录」标记。
     session_cookie: Option<String>,
+    /// 会话存档里最后写入的 cookie；ApiClient 合并服务端刷新后与它比较，变了才写盘。
+    persisted_session_cookie: Option<String>,
     pub(crate) should_quit: bool,
     launch_fullscreen_requested: bool,
     pub(crate) vip_audio_unlocked: bool,
@@ -247,9 +250,14 @@ impl App {
         let cache_maintenance = CacheMaintenance::new(config.cache.clone());
         let audio_player = AudioPlayer::new(&config, cache_maintenance.clone())?;
         let persistence = PersistenceWorker::spawn("cnmplayer-persistence")?;
-        let saved_cookie = compio::runtime::spawn_blocking(session::load_cookie)
-            .await
-            .map_err(|_| anyhow!("session read task panicked"))??;
+        let (saved_cookie, device_id) = compio::runtime::spawn_blocking(|| -> Result<_> {
+            let cookie = session::load_cookie()?;
+            let device_id =
+                session::load_or_create_device_id(ncm_api::util::device::generate_device_id)?;
+            Ok((cookie, device_id))
+        })
+        .await
+        .map_err(|_| anyhow!("session read task panicked"))??;
 
         let mut headers = header::HeaderMap::new();
         headers.insert(
@@ -261,7 +269,9 @@ impl App {
             header::HeaderValue::from_static("https://music.163.com/"),
         );
         let http_client = Client::builder().default_headers(headers).build()?;
-        let api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
+        let mut api = ApiState::new(saved_cookie.clone(), http_client.clone())?;
+        // 克隆共享会话 cookie，但设备 ID 按值复制：必须在派生后台 worker 之前设好。
+        api.set_device_id(device_id);
         let wake = api.wake_signal();
         let cache_root = resolve_cache_root(&config);
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
@@ -343,6 +353,7 @@ impl App {
             #[cfg(feature = "easter-egg")]
             about_egg: AboutEasterEgg::default(),
             session_cookie: None,
+            persisted_session_cookie: saved_cookie.clone(),
             should_quit: false,
             launch_fullscreen_requested: false,
             vip_audio_unlocked: false,
@@ -400,7 +411,7 @@ impl App {
         app.startup.init = StartupInit::spawn(
             app.config.clone(),
             app.api.clone(),
-            saved_cookie,
+            saved_cookie.is_some(),
             skip_roam,
             steps,
         );
@@ -414,6 +425,35 @@ impl App {
         let _ = self
             .persistence
             .enqueue_latest(PersistenceKey::Config, move || snapshot.save());
+    }
+
+    /// 登录态下把 ApiClient 当前会话 cookie（含服务端刷新合并的部分）写入存档；
+    /// 与上次写入相同时不落盘。未登录、或存档 cookie 已被服务端拒绝时什么也不做。
+    pub(crate) fn persist_session_cookie(&mut self) {
+        if self.session_cookie.is_none() {
+            return;
+        }
+        let Some(cookie) = self.api.session_cookie() else {
+            return;
+        };
+        self.session_cookie = Some(cookie.clone());
+        if self.persisted_session_cookie.as_deref() == Some(cookie.as_str()) {
+            return;
+        }
+        self.persisted_session_cookie = Some(cookie.clone());
+        let _ = self
+            .persistence
+            .enqueue_latest(PersistenceKey::Session, move || {
+                session::save_cookie(&cookie)
+            });
+    }
+
+    /// 删除会话存档（登出或存档 cookie 被服务端拒绝）。
+    fn clear_persisted_session(&mut self) {
+        self.persisted_session_cookie = None;
+        let _ = self
+            .persistence
+            .enqueue_latest(PersistenceKey::Session, session::clear_cookie);
     }
 
     pub(crate) fn flush_persistence(&self) -> Result<()> {

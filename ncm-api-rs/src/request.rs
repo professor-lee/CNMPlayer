@@ -261,6 +261,11 @@ impl ApiClient {
         (!jar.is_empty()).then(|| jar.header())
     }
 
+    /// 会话 cookie 中某一项的原始值，例如用 `MUSIC_U` 判断是否已登录。
+    pub fn cookie_value(&self, name: &str) -> Option<String> {
+        lock(&self.shared.cookies).get(name).map(str::to_string)
+    }
+
     /// 设置匿名 token
     pub fn set_anonymous_token(&mut self, token: String) {
         self.anonymous_token = Some(token);
