@@ -734,7 +734,7 @@ impl ApiState {
             Ok(bytes)
         })
         .await
-        .map_err(|_| ncm_api::NcmError::Timeout { timeout })
+        .map_err(|_| anyhow!("cover download did not complete within {timeout:?}"))
         .with_context(|| format!("download cover image timed out: {url}"))??;
 
         if !decode_image {
