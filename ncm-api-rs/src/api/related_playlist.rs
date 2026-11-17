@@ -3,7 +3,7 @@ use crate::error::Result;
 /// 对应 Node.js module/related_playlist.js
 ///
 /// 注意：此接口通过抓取网页 HTML 获取数据，不使用标准 API 请求。
-use crate::request::{ApiClient, ApiResponse};
+use crate::request::{ApiClient, ApiResponse, direct_request_headers};
 use regex_lite::Regex;
 use serde_json::json;
 
@@ -14,7 +14,12 @@ impl ApiClient {
         let id = query.get_or("id", "0");
         let url = format!("https://music.163.com/playlist?id={}", id);
 
-        let resp = self.client.get(&url)?.send().await?;
+        let resp = self
+            .client
+            .get(&url)?
+            .headers(direct_request_headers())
+            .send()
+            .await?;
         let status = resp.status().as_u16() as i64;
         let html = resp.text().await?;
 

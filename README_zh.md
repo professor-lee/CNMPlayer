@@ -207,7 +207,8 @@ sudo apt install -y build-essential cmake pkg-config \
 
 - `config/default.toml`：程序、播放、快捷键与缓存配置
 - `themes/*.toml`：主题文件（key 取文件内 `name` 字段，缺省时取文件名）；额外丢进来的 `.toml` 会自动变为可选
-- `auth/session.toml`：持久化登录 cookie
+- `auth/session.toml`：持久化登录 cookie（服务端刷新的 cookie 会写回）
+- `auth/device.toml`：持久化设备 ID，登出后保留，客户端始终使用同一设备身份
 - `playback/session.toml`：播放记忆的队列（`playback_memory` 开启时写入）
 - `private_roam/session.toml`：私人漫游列表、最后播放位置与缓存封面
 

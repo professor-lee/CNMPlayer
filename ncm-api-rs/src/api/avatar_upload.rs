@@ -5,7 +5,7 @@ use crate::error::Result;
 ///
 /// 注意: 此端点需要调用者提供图片文件的二进制数据。
 /// 由于 Rust SDK 是纯库，文件读取由调用者负责。
-use crate::request::{ApiClient, ApiResponse, CryptoType};
+use crate::request::{ApiClient, ApiResponse, CryptoType, direct_request_headers};
 use serde_json::json;
 
 impl ApiClient {
@@ -56,6 +56,7 @@ impl ApiClient {
 
         self.client
             .post(&upload_url)?
+            .headers(direct_request_headers())
             .header("x-nos-token", token)?
             .header("Content-Type", &img_mimetype)?
             .body(img_data)

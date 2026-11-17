@@ -21,7 +21,6 @@ use super::likes::fetch_liked_song_ids;
 use super::roam::fetch_private_roam_songs;
 use super::tracks::PlaylistTrack;
 use crate::data::config::Config;
-use crate::data::session;
 use crate::launch;
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -90,12 +89,18 @@ impl StartupInit {
     pub(super) fn spawn(
         config: Config,
         api: ApiState,
-        cookie: Option<String>,
+        has_saved_session: bool,
         skip_roam: bool,
         steps: usize,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
-        launch(run_startup_init(api, config, cookie, skip_roam, tx));
+        launch(run_startup_init(
+            api,
+            config,
+            has_saved_session,
+            skip_roam,
+            tx,
+        ));
 
         Self {
             rx: Some(rx),
@@ -201,7 +206,7 @@ async fn step<F: Future>(deadline: Instant, future: F) -> Option<F::Output> {
 async fn run_startup_init(
     mut api: ApiState,
     config: Config,
-    cookie: Option<String>,
+    has_saved_session: bool,
     skip_roam: bool,
     tx: Sender<StartupEvent>,
 ) {
@@ -210,12 +215,12 @@ async fn run_startup_init(
     let mut done = 0usize;
 
     let mut restored = false;
-    if let Some(cookie) = cookie.as_deref() {
-        match step(deadline, api.validate_cookie(cookie)).await {
+    if has_saved_session {
+        match step(deadline, api.validate_session()).await {
             Some(Ok(true)) => {
                 restored = true;
                 let _ = tx.send(StartupEvent::SessionRestored {
-                    cookie: api.session_cookie().map(|value| value.to_string()),
+                    cookie: api.session_cookie(),
                 });
             }
             Some(Ok(false)) => {
@@ -326,13 +331,12 @@ impl App {
             StartupEvent::Step { done } => self.startup.init.mark_done(done),
             StartupEvent::SessionRestored { cookie } => {
                 self.session_cookie = cookie;
+                // 校验时服务端刷新的 cookie 已合并进会话；有变化（含旧存档格式迁移）才写盘。
+                self.persist_session_cookie();
                 self.startup.target = Page::Home;
             }
             StartupEvent::SessionRejected => {
-                let _ = self.persistence.enqueue_latest(
-                    crate::data::persistence::PersistenceKey::Session,
-                    session::clear_cookie,
-                );
+                self.clear_persisted_session();
                 self.startup.target = Page::Login;
                 self.startup.init.collapse_to_done();
             }

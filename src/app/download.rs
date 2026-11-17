@@ -1029,7 +1029,7 @@ async fn fetch_song_metadata(api: &ApiState, request: &DownloadRequest) -> SongM
 /// 歌词：拿不到（纯音乐）就返回 `None`，不写空标签。
 async fn fetch_lyrics(api: &ApiState, song_id: &str) -> Option<String> {
     let mut api = api.clone();
-    let read_lrc = |response: ncm_api::request::ApiResponse| {
+    let read_lrc = |response: ncm_api::ApiResponse| {
         response
             .body
             .pointer("/lrc/lyric")

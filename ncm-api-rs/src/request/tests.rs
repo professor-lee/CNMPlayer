@@ -35,10 +35,11 @@ async fn api_network_deadline_covers_headers_and_body() {
             let _ = wait_for_release.recv_timeout(Duration::from_secs(2));
         });
         let http = cyper::Client::builder().no_proxy().build().unwrap();
-        let api = ApiClient::new(None, http);
+        let mut api = ApiClient::new(None, http);
+        api.set_timeout(timeout);
         let result = compio::time::timeout(
             Duration::from_secs(1),
-            api.request_with_timeout(
+            api.request(
                 "/api/deadline",
                 serde_json::json!({}),
                 RequestOption {
@@ -46,7 +47,6 @@ async fn api_network_deadline_covers_headers_and_body() {
                     domain: Some(format!("http://{address}")),
                     ..RequestOption::default()
                 },
-                timeout,
             ),
         )
         .await;
@@ -162,4 +162,177 @@ fn special_status_codes_preserve_original_response_body() {
         response_from_body(503, serde_json::json!({}), vec![]),
         Err(NcmError::RateLimited(_))
     ));
+}
+
+/// 本地单次 HTTP 服务：读完请求头后回固定响应，返回小写化的请求头文本。
+/// 给了 gate 时，读完请求头先通知 `received`，等 `release` 放行再响应。
+fn serve_once(
+    response: &'static str,
+    gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
+) -> (String, compio::runtime::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let server = compio::runtime::spawn_blocking(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0; 4096];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let count = socket.read(&mut buffer).unwrap();
+            assert_ne!(count, 0);
+            request.extend_from_slice(&buffer[..count]);
+        }
+        if let Some((received, release)) = gate {
+            received.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        socket.write_all(response.as_bytes()).unwrap();
+        String::from_utf8_lossy(&request).to_ascii_lowercase()
+    });
+    (address, server)
+}
+
+const EMPTY_OK: &str =
+    "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{\"code\":200}";
+
+fn header_line<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+    request
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+}
+
+#[compio::test]
+async fn library_headers_do_not_inherit_injected_client_defaults() {
+    let mut defaults = HeaderMap::new();
+    defaults.insert(USER_AGENT, HeaderValue::from_static("Host-App/1.0"));
+    defaults.insert(REFERER, HeaderValue::from_static("https://host.invalid/"));
+    let http = cyper::Client::builder()
+        .no_proxy()
+        .default_headers(defaults)
+        .build()
+        .unwrap();
+    let api = ApiClient::new(None, http);
+
+    for crypto in [CryptoType::Api, CryptoType::Eapi, CryptoType::Linuxapi] {
+        let (address, server) = serve_once(EMPTY_OK, None);
+        let option = RequestOption {
+            crypto: crypto.clone(),
+            domain: Some(address),
+            e_r: Some(false),
+            ..RequestOption::default()
+        };
+        api.request("/api/probe", serde_json::json!({}), option)
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+        assert_eq!(
+            header_line(&request, "referer"),
+            Some(WEB_REFERER),
+            "{crypto:?}"
+        );
+        let ua = header_line(&request, "user-agent").unwrap();
+        assert!(!ua.contains("host-app"), "{crypto:?}: {ua}");
+    }
+
+    let (address, server) = serve_once(EMPTY_OK, None);
+    let option = RequestOption {
+        crypto: CryptoType::Weapi,
+        domain: Some(address.clone()),
+        e_r: Some(false),
+        ..RequestOption::default()
+    };
+    api.request("/api/probe", serde_json::json!({}), option)
+        .await
+        .unwrap();
+    let request = server.await.unwrap();
+    assert_eq!(header_line(&request, "referer"), Some(address.as_str()));
+}
+
+const SET_COOKIE_OK: &str = "HTTP/1.1 200 OK\r\nSet-Cookie: __csrf=fresh; Max-Age=1296000; Path=/\r\nSet-Cookie: nmtid=server; Path=/\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{\"code\":200}";
+
+fn plain_option(address: String, cookie: Option<&str>) -> RequestOption {
+    RequestOption {
+        crypto: CryptoType::Api,
+        domain: Some(address),
+        cookie: cookie.map(str::to_string),
+        ..RequestOption::default()
+    }
+}
+
+#[compio::test]
+async fn client_cookie_is_sent_and_set_cookie_is_merged_for_all_clones() {
+    let http = cyper::Client::builder().no_proxy().build().unwrap();
+    let api = ApiClient::new(Some("MUSIC_U=session; __csrf=old".to_string()), http);
+    let clone = api.clone();
+
+    let (address, server) = serve_once(SET_COOKIE_OK, None);
+    clone
+        .request(
+            "/api/probe",
+            serde_json::json!({}),
+            plain_option(address, None),
+        )
+        .await
+        .unwrap();
+    let request = server.await.unwrap();
+    let cookie = header_line(&request, "cookie").unwrap();
+    assert!(cookie.contains("music_u=session"), "{cookie}");
+    assert!(cookie.contains("__csrf=old"), "{cookie}");
+
+    assert_eq!(
+        api.cookie().as_deref(),
+        Some("MUSIC_U=session; __csrf=fresh; nmtid=server")
+    );
+}
+
+#[compio::test]
+async fn query_cookie_is_isolated_from_client_session() {
+    let http = cyper::Client::builder().no_proxy().build().unwrap();
+    let api = ApiClient::new(Some("MUSIC_U=session".to_string()), http);
+
+    let (address, server) = serve_once(SET_COOKIE_OK, None);
+    api.request(
+        "/api/probe",
+        serde_json::json!({}),
+        plain_option(address, Some("MUSIC_U=other")),
+    )
+    .await
+    .unwrap();
+    let request = server.await.unwrap();
+    let cookie = header_line(&request, "cookie").unwrap();
+    assert!(cookie.contains("music_u=other"), "{cookie}");
+    assert!(!cookie.contains("music_u=session"), "{cookie}");
+    assert_eq!(api.cookie().as_deref(), Some("MUSIC_U=session"));
+}
+
+#[compio::test]
+async fn response_started_before_logout_does_not_restore_session() {
+    let http = cyper::Client::builder().no_proxy().build().unwrap();
+    let api = ApiClient::new(Some("MUSIC_U=session".to_string()), http);
+    let (release, release_rx) = mpsc::channel();
+    let (received_tx, received) = mpsc::channel();
+    let (address, server) = serve_once(SET_COOKIE_OK, Some((received_tx, release_rx)));
+
+    let in_flight = api.clone();
+    let request = compio::runtime::spawn(async move {
+        in_flight
+            .request(
+                "/api/probe",
+                serde_json::json!({}),
+                plain_option(address, None),
+            )
+            .await
+    });
+    // 请求已带着旧会话发出、响应尚未返回时登出。
+    compio::runtime::spawn_blocking(move || received.recv().unwrap())
+        .await
+        .unwrap();
+    api.clear_cookie();
+    release.send(()).unwrap();
+    request.await.unwrap().unwrap();
+    server.await.unwrap();
+
+    assert_eq!(api.cookie(), None);
 }
