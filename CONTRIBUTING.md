@@ -29,7 +29,7 @@ Rust 1.95 or newer. `rust-toolchain.toml` requests the current stable toolchain,
 
 The locked dependencies require Rust 1.95: `compio-driver 0.12.4` uses [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html), stabilized in 1.95. Dependency manifest declarations suggested 1.90, but an actual 1.90 build failed at `compio-buf 0.8.3`'s `MaybeUninit` slice API and a 1.93 build failed at `cfg_select!`. Edition 2024 alone would only require 1.85; neither edition nor incomplete manifest declarations establish the real dependency MSRV.
 
-The NetEase API client is the separate [CRIA](https://github.com/professor-lee/cria) crate (`cria-api`, imported as `cria`). `Cargo.toml` pins it to a Git revision until its first crates.io release. Endpoint additions and request-layer changes belong in the CRIA repository; once they land there, bump the pinned revision here in a separate pull request. To try an unmerged CRIA change locally, point a `[patch."https://github.com/professor-lee/cria"]` entry at your checkout and do not commit it.
+The NetEase API client is the separate [CRIA](https://github.com/alpaca-herd/cria) crate (`cria-api` on crates.io, imported as `cria`). Endpoint additions and request-layer changes belong in the CRIA repository; once a CRIA release contains them, bump the `cria-api` version here in a separate pull request. To try an unreleased CRIA change locally, add `[patch.crates-io] cria-api = { path = "../cria" }` pointing at your checkout and do not commit it.
 
 System build dependencies — the same list CI installs on `ubuntu-24.04`:
 
@@ -82,7 +82,7 @@ with `--no-default-features` to drop it.
 | `src/data/` | Shared `Config` plus assets, atomic persistence, sessions, playback/private-roam state, and theme loading. |
 | `src/render/` | Cover and graphics rendering, plus the easter-egg mascot frames. |
 | `src/tmplayer/` | Embedded fullscreen playback UI, its renderers and audio visualization helpers; playback is owned by the host and configuration uses the shared `Config`. |
-| (dependency) `cria-api` | The NetEase API client, maintained in [professor-lee/cria](https://github.com/professor-lee/cria); its endpoint reference is that repository's `docs/API.md`. |
+| (dependency) `cria-api` | The NetEase API client, maintained in [alpaca-herd/cria](https://github.com/alpaca-herd/cria); its endpoint reference is that repository's `docs/API.md` and [docs.rs/cria-api](https://docs.rs/cria-api). |
 | `config/default.toml` | The default configuration template. At startup the app writes and repairs `config/default.toml` under the asset root from it. |
 | `themes/` | 20 built-in TOML color themes (Catppuccin variants, ayu, everforest, monokai, nord, rose pine, solarized, tomorrow, zenburn, zinc and `system`; default `frappe`). |
 | `about/` | Content of the About modal — links, QQ group, braille art. |

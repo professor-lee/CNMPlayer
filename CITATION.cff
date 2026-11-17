@@ -16,4 +16,4 @@ abstract: "CNMPlayer (Customized Netease Music Player) is a Rust-based TUI clien
 references:
   - type: generic
     title: "CRIA (Cloud-music Rust Integration API)"
-    url: "https://github.com/professor-lee/cria"
+    url: "https://github.com/alpaca-herd/cria"

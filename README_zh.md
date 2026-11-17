@@ -360,7 +360,7 @@ sudo apt install -y build-essential cmake pkg-config \
 - Rust 2024
 - TUI：ratatui + crossterm
 - 异步与网络：compio + cyper
-- 网易云 API：[CRIA](https://github.com/professor-lee/cria)（crate `cria-api`，导入名 `cria`），由本仓库拆分而来，见「相关项目」
+- 网易云 API：[CRIA](https://github.com/alpaca-herd/cria)（crate `cria-api`，导入名 `cria`），由本仓库拆分而来，见「相关项目」
 - 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire
 - 元数据、封面与下载标签：image + qrcode + lofty
 - 图像渲染：ratatui-image + chafa
@@ -383,7 +383,7 @@ CI（`ci.yml`）会在 stable 上执行默认特性和 `--no-default-features` �
 
 ## 相关项目
 
-- [CRIA](https://github.com/professor-lee/cria)（Cloud-music Rust Integration API）：CNMPlayer 使用的网易云音乐 API 客户端。它原先作为 vendored 的 `ncm-api-rs/` crate 在本仓库中开发，现已保留提交历史拆分为独立的 MIT 许可仓库，供其他 Rust 项目使用。接口改动与请求层修复今后提交到 CRIA；在其首次发布到 crates.io 之前，CNMPlayer 在 `Cargo.toml` 中以 Git 依赖锁定提交。
+- [CRIA](https://github.com/alpaca-herd/cria)（Cloud-music Rust Integration API）：CNMPlayer 使用的网易云音乐 API 客户端，已发布到 crates.io（[`cria-api`](https://crates.io/crates/cria-api)）。它原先作为 vendored 的 `ncm-api-rs/` crate 在本仓库中开发，现已保留提交历史拆分为独立的 MIT 许可仓库，供其他 Rust 项目使用。接口改动与请求层修复今后提交到 CRIA，CNMPlayer 通过更新 `cria-api` 版本引入。
 - [ncm-api-rs](https://github.com/imsyy/ncm-api-rs)：CRIA 代码基础所源自的早期 Rust 移植
 
 ## 免责声明

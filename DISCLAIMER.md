@@ -36,7 +36,7 @@ agreement merely because someone visits the repository, downloads a file or read
 
 CNMPlayer is not an official NetEase Cloud Music product. It has no affiliation, authorization,
 sponsorship, partnership, agency relationship or endorsement from NetEase Cloud Music or its affiliates.
-It accesses the service through [CRIA](https://github.com/professor-lee/cria), a community-maintained,
+It accesses the service through [CRIA](https://github.com/alpaca-herd/cria), a community-maintained,
 unofficial API client split out of this repository; that dependency does not establish official approval or guaranteed API access.
 
 References to NetEase Cloud Music, artists, labels, other products or third-party projects identify

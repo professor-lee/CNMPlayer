@@ -26,8 +26,8 @@ ratatui-image = { version = "11", default-features = false, features = ["crosste
 crossterm = { version = "0.29", features = ["event-stream"] }
 directories = "6"
 futures = "0.3"
-# 网易云 API 客户端：独立仓库 CRIA（crate cria-api，导入名 cria）。发布到 crates.io 前按提交锁定。
-cria-api = { git = "https://github.com/professor-lee/cria", rev = "e49c9e2fc09b1ca73ac535f4461be8049ff1969e" }
+# 网易云 API 客户端：独立仓库 CRIA（https://github.com/alpaca-herd/cria，crate cria-api，导入名 cria）。
+cria-api = "0.1.0"
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 parking_lot = "0.12"

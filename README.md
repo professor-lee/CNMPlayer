@@ -360,7 +360,7 @@ Fullscreen page:
 - Rust 2024
 - TUI: ratatui + crossterm
 - Async and networking: compio + cyper
-- NetEase API client: [CRIA](https://github.com/professor-lee/cria) (crate `cria-api`, imported as `cria`), split out of this repository; see *Related Projects*
+- NetEase API client: [CRIA](https://github.com/alpaca-herd/cria) (crate `cria-api`, imported as `cria`), split out of this repository; see *Related Projects*
 - Playback: rodio + symphonia (mp3 / flac) over PipeWire
 - Metadata, artwork and download tags: image + qrcode + lofty
 - Image rendering: ratatui-image + chafa
@@ -383,7 +383,7 @@ Release (`release.yml`) runs the test gates before publishing, publishes `SHA256
 
 ## Related Projects
 
-- [CRIA](https://github.com/professor-lee/cria) (Cloud-music Rust Integration API): the NetEase Cloud Music API client CNMPlayer uses. It was developed here as the vendored `ncm-api-rs/` crate and split into its own MIT-licensed repository with its history preserved, so other Rust projects can use it. Endpoint changes and request-layer fixes now go to CRIA; until its first crates.io release CNMPlayer pins it as a Git dependency in `Cargo.toml`.
+- [CRIA](https://github.com/alpaca-herd/cria) (Cloud-music Rust Integration API): the NetEase Cloud Music API client CNMPlayer uses, published on crates.io as [`cria-api`](https://crates.io/crates/cria-api). It was developed here as the vendored `ncm-api-rs/` crate and split into its own MIT-licensed repository with its history preserved, so other Rust projects can use it. Endpoint changes and request-layer fixes now go to CRIA, and CNMPlayer picks them up by bumping the `cria-api` version.
 - [ncm-api-rs](https://github.com/imsyy/ncm-api-rs): the earlier Rust port CRIA's code base started from
 
 ## Disclaimer

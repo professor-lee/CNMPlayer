@@ -8,15 +8,15 @@ the component licenses below are not replaced by CNMPlayer's AGPL-3.0-only licen
 ## CRIA (crate name: cria-api)
 
 - Project: CRIA (Cloud-music Rust Integration API)
-- Repository: https://github.com/professor-lee/cria
+- Repository: https://github.com/alpaca-herd/cria (crates.io: https://crates.io/crates/cria-api)
 - License: MIT
 - Usage in this project: NetEase Cloud Music API client used by CNMPlayer networking features; compiled into
   the executable as a Cargo dependency
 - Origin: CRIA was maintained in this repository as the vendored `ncm-api-rs/` crate and split into its own
-  repository with its history preserved. Its code base started from [ncm-api-rs](https://github.com/imsyy/ncm-api-rs)
-  (WTFPL v2) and ports [NeteaseCloudMusicApi Enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)
-  (MIT). CRIA's `ACKNOWLEDGEMENTS.md` preserves both upstream notices; the MIT notice that applies to the
-  ported code is reproduced below as well.
+  repository with its history preserved. It originates from [ncm-api-rs](https://github.com/imsyy/ncm-api-rs)
+  (WTFPL v2), a Rust port of [NeteaseCloudMusicApi Enhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced)
+  (MIT), and keeps its endpoints in sync with api-enhanced. CRIA's `ACKNOWLEDGEMENTS.md` preserves both upstream
+  notices; the MIT notice that applies to the ported code is reproduced below as well.
 
 ### CRIA license text
 

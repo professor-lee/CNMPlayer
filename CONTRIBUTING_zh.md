@@ -20,7 +20,7 @@ Rust 1.95 或更新版本。`rust-toolchain.toml` 请求当前 stable 工具链�
 
 锁定依赖需要 Rust 1.95：`compio-driver 0.12.4` 使用了在 1.95 稳定的 [`std::cfg_select!`](https://doc.rust-lang.org/stable/std/macro.cfg_select.html)。依赖 manifest 声明曾提示 1.90，但真实 1.90 构建在 `compio-buf 0.8.3` 的 `MaybeUninit` slice API 处失败，1.93 构建又在 `cfg_select!` 处失败。单看 edition 2024 只需要 1.85；edition 与不完整的 manifest 声明都不能代替真实依赖 MSRV 验证。
 
-网易云 API 客户端是独立的 [CRIA](https://github.com/professor-lee/cria) crate（`cria-api`，导入名 `cria`）。在其首次发布到 crates.io 之前，`Cargo.toml` 按 Git 提交锁定它。新增接口与请求层改动应提交到 CRIA 仓库，合入后再在本仓库用单独的 PR 更新锁定的提交。想在本地试用尚未合入的 CRIA 改动时，用 `[patch."https://github.com/professor-lee/cria"]` 指向本地检出，且不要提交该配置。
+网易云 API 客户端是独立的 [CRIA](https://github.com/alpaca-herd/cria) crate（crates.io 上为 `cria-api`，导入名 `cria`）。新增接口与请求层改动应提交到 CRIA 仓库，待 CRIA 发布包含它们的版本后，再在本仓库用单独的 PR 更新 `cria-api` 版本。想在本地试用尚未发布的 CRIA 改动时，添加 `[patch.crates-io] cria-api = { path = "../cria" }` 指向本地检出，且不要提交该配置。
 
 系统构建依赖 —— 与 CI 在 `ubuntu-24.04` 上安装的列表一致：
 
@@ -66,7 +66,7 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 | `src/data/` | 共享 `Config`，以及资产、原子持久化、会话、播放/私人漫游状态与主题加载。 |
 | `src/render/` | 封面与图形渲染，以及彩蛋形象的帧数据。 |
 | `src/tmplayer/` | 内置全屏播放 UI、渲染器与音频可视化辅助模块；播放由主程序负责，配置使用共享 `Config`。 |
-| （依赖）`cria-api` | 网易云 API 客户端，维护于 [professor-lee/cria](https://github.com/professor-lee/cria)；接口文档见该仓库的 `docs/API.md`。 |
+| （依赖）`cria-api` | 网易云 API 客户端，维护于 [alpaca-herd/cria](https://github.com/alpaca-herd/cria)；接口文档见该仓库的 `docs/API.md` 与 [docs.rs/cria-api](https://docs.rs/cria-api)。 |
 | `config/default.toml` | 默认配置模板。启动时程序会据此在资产根目录下写入并修复 `config/default.toml`。 |
 | `themes/` | 内置 20 款 TOML 配色主题（Catppuccin 各变体、ayu、everforest、monokai、nord、rose pine、solarized、tomorrow、zenburn、zinc 与 `system`；默认 `frappe`）。 |
 | `about/` | About 弹窗的内容 —— 链接、QQ 群、点阵图案。 |
