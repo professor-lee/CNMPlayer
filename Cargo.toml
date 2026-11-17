@@ -35,7 +35,8 @@ qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 parking_lot = "0.12"
 realfft = "3.5"
-cyper = { version = "0.9", features = ["json", "cookies", "stream", "http2"] }
+# gzip/brotli：API JSON 压缩传输（实测歌单详情约 1/10）。音频请求显式 identity，见 streaming.rs/download.rs。
+cyper = { version = "0.9", features = ["json", "cookies", "stream", "http2", "gzip", "brotli"] }
 compio = { version = "0.19", features = ["macros", "time"] }
 http = "1.5"
 see = "0.1"

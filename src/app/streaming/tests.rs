@@ -778,3 +778,68 @@ async fn retrying_flag_follows_backoff_and_clears_when_bytes_flow() {
     compio::time::sleep(Duration::from_millis(20)).await;
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// 像会按请求协商压缩的 CDN 节点：只要请求接受 gzip 就回 gzip。cyper 开了 gzip/brotli
+/// 后会自动声明 Accept-Encoding，音频请求必须显式 identity，才能拿到带总长的原始字节。
+#[compio::test]
+async fn audio_request_opts_out_of_content_encoding() {
+    const RAW: &[u8] = b"abcdef";
+    const GZIP: &[u8] = &[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x4b, 0x4c, 0x4a, 0x4e, 0x49,
+        0x4d, 0x03, 0x00, 0xef, 0x39, 0x8e, 0x4b, 0x06, 0x00, 0x00, 0x00,
+    ];
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0; 4096];
+        let received = socket.read(&mut request).unwrap();
+        let text = String::from_utf8_lossy(&request[..received]).to_ascii_lowercase();
+        let accepts_gzip = text
+            .lines()
+            .find_map(|line| line.strip_prefix("accept-encoding:"))
+            .is_some_and(|value| value.contains("gzip"));
+        let (encoding, body) = if accepts_gzip {
+            ("Content-Encoding: gzip\r\n", GZIP)
+        } else {
+            ("", RAW)
+        };
+        let head = format!(
+            "HTTP/1.1 200 OK\r\n{encoding}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        socket.write_all(head.as_bytes()).unwrap();
+        socket.write_all(body).unwrap();
+    });
+    let directory = unique_test_directory("identity");
+    let final_path = directory.join("song.audio");
+    let http = cyper::Client::builder().no_proxy().build().unwrap();
+    let cache_maintenance = crate::app::cache_maintenance::CacheMaintenance::new(
+        crate::data::config::CacheConfig::default(),
+    );
+    let (tx, _rx) = see::sync::channel((0, 0));
+    let origin = fixed_origin(
+        &http,
+        format!("http://{address}/song"),
+        fast_policy(1, Duration::from_secs(2)),
+    );
+    let reader = StreamingReader::new(origin, final_path.clone(), tx, cache_maintenance)
+        .await
+        .expect("audio response must keep its Content-Length");
+    let bytes = compio::runtime::spawn_blocking(move || {
+        let mut reader = reader;
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).map(|_| bytes)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(bytes, RAW);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !final_path.exists() && std::time::Instant::now() < deadline {
+        compio::time::sleep(Duration::from_millis(10)).await;
+    }
+    compio::time::sleep(Duration::from_millis(20)).await;
+    std::fs::remove_dir_all(directory).unwrap();
+}

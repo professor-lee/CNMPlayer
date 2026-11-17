@@ -448,7 +448,12 @@ impl Origin {
         cancelled: &AtomicBool,
     ) -> std::result::Result<(Response, u64), Failure> {
         let retry = |err: anyhow::Error| Failure::Retry(err);
-        let mut request = self.http.get(url).map_err(|err| retry(err.into()))?;
+        // 断点续传与总长校验依赖原始字节；API 开了 gzip/brotli，这里显式拒绝内容编码。
+        let mut request = self
+            .http
+            .get(url)
+            .and_then(|request| request.header("Accept-Encoding", "identity"))
+            .map_err(|err| retry(err.into()))?;
         if let Some(cookie) = self.cookie.as_deref() {
             request = request
                 .header("Cookie", cookie)

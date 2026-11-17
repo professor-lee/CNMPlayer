@@ -832,6 +832,11 @@ async fn stream_to_file(
             Err(err) => return Err(TaskError::Failed(err.to_string())),
         };
     }
+    // 音频按原始字节落盘并校验长度；开启 API 压缩后要显式拒绝内容编码。
+    request = match request.header("Accept-Encoding", "identity") {
+        Ok(request) => request,
+        Err(err) => return Err(TaskError::Failed(err.to_string())),
+    };
 
     let response = match compio::time::timeout(NET_PHASE_TIMEOUT, request.send()).await {
         Ok(Ok(response)) => response,
