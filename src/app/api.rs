@@ -199,12 +199,12 @@ impl ApiState {
 
     pub(super) fn set_cookie(&mut self, cookie: String) {
         self.cookie = Some(cookie.clone());
-        self.client.set_cookie(cookie);
+        self.client.set_cookie(&cookie);
     }
 
     pub(super) fn clear_cookie(&mut self) {
         self.cookie = None;
-        self.client.set_cookie(String::new());
+        self.client.clear_cookie();
     }
 
     pub(super) async fn validate_cookie(&mut self, cookie: &str) -> Result<bool> {
@@ -804,7 +804,7 @@ impl ApiState {
 
         let merged = response.cookie.join("; ");
         self.cookie = Some(merged.clone());
-        self.client.set_cookie(merged);
+        self.client.set_cookie(&merged);
     }
 }
 

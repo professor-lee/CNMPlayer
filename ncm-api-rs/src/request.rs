@@ -4,7 +4,7 @@
 use crate::crypto;
 use crate::error::{NcmError, Result};
 use crate::util::config::*;
-use crate::util::cookie::{cookie_obj_to_string, cookie_to_json};
+use crate::util::cookie::{CookieJar, cookie_obj_to_string, cookie_to_json};
 use crate::util::device::{generate_device_id, generate_wnmcid, random_hex};
 use crate::util::ip::generate_random_chinese_ip;
 
@@ -12,7 +12,7 @@ use http::header::{COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 /// 上游获取易盾 token 的超时
@@ -25,23 +25,37 @@ static ANTI_CHEAT_TOKEN_REGEX: LazyLock<regex_lite::Regex> =
 static SPECIAL_STATUS_CODES: LazyLock<std::collections::HashSet<i64>> =
     LazyLock::new(|| [201, 302, 400, 502, 800, 801, 802, 803].into());
 
-/// 全局设备 ID（进程生命周期内固定）
-static DEVICE_ID: LazyLock<String> = LazyLock::new(generate_device_id);
-/// 全局 WNMCID
+/// WNMCID：上游每个进程生成一次，与账号和设备无关，保持进程级。
 static WNMCID: LazyLock<String> = LazyLock::new(generate_wnmcid);
 
-/// xeapi 进程级状态：服务端公钥与服务端下发的会话（与上游的全局变量一致）
+/// xeapi 状态：服务端公钥与服务端下发的会话（上游为进程全局，这里按客户端隔离）
+#[derive(Default)]
 struct XeapiState {
     public_key: Option<crypto::XeapiPublicKey>,
     session_id: String,
     session_key: String,
 }
 
-static XEAPI_STATE: std::sync::Mutex<XeapiState> = std::sync::Mutex::new(XeapiState {
-    public_key: None,
-    session_id: String::new(),
-    session_key: String::new(),
-});
+/// 同一 `ApiClient` 的所有克隆共享的会话状态。
+#[derive(Default)]
+struct SharedState {
+    cookies: Mutex<CookieJar>,
+    xeapi: Mutex<XeapiState>,
+}
+
+impl std::fmt::Debug for SharedState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedState")
+            .field("cookies", &*lock(&self.cookies))
+            .field("xeapi_registered", &lock(&self.xeapi).public_key.is_some())
+            .finish()
+    }
+}
+
+/// 状态只做短临界区的读写，持锁线程 panic 后数据仍一致，直接取回。
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poison| poison.into_inner())
+}
 
 /// Cookie Domain 移除正则（编译一次，全局复用）
 static DOMAIN_REGEX: LazyLock<regex_lite::Regex> =
@@ -189,30 +203,36 @@ pub struct ApiResponse {
 }
 
 /// API 客户端
+///
+/// 克隆共享 cookie 与 xeapi 会话（同一登录态）；设备 ID、匿名 token 与超时按值复制。
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     pub(crate) client: cyper::Client,
-    cookie: Option<String>,
     anonymous_token: Option<String>,
-    /// 自定义设备 ID，None 则使用全局默认值
-    device_id: Option<String>,
+    device_id: String,
     /// 单次 API 请求从发送到完整读取 body 的总 deadline
     timeout: Duration,
+    shared: Arc<SharedState>,
 }
 
 impl ApiClient {
     /// 默认请求 deadline，见 [`ApiClient::set_timeout`]。
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// 使用外部提供的 Client 创建 API 客户端
+    /// 使用外部提供的 Client 创建 API 客户端；设备 ID 随机生成，可用
+    /// [`ApiClient::set_device_id`] 换成调用方持久化的值。
     pub fn new(cookie: Option<String>, client: cyper::Client) -> Self {
-        Self {
+        let api = Self {
             client,
-            cookie,
             anonymous_token: None,
-            device_id: None,
+            device_id: generate_device_id(),
             timeout: Self::DEFAULT_TIMEOUT,
+            shared: Arc::default(),
+        };
+        if let Some(cookie) = cookie {
+            api.set_cookie(&cookie);
         }
+        api
     }
 
     /// 设置单次 API 请求的总 deadline（连接、响应头与完整 body 共用）。
@@ -222,9 +242,23 @@ impl ApiClient {
         self.timeout = timeout;
     }
 
-    /// 设置 cookie
-    pub fn set_cookie(&mut self, cookie: String) {
-        self.cookie = Some(cookie);
+    /// 整体替换会话 cookie（`k=v; k2=v2`）；空串等同 [`ApiClient::clear_cookie`]。
+    ///
+    /// 之后经本客户端发出、且未在 `Query` 里单独指定 cookie 的请求，响应的
+    /// Set-Cookie 会自动合并进来；用 [`ApiClient::cookie`] 取出当前值持久化。
+    pub fn set_cookie(&self, cookie: &str) {
+        lock(&self.shared.cookies).replace(cookie);
+    }
+
+    /// 清空会话 cookie（登出）。清空前已发出的请求，其响应不会再写回 cookie。
+    pub fn clear_cookie(&self) {
+        lock(&self.shared.cookies).replace("");
+    }
+
+    /// 当前会话 cookie（Cookie 请求头格式）；未登录且没有服务端下发的 cookie 时为 `None`。
+    pub fn cookie(&self) -> Option<String> {
+        let jar = lock(&self.shared.cookies);
+        (!jar.is_empty()).then(|| jar.header())
     }
 
     /// 设置匿名 token
@@ -232,16 +266,14 @@ impl ApiClient {
         self.anonymous_token = Some(token);
     }
 
-    /// 设置自定义设备 ID
-    ///
-    /// 不同客户端实例可使用不同设备 ID，避免共享全局 ID 触发风控
+    /// 设置设备 ID（调用方持久化后传入，跨进程保持同一设备身份）
     pub fn set_device_id(&mut self, device_id: String) {
-        self.device_id = Some(device_id);
+        self.device_id = device_id;
     }
 
-    /// 获取当前设备 ID（自定义优先，否则使用全局默认）
-    fn get_device_id(&self) -> &str {
-        self.device_id.as_deref().unwrap_or(&DEVICE_ID)
+    /// 当前设备 ID
+    pub fn device_id(&self) -> &str {
+        &self.device_id
     }
 
     /// 发起 API 请求；HTTP 发送到完整响应 body 共用 [`ApiClient::set_timeout`] 设置的 deadline。
@@ -284,13 +316,15 @@ impl ApiClient {
             headers.insert("X-Forwarded-For", fwd);
         }
 
-        // Cookie 处理
-        let cookie_str = options
-            .cookie
-            .as_deref()
-            .or(self.cookie.as_deref())
-            .unwrap_or("");
-        let mut cookie_map = cookie_to_json(cookie_str);
+        // Cookie 处理：Query 指定的 cookie 只用于本次请求，不读写客户端会话
+        let (cookie_str, jar_epoch) = match options.cookie.as_deref() {
+            Some(cookie) => (cookie.to_string(), None),
+            None => {
+                let jar = lock(&self.shared.cookies);
+                (jar.header(), Some(jar.epoch()))
+            }
+        };
+        let mut cookie_map = cookie_to_json(&cookie_str);
         for (key, value) in &options.cookie_overrides {
             cookie_map.insert((*key).to_string(), (*value).to_string());
         }
@@ -323,7 +357,7 @@ impl ApiClient {
             .or_insert_with(|| os.osver.to_string());
         cookie_map
             .entry("deviceId".to_string())
-            .or_insert_with(|| self.get_device_id().to_string());
+            .or_insert_with(|| self.device_id.clone());
         cookie_map
             .entry("os".to_string())
             .or_insert_with(|| os.os.to_string());
@@ -456,9 +490,7 @@ impl ApiClient {
                 headers.insert(COOKIE, header_value(&cookie_obj_to_string(&xeapi_cookie)));
 
                 let session = {
-                    let state = XEAPI_STATE
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner());
+                    let state = lock(&self.shared.xeapi);
                     (state.session_id.clone(), state.session_key.clone())
                 };
                 let session = (!session.0.is_empty() && !session.1.is_empty())
@@ -653,11 +685,20 @@ impl ApiClient {
             })
             .await
             .map_err(|_| NcmError::Timeout { timeout })??;
+        // 与浏览器 cookie jar 一致：只要拿到 HTTP 响应就合并 Set-Cookie，与业务码无关。
+        if let Some(epoch) = jar_epoch
+            && !resp_cookies.is_empty()
+        {
+            let mut jar = lock(&self.shared.cookies);
+            if jar.epoch() == epoch {
+                for set_cookie in &resp_cookies {
+                    jar.apply_set_cookie(set_cookie);
+                }
+            }
+        }
         let body = if crypto_type == CryptoType::Xeapi {
             if let Some((session_id, session_key)) = xeapi_session {
-                let mut state = XEAPI_STATE
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner());
+                let mut state = lock(&self.shared.xeapi);
                 state.session_id = session_id;
                 state.session_key = session_key;
             }
@@ -702,12 +743,7 @@ impl ApiClient {
         device_id: &str,
         timeout: Duration,
     ) -> Result<crypto::XeapiPublicKey> {
-        if let Some(key) = XEAPI_STATE
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .public_key
-            .clone()
-        {
+        if let Some(key) = lock(&self.shared.xeapi).public_key.clone() {
             return Ok(key);
         }
 
@@ -780,10 +816,7 @@ impl ApiClient {
         }
 
         let key = crypto::xeapi_decrypt_public_key(encrypted)?;
-        XEAPI_STATE
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .public_key = Some(key.clone());
+        lock(&self.shared.xeapi).public_key = Some(key.clone());
         Ok(key)
     }
 }
