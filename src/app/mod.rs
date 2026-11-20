@@ -248,7 +248,6 @@ impl App {
     /// [`StartupInit`]，加载页随即可以显示真实进度。
     pub(crate) async fn new(config: Config, theme: Theme) -> Result<Self> {
         let cache_maintenance = CacheMaintenance::new(config.cache.clone());
-        let audio_player = AudioPlayer::new(&config, cache_maintenance.clone())?;
         let persistence = PersistenceWorker::spawn("cnmplayer-persistence")?;
         let (saved_cookie, device_id) = compio::runtime::spawn_blocking(|| -> Result<_> {
             let cookie = session::load_cookie()?;
@@ -273,6 +272,7 @@ impl App {
         // 克隆共享会话 cookie，但设备 ID 按值复制：必须在派生后台 worker 之前设好。
         api.set_device_id(device_id);
         let wake = api.wake_signal();
+        let audio_player = AudioPlayer::new(&config, cache_maintenance.clone(), wake.clone())?;
         let cache_root = resolve_cache_root(&config);
         let cover_cache_dir = cache_root.join(COVER_CACHE_SUBDIR);
         let download_root =

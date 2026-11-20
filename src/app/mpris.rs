@@ -159,15 +159,7 @@ impl App {
     }
 
     fn mpris_pause(&mut self) {
-        self.playback.cancel_deferred_advance();
-        if self.playback.has_pending_start() {
-            self.playback.set_pending_paused(true);
-            return;
-        }
-        if self.playback.playback_state == PlaybackRuntimeState::Playing {
-            self.playback.audio_player.toggle_play_pause();
-            self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
-        }
+        self.pause_playback();
     }
 
     fn mpris_seek_relative(&mut self, delta_micros: i64) {

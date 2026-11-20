@@ -1,45 +1,88 @@
-use super::error_cb;
-use parking_lot::Mutex;
-use rodio::cpal::{Error, ErrorKind};
+use super::{OutputEvents, error_cb};
+use crate::render::wake::WakeSignal;
+use rodio::cpal::{Error, ErrorKind, HostId};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-#[test]
-fn default_device_reroutes_do_not_request_playback_restart() {
-    let failure = Arc::new(Mutex::new(None));
-    let callback = error_cb(failure.clone());
+fn events() -> Arc<OutputEvents> {
+    Arc::new(OutputEvents::new(WakeSignal::default()))
+}
 
-    callback(Error::new(ErrorKind::DeviceChanged));
-    callback(Error::new(ErrorKind::DeviceChanged));
-
-    assert!(failure.lock().is_none());
+fn pause_requested(output: &OutputEvents) -> bool {
+    output.pause_requested.load(Ordering::Acquire)
 }
 
 #[test]
-fn reroute_does_not_mask_a_pending_stream_failure() {
-    for kind in [
-        ErrorKind::DeviceNotAvailable,
-        ErrorKind::StreamInvalidated,
-        ErrorKind::UnsupportedConfig,
-    ] {
-        let failure = Arc::new(Mutex::new(None));
-        let callback = error_cb(failure.clone());
-        let fatal = Error::with_message(kind, "output stream failed");
+fn route_changes_request_pause_without_failing_playback() {
+    for kind in [ErrorKind::DeviceChanged, ErrorKind::DeviceNotAvailable] {
+        let output = events();
+        let wake = output.wake.clone();
+        let callback = error_cb(output.clone(), HostId::PipeWire);
 
-        callback(fatal.clone());
-        callback(Error::new(ErrorKind::DeviceChanged));
+        callback(Error::new(kind));
 
-        assert_eq!(*failure.lock(), Some(fatal));
+        assert!(pause_requested(&output), "{kind:?} must pause");
+        assert!(output.failure.lock().is_none(), "{kind:?} must not stop");
+        assert!(wake.take(), "{kind:?} must wake the UI");
     }
 }
 
 #[test]
-fn stream_failure_after_a_reroute_still_requests_failure_handling() {
-    let failure = Arc::new(Mutex::new(None));
-    let callback = error_cb(failure.clone());
+fn self_recovering_warnings_neither_pause_nor_fail() {
+    for kind in [
+        ErrorKind::Xrun,
+        ErrorKind::BackendError,
+        ErrorKind::RealtimeDenied,
+    ] {
+        let output = events();
+        let callback = error_cb(output.clone(), HostId::PipeWire);
+
+        callback(Error::new(kind));
+
+        assert!(!pause_requested(&output), "{kind:?} must not pause");
+        assert!(output.failure.lock().is_none(), "{kind:?} must not stop");
+    }
+}
+
+#[test]
+fn dead_streams_still_request_failure_handling() {
+    for kind in [
+        ErrorKind::StreamInvalidated,
+        ErrorKind::UnsupportedConfig,
+        ErrorKind::Other,
+    ] {
+        let output = events();
+        let callback = error_cb(output.clone(), HostId::PipeWire);
+        let fatal = Error::with_message(kind, "output stream failed");
+
+        callback(fatal.clone());
+
+        assert_eq!(*output.failure.lock(), Some(fatal));
+        assert!(!pause_requested(&output));
+    }
+}
+
+#[test]
+fn route_change_does_not_mask_a_pending_stream_failure() {
+    let output = events();
+    let callback = error_cb(output.clone(), HostId::PipeWire);
+    let fatal = Error::new(ErrorKind::StreamInvalidated);
+
+    callback(fatal.clone());
+    callback(Error::new(ErrorKind::DeviceChanged));
+
+    assert_eq!(*output.failure.lock(), Some(fatal));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn alsa_device_loss_is_a_failure_because_its_stream_worker_exits() {
+    let output = events();
+    let callback = error_cb(output.clone(), HostId::Alsa);
     let fatal = Error::new(ErrorKind::DeviceNotAvailable);
 
-    callback(Error::new(ErrorKind::DeviceChanged));
     callback(fatal.clone());
 
-    assert_eq!(*failure.lock(), Some(fatal));
+    assert_eq!(*output.failure.lock(), Some(fatal));
+    assert!(!pause_requested(&output));
 }
