@@ -292,6 +292,23 @@ impl App {
         self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
     }
 
+    /// Pauses in place, including a track that is still buffering. Returns whether
+    /// anything was playing.
+    pub(super) fn pause_playback(&mut self) -> bool {
+        self.playback.cancel_deferred_advance();
+        if self.playback.has_pending_start() {
+            let was_playing = self.playback.playback_state != PlaybackRuntimeState::Paused;
+            self.playback.set_pending_paused(true);
+            return was_playing;
+        }
+        if self.playback.playback_state != PlaybackRuntimeState::Playing {
+            return false;
+        }
+        self.playback.audio_player.pause();
+        self.playback.playback_state = map_audio_state(self.playback.audio_player.state());
+        true
+    }
+
     pub(super) async fn play_previous_hotkey(&mut self) {
         if self.playback.playback_queue.is_empty() {
             self.set_runtime_status(self.lang_text("当前播放队列为空", "Playback queue is empty"));
@@ -395,6 +412,12 @@ impl App {
     }
 
     async fn tick_playback(&mut self) {
+        if self.playback.audio_player.take_output_pause_request() && self.pause_playback() {
+            self.set_runtime_status(self.lang_text(
+                "音频输出设备已变化，已暂停",
+                "Audio output device changed; paused",
+            ));
+        }
         self.tick_playlist_page_fetch();
         self.maybe_prefetch_playback_page();
         self.poll_pending_start();

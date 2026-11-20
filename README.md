@@ -198,6 +198,8 @@ sudo apt install -y build-essential cmake pkg-config \
 - Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime
 - A Nerd Font is required for the playback and navigation icons; the application never guesses glyph availability from `TERM`
 
+When the system default output changes or disappears (for example, unplugging headphones), playback pauses and keeps its position. It does not resume on its own; press play to continue on the current output. Only real output-stream failures stop playback, shown in the status line.
+
 ## First Run and Asset Root
 
 On first run the app creates an asset directory under your OS config directory; on Linux this is usually `~/.config/cnmplayer`.

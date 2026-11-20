@@ -3,6 +3,7 @@ use super::streaming::StreamingReaderHandle;
 use super::streaming::StreamingStatus;
 use crate::STORAGE;
 use crate::data::config::Config;
+use crate::render::wake::WakeSignal;
 use crate::tmplayer::app::state::EQ_BANDS;
 use crate::tmplayer::app::state::EQ_FREQS_HZ;
 use crate::tmplayer::app::state::EqSettings;
@@ -14,11 +15,14 @@ use anyhow::Result;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 use rodio::DeviceSinkBuilder;
+use rodio::DeviceSinkError;
 use rodio::MixerDeviceSink;
 use rodio::Player;
 use rodio::Source;
 use rodio::cpal::Error;
 use rodio::cpal::ErrorKind;
+use rodio::cpal::HostId;
+use rodio::cpal::traits::HostTrait;
 use rodio::source::SeekError;
 use see::sync::Receiver;
 use std::fs;
@@ -26,6 +30,7 @@ use std::num::NonZero;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
@@ -33,7 +38,7 @@ use std::time::Duration;
 pub(super) struct AudioPlayer {
     _device_sink: MixerDeviceSink,
     player: Arc<Player>,
-    error: MaybeError,
+    output: Arc<OutputEvents>,
     cache_dir: PathBuf,
     total_duration: Option<Duration>,
     eq_params: Arc<EqParams>,
@@ -199,40 +204,76 @@ pub(super) enum AudioPlayerState {
     Stopped,
 }
 
-type MaybeError = Arc<Mutex<Option<Error>>>;
+/// Output-stream events reported by CPAL, read by the UI tick.
+struct OutputEvents {
+    /// A stream failure that requires stopping and rebuilding the sink.
+    failure: Mutex<Option<Error>>,
+    /// The output route changed or vanished while the stream stayed alive.
+    pause_requested: AtomicBool,
+    wake: WakeSignal,
+}
 
-fn error_cb(error: MaybeError) -> impl Fn(Error) {
-    move |e| {
-        // CPAL has already rerouted this active stream; stopping would discard
-        // the current source and position. Leave any pending real failure intact.
-        if e.kind() == ErrorKind::DeviceChanged {
-            return;
+impl OutputEvents {
+    fn new(wake: WakeSignal) -> Self {
+        Self {
+            failure: Mutex::new(None),
+            pause_requested: AtomicBool::new(false),
+            wake,
         }
-        let mut error = error.lock();
-        *error = Some(e)
+    }
+
+    fn request_pause(&self) {
+        self.pause_requested.store(true, Ordering::Release);
+        self.wake.notify();
     }
 }
 
-fn build_player(error: MaybeError) -> Result<(Player, MixerDeviceSink)> {
-    let builder = DeviceSinkBuilder::from_default_device()?;
-    let sink = builder.with_error_callback(error_cb(error)).open_stream()?;
+fn error_cb(output: Arc<OutputEvents>, host: HostId) -> impl Fn(Error) {
+    move |e| match e.kind() {
+        // The stream is still alive. Pause so playback does not jump to another
+        // device, and keep the source so the position survives.
+        ErrorKind::DeviceChanged => output.request_pause(),
+        // PipeWire reports this when the default output disappears; the same stream
+        // relinks once an output returns. On ALSA the stream worker exits instead.
+        ErrorKind::DeviceNotAvailable if host == HostId::PipeWire => output.request_pause(),
+        // Xrun arrives on the realtime audio thread and the backend recovers by
+        // itself; no locking or file I/O here.
+        ErrorKind::Xrun => {}
+        ErrorKind::BackendError | ErrorKind::RealtimeDenied => {
+            log::warn!("audio output warning: {e}");
+        }
+        _ => {
+            *output.failure.lock() = Some(e);
+            output.wake.notify();
+        }
+    }
+}
+
+fn build_player(output: Arc<OutputEvents>) -> Result<(Player, MixerDeviceSink)> {
+    let host = rodio::cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or(DeviceSinkError::NoDevice)?;
+    let sink = DeviceSinkBuilder::from_device(device)?
+        .with_error_callback(error_cb(output, host.id()))
+        .open_stream()?;
     let player = Player::connect_new(sink.mixer());
     Ok((player, sink))
 }
 
 impl AudioPlayer {
     fn rebuild_on_error(&mut self) -> Result<()> {
-        if self.error.lock().is_some() {
+        if self.output.failure.lock().is_some() {
             // Never let a queued seek target survive replacing the Player.
             self.seek_worker.invalidate();
-            let (player, sink) = build_player(self.error.clone())?;
+            let (player, sink) = build_player(self.output.clone())?;
             let volume = self.player.volume();
             self.player.stop();
             let new_player = Arc::new(player);
             new_player.set_volume(volume);
             self._device_sink = sink;
             self.player = new_player;
-            *self.error.lock() = None;
+            *self.output.failure.lock() = None;
         }
         Ok(())
     }
@@ -276,9 +317,13 @@ impl AudioPlayer {
         Ok(())
     }
 
-    pub(super) fn new(config: &Config, cache_maintenance: CacheMaintenance) -> Result<Self> {
-        let error = Arc::new(Mutex::new(None));
-        let (player, sink) = build_player(error.clone())?;
+    pub(super) fn new(
+        config: &Config,
+        cache_maintenance: CacheMaintenance,
+        wake: WakeSignal,
+    ) -> Result<Self> {
+        let output = Arc::new(OutputEvents::new(wake));
+        let (player, sink) = build_player(output.clone())?;
         let cache_root = resolve_cache_root(config);
         let cache_dir = cache_root.join("audio");
         let eq = EqSettings {
@@ -304,7 +349,7 @@ impl AudioPlayer {
         let player = Self {
             _device_sink: sink,
             player: Arc::new(player),
-            error,
+            output,
             cache_dir,
             total_duration: None,
             eq_params,
@@ -402,7 +447,7 @@ impl AudioPlayer {
 
     pub(super) fn playback_failure(&self) -> Option<String> {
         let mut failures = Vec::new();
-        if let Some(error) = self.error.lock().as_ref() {
+        if let Some(error) = self.output.failure.lock().as_ref() {
             failures.push(error.to_string());
         }
         if let Some(handle) = self.stream_handle.as_ref()
@@ -426,6 +471,18 @@ impl AudioPlayer {
         if self.player.is_paused() {
             self.player.play();
         } else {
+            self.player.pause();
+        }
+    }
+
+    /// Consumes a pause request raised by an output route change.
+    pub(super) fn take_output_pause_request(&self) -> bool {
+        self.output.pause_requested.swap(false, Ordering::AcqRel)
+    }
+
+    /// Pauses the current track in place; the source and position are kept.
+    pub(super) fn pause(&mut self) {
+        if !self.player.empty() {
             self.player.pause();
         }
     }

@@ -198,6 +198,8 @@ sudo apt install -y build-essential cmake pkg-config \
 - Linux 上的 PipeWire 音频（ALSA 后端已弃用），以及运行时的 chafa 共享库
 - 播放与导航图标要求 Nerd Font；程序不根据 `TERM` 猜测字形是否可用
 
+系统默认输出设备切换或消失时（例如拔掉耳机），播放会暂停并保留进度，不会自动继续；按播放即在当前输出设备上继续。只有输出流真正失效才会停止播放，并显示在状态行。
+
 ## 首次运行与资源目录
 
 首次运行时，程序会在系统配置目录下创建资产目录；Linux 上通常是 `~/.config/cnmplayer`。
