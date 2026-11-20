@@ -1085,9 +1085,9 @@ dependencies = [
 
 [[package]]
 name = "cria-api"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dd36cf27785f3e70e14a0b412755653356647f5125b496b43b4fcb68a8d176d"
+checksum = "b8617814eefec95f0dfd348aa4ef1d3ea85f97ce68a1bf4595ba6af2e05d8bbb"
 dependencies = [
  "aes",
  "aes-gcm",
