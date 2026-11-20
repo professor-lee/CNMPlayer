@@ -14,7 +14,6 @@ CHECKS = {
     "stable / default",
     "stable / no-default-features",
     "fmt and clippy",
-    "ncm-api tests",
     "AUR packaging integration",
 }
 

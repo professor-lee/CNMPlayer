@@ -60,13 +60,11 @@ async fn cover_network_deadline_is_not_reset_after_headers() {
     let error = result
         .expect("the cover deadline must beat the watchdog")
         .unwrap_err();
-    assert!(matches!(
-        error.downcast_ref::<ncm_api::NcmError>(),
-        Some(ncm_api::NcmError::Timeout { timeout })
-            if *timeout == Duration::from_millis(300)
-    ));
     let message = format!("{error:#}");
-    assert!(message.contains("complete response"));
+    assert!(
+        message.contains("did not complete within 300ms"),
+        "{message}"
+    );
     assert!(message.contains(&url));
 }
 

@@ -832,6 +832,11 @@ async fn stream_to_file(
             Err(err) => return Err(TaskError::Failed(err.to_string())),
         };
     }
+    // 音频按原始字节落盘并校验长度；开启 API 压缩后要显式拒绝内容编码。
+    request = match request.header("Accept-Encoding", "identity") {
+        Ok(request) => request,
+        Err(err) => return Err(TaskError::Failed(err.to_string())),
+    };
 
     let response = match compio::time::timeout(NET_PHASE_TIMEOUT, request.send()).await {
         Ok(Ok(response)) => response,
@@ -1024,7 +1029,7 @@ async fn fetch_song_metadata(api: &ApiState, request: &DownloadRequest) -> SongM
 /// 歌词：拿不到（纯音乐）就返回 `None`，不写空标签。
 async fn fetch_lyrics(api: &ApiState, song_id: &str) -> Option<String> {
     let mut api = api.clone();
-    let read_lrc = |response: ncm_api::request::ApiResponse| {
+    let read_lrc = |response: cria::ApiResponse| {
         response
             .body
             .pointer("/lrc/lyric")

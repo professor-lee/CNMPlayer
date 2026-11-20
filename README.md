@@ -207,7 +207,8 @@ The root holds (files appear as you use the app):
 
 - `config/default.toml` — application, playback, keybind and cache settings
 - `themes/*.toml` — theme files (the key is the file's `name` field, falling back to the file name); any extra `.toml` dropped here becomes selectable
-- `auth/session.toml` — the persisted login cookie
+- `auth/session.toml` — the persisted login cookie (refreshed cookies from the server are written back)
+- `auth/device.toml` — the persisted device ID; kept across logouts so the client keeps one device identity
 - `playback/session.toml` — the remembered queue (written while `playback_memory` is on)
 - `private_roam/session.toml` — the private-roam list, its last played position and the cached cover
 
@@ -359,7 +360,7 @@ Fullscreen page:
 - Rust 2024
 - TUI: ratatui + crossterm
 - Async and networking: compio + cyper
-- NetEase API client: `ncm-api` (vendored from [ncm-api-rs](https://github.com/imsyy/ncm-api-rs) into `ncm-api-rs/` as a path dependency)
+- NetEase API client: [CRIA](https://github.com/alpaca-herd/cria) (crate `cria-api`, imported as `cria`), split out of this repository; see *Related Projects*
 - Playback: rodio + symphonia (mp3 / flac) over PipeWire
 - Metadata, artwork and download tags: image + qrcode + lofty
 - Image rendering: ratatui-image + chafa
@@ -372,17 +373,18 @@ Fullscreen page:
 ```bash
 cargo run                              # development build
 cargo build --release                  # release build
-cargo test --workspace --all-targets   # root and vendored crate tests
+cargo test --workspace --all-targets   # all crate tests
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on stable, then fmt and clippy gates for the host and the vendored crate, plus the vendored test suite.
-Release (`release.yml`) runs the root and vendored test gates before publishing, publishes `SHA256SUMS` alongside the `x86_64` and `aarch64` tarballs, and maintains the AUR packages.
+CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on stable, then fmt and clippy gates. The API client is checked in the CRIA repository's own CI.
+Release (`release.yml`) runs the test gates before publishing, publishes `SHA256SUMS` alongside the `x86_64` and `aarch64` tarballs, and maintains the AUR packages.
 
 ## Related Projects
 
-- [ncm-api-rs](https://github.com/imsyy/ncm-api-rs): the NetEase Cloud Music API client vendored in `ncm-api-rs/`
+- [CRIA](https://github.com/alpaca-herd/cria) (Cloud-music Rust Integration API): the NetEase Cloud Music API client CNMPlayer uses, published on crates.io as [`cria-api`](https://crates.io/crates/cria-api). It was developed here as the vendored `ncm-api-rs/` crate and split into its own MIT-licensed repository with its history preserved, so other Rust projects can use it. Endpoint changes and request-layer fixes now go to CRIA, and CNMPlayer picks them up by bumping the `cria-api` version.
+- [ncm-api-rs](https://github.com/imsyy/ncm-api-rs): the earlier Rust port CRIA's code base started from
 
 ## Disclaimer
 
@@ -392,7 +394,7 @@ The full disclaimer — unofficial client, music copyright, personal-use-only ca
 
 CNMPlayer is licensed under [AGPL-3.0-only](LICENSE).
 
-Third-party attributions and license notices for vendored code, adapted algorithms and the FFT dependencies are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which is also included in the prebuilt release archives.
+Third-party attributions and license notices for the CRIA dependency, adapted algorithms and the FFT dependencies are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which is also included in the prebuilt release archives.
 
 See [CITATION.cff](CITATION.cff) for the standard citation metadata and upstream references.
 

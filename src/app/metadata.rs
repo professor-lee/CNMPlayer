@@ -95,7 +95,6 @@ async fn persist_fetched_cover(
 #[derive(Debug, Clone)]
 pub(super) struct LyricFetchRequest {
     pub(super) song_id: String,
-    pub(super) cookie: Option<String>,
     pub(super) generation: u64,
 }
 
@@ -163,7 +162,7 @@ enum LyricResponse {
     Retryable,
 }
 
-fn classify_lyric_response(response: anyhow::Result<ncm_api::ApiResponse>) -> LyricResponse {
+fn classify_lyric_response(response: anyhow::Result<cria::ApiResponse>) -> LyricResponse {
     let Ok(response) = response else {
         return LyricResponse::Retryable;
     };
@@ -209,7 +208,7 @@ fn classify_lyric_response(response: anyhow::Result<ncm_api::ApiResponse>) -> Ly
 }
 
 async fn fetch_lyrics_from(
-    mut fetch: impl AsyncFnMut(bool) -> anyhow::Result<ncm_api::ApiResponse>,
+    mut fetch: impl AsyncFnMut(bool) -> anyhow::Result<cria::ApiResponse>,
 ) -> Option<Vec<LyricLine>> {
     let first = classify_lyric_response(fetch(true).await);
     if let LyricResponse::Present(lines) = first {
@@ -289,13 +288,9 @@ pub(super) async fn loop_lyric_fetch(
     mut api: ApiState,
 ) {
     let wake = api.wake_signal();
-    let mut process_fn = async move |req: &LyricFetchRequest| {
-        if let Some(cookie) = &req.cookie {
-            api.set_cookie(cookie.to_string());
-        }
-
-        fetch_lyrics(&mut api, &req.song_id).await
-    };
+    // 与主界面共享同一 ApiClient 会话，登录/登出即时生效，无需逐请求传 cookie。
+    let mut process_fn =
+        async move |req: &LyricFetchRequest| fetch_lyrics(&mut api, &req.song_id).await;
     latest_fetch::run_latest(
         rx,
         tx,
@@ -498,11 +493,6 @@ impl App {
         let req = LyricFetchRequest {
             song_id: song_id.clone(),
             generation,
-            cookie: self
-                .api
-                .session_cookie()
-                .map(|value| value.to_string())
-                .or_else(|| self.session_cookie.clone()),
         };
         if self.lyric_fetch_tx.send(Some(req)).is_ok() {
             self.lyric_fetch_generation = generation;

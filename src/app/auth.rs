@@ -14,15 +14,14 @@ use crate::data::config::AudioQuality;
 use crate::data::config::Language;
 use crate::data::persistence::PersistenceKey;
 use crate::data::private_roam;
-use crate::data::session;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use cria::ApiResponse;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
-use ncm_api::ApiResponse;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -451,9 +450,7 @@ impl App {
         self.settings.reset_navigation();
         self.session_cookie = None;
         self.api.clear_cookie();
-        let _ = self
-            .persistence
-            .enqueue_latest(PersistenceKey::Session, session::clear_cookie);
+        self.clear_persisted_session();
         self.clear_playback_memory();
         let _ = self
             .persistence
@@ -663,15 +660,8 @@ impl App {
     }
 
     async fn mark_login_success(&mut self, text: &str) {
-        self.session_cookie = self.api.session_cookie().map(|value| value.to_string());
-        if let Some(cookie) = self.session_cookie.as_deref() {
-            let cookie = cookie.to_string();
-            let _ = self
-                .persistence
-                .enqueue_latest(PersistenceKey::Session, move || {
-                    session::save_cookie(&cookie)
-                });
-        }
+        self.session_cookie = self.api.session_cookie();
+        self.persist_session_cookie();
         self.refresh_vip_audio_access().await;
         let _ = self.refresh_liked_song_cache().await;
         self.browse.home_sidebar = HomeSidebarState::default();
