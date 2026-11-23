@@ -5,6 +5,9 @@ mod render;
 mod status;
 mod tmplayer;
 mod ui;
+#[cfg(windows)]
+#[path = "../windows/mod.rs"]
+mod win;
 
 use crate::render::frame_clock::FrameClock;
 use crate::render::mark_animation_end_frame;
