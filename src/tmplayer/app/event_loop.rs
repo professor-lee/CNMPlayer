@@ -13,7 +13,7 @@ use crate::tmplayer::{
     HostRepeatMode,
 };
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{Terminal, backend::Backend};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -448,7 +448,8 @@ where
             }
             while event::poll(Duration::ZERO)? {
                 match event::read()? {
-                    Event::Key(k) => {
+                    // Windows 每次按键还会再报一次 Release；只处理按下，与主界面一致。
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
                         let action = map_key(k, app.overlay, &app.config);
                         let exits_fullscreen = matches!(action, Action::Quit);
                         handle_action(app, host_bridge, action, &last_layout).await?;
