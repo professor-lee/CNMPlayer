@@ -12,6 +12,7 @@ use super::tracks::format_duration;
 use super::tracks::parse_tracks;
 use crate::data::config::Language;
 use crate::data::persistence::PersistenceKey;
+use crate::data::playback_session;
 use crate::data::private_roam;
 use serde_json::Value;
 
@@ -300,6 +301,14 @@ fn today_day_number() -> i64 {
         .unwrap_or_default()
 }
 
+/// 启动时是否刷新私人漫游：今天没刷过，且漫游列表为空或恢复的队列不来自漫游。
+///
+/// 队列来自漫游时刷新只保留最后播放的那首，队列里后续的旧歌在列表里找不到，
+/// 播放跟踪、追加与续播随之失效；列表为空时跳过则漫游队列播完就停，必须拉取。
+fn private_roam_refresh_due(refreshed_today: bool, roam_empty: bool, queue_is_roam: bool) -> bool {
+    !refreshed_today && (roam_empty || !queue_is_roam)
+}
+
 /// 每日刷新合并规则：上次最后播放的歌曲保留在首位，其后追加新歌（按 id 去重）
 pub(super) fn merge_private_roam_refresh(
     old_tracks: &[PlaylistTrack],
@@ -390,9 +399,27 @@ impl App {
         self.persist_private_roam();
     }
 
-    /// 今天是否已刷新过私人漫游（刷新判据只有这一处）。
+    /// 今天是否已刷新过私人漫游（按天判断只有这一处）。
     pub(super) fn private_roam_refreshed_today(&self) -> bool {
         self.browse.private_roam.last_refresh_day == Some(today_day_number())
+    }
+
+    /// 启动时是否刷新私人漫游，须在恢复播放记忆之前调用：此时内存队列还是空的，
+    /// 队列来源只能读播放记忆存档。跳过时不写 `last_refresh_day`，
+    /// 下次队列不来自漫游的启动补刷。
+    pub(super) async fn private_roam_startup_refresh_due(&self) -> bool {
+        let refreshed_today = self.private_roam_refreshed_today();
+        let roam_empty = self.browse.private_roam.tracks.is_empty();
+        // 关闭播放记忆时启动不恢复队列；存档读不出时恢复同样失败，都按非漫游处理。
+        let queue_is_roam = !refreshed_today
+            && !roam_empty
+            && self.config.playback_memory
+            && matches!(
+                compio::runtime::spawn_blocking(playback_session::load).await,
+                Ok(Ok(Some(record)))
+                    if record.source_playlist_id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)
+            );
+        private_roam_refresh_due(refreshed_today, roam_empty, queue_is_roam)
     }
 
     /// 应用一批新拉取的漫游歌曲（启动初始化与每日刷新共用）。
