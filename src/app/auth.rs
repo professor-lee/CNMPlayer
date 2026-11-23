@@ -42,6 +42,8 @@ pub(crate) struct LoginState {
     pub(crate) captcha: String,
     pub(crate) qr_key: String,
     pub(crate) qr_url: String,
+    /// 上一次写进日志的二维码轮询结果；轮询每 1.4 秒一次，结果不变就不再重复写。
+    qr_last_report: Option<String>,
 }
 
 impl Default for LoginState {
@@ -55,6 +57,7 @@ impl Default for LoginState {
             captcha: String::new(),
             qr_key: String::new(),
             qr_url: String::new(),
+            qr_last_report: None,
         }
     }
 }
@@ -65,6 +68,15 @@ impl LoginState {
             self.method = method;
             self.focus_index = 0;
         }
+    }
+
+    /// 轮询结果与上次不同（或换了新二维码）时返回 true 并记下它。
+    fn qr_result_changed(&mut self, text: &str) -> bool {
+        if self.qr_last_report.as_deref() == Some(text) {
+            return false;
+        }
+        self.qr_last_report = Some(text.to_string());
+        true
     }
 
     fn field_count(&self) -> usize {
@@ -520,6 +532,7 @@ impl App {
     pub(super) fn apply_qr_login_code(&mut self, code: QrLoginCode) {
         self.login.qr_key = code.key;
         self.login.qr_url = code.url.clone();
+        self.login.qr_last_report = None;
         status::info(if code.url.is_empty() {
             "二维码已刷新，请按 Enter 轮询状态".to_string()
         } else {
@@ -536,10 +549,13 @@ impl App {
         let response = match self.api.login_qr_check(&self.login.qr_key).await {
             Ok(response) => response,
             Err(err) => {
-                status::error(format!(
+                let text = format!(
                     "{}: {err}",
                     self.lang_text("轮询二维码失败", "QR code status check failed")
-                ));
+                );
+                if self.login.qr_result_changed(&text) {
+                    status::error(text);
+                }
                 return;
             }
         };
@@ -550,14 +566,27 @@ impl App {
                 status::info("二维码已过期，已自动刷新");
                 self.refresh_qr_login().await;
             }
-            801 => status::info("等待扫码"),
-            802 => status::info("已扫码，等待确认"),
+            801 | 802 => {
+                let text = if code == 801 {
+                    "等待扫码"
+                } else {
+                    "已扫码，等待确认"
+                };
+                if self.login.qr_result_changed(text) {
+                    status::info(text);
+                }
+            }
             803 | 200 => self.mark_login_success("二维码登录成功").await,
-            _ => status::error(format!(
-                "{}({code}): {}",
-                self.lang_text("二维码状态异常", "Unexpected QR code status"),
-                response_message(&response)
-            )),
+            _ => {
+                let text = format!(
+                    "{}({code}): {}",
+                    self.lang_text("二维码状态异常", "Unexpected QR code status"),
+                    response_message(&response)
+                );
+                if self.login.qr_result_changed(&text) {
+                    status::error(text);
+                }
+            }
         }
     }
 

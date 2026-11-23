@@ -26,6 +26,30 @@ fn flush_waits_for_ordered_jobs_and_reports_failures() {
 }
 
 #[test]
+fn background_failure_is_reported_once_across_take_and_flush() {
+    let worker = PersistenceWorker::spawn("persistence-report-once-test").unwrap();
+    for _ in 0..3 {
+        worker
+            .enqueue(|| Err(anyhow::anyhow!("disk full")))
+            .unwrap();
+    }
+    let (done_tx, done_rx) = mpsc::channel();
+    worker
+        .enqueue(move || {
+            done_tx.send(()).unwrap();
+            Ok(())
+        })
+        .unwrap();
+    done_rx.recv().unwrap();
+
+    // 主循环每帧都会问一次：同一批失败只交出一次，否则日志与退出报告会被刷屏。
+    assert_eq!(worker.take_unreported_error().as_deref(), Some("disk full"));
+    assert_eq!(worker.take_unreported_error(), None);
+    // 已经报告过的失败不再由退出时的 flush 重复报告。
+    assert!(worker.flush().is_ok());
+}
+
+#[test]
 fn keyed_updates_keep_latest_value_and_move_to_tail() {
     let worker = PersistenceWorker::spawn("persistence-keyed-test").unwrap();
     let (gate_tx, gate_rx) = sync_channel(0);

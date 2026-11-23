@@ -457,8 +457,11 @@ impl App {
             .enqueue_latest(PersistenceKey::Session, session::clear_cookie);
     }
 
+    /// 退出时写完排队的存档；尚未报告过的失败与运行中的保存失败同一文案。
     pub(crate) fn flush_persistence(&self) -> Result<()> {
-        self.persistence.flush().map_err(anyhow::Error::msg)
+        self.persistence.flush().map_err(|error| {
+            anyhow::anyhow!("{}: {error}", self.lang_text("保存失败", "Save failed"))
+        })
     }
 
     pub(crate) fn apply_theme(&mut self, next: Theme) {
@@ -488,7 +491,7 @@ impl App {
     }
 
     pub(crate) async fn tick(&mut self) {
-        if let Some(error) = self.persistence.pending_error() {
+        if let Some(error) = self.persistence.take_unreported_error() {
             status::error(format!(
                 "{}: {error}",
                 self.lang_text("保存失败", "Save failed")

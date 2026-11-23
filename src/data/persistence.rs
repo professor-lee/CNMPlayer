@@ -35,12 +35,19 @@ enum Item {
     Shutdown(Sender<()>),
 }
 
+/// 某个 epoch 的第一条失败；`reported` 表示已经交给调用方报告过。
+struct EpochError {
+    epoch: u64,
+    message: String,
+    reported: bool,
+}
+
 struct State {
     accepting: bool,
     stopped: bool,
     epoch: u64,
     queue: VecDeque<Item>,
-    errors: Vec<(u64, String)>,
+    errors: Vec<EpochError>,
 }
 
 struct Shared {
@@ -101,14 +108,14 @@ impl PersistenceWorker {
         }
     }
 
-    /// Observe the first background failure without consuming a flush barrier.
-    pub fn pending_error(&self) -> Option<String> {
-        self.shared
-            .state
-            .lock()
-            .errors
-            .first()
-            .map(|(_, error)| error.clone())
+    /// Hand each background failure to the caller once; later calls return the
+    /// next unreported failure. The entry stays until its flush barrier, and a
+    /// flush only reports failures that were not taken here.
+    pub fn take_unreported_error(&self) -> Option<String> {
+        let mut state = self.shared.state.lock();
+        let entry = state.errors.iter_mut().find(|entry| !entry.reported)?;
+        entry.reported = true;
+        Some(entry.message.clone())
     }
 
     pub fn enqueue<F>(&self, job: F) -> Result<()>
@@ -234,16 +241,23 @@ fn submit_latest(shared: &Arc<Shared>, key: PersistenceKey, job: Job) -> Result<
     Ok(())
 }
 
-fn record_error(state: &mut State, epoch: u64, error: String) {
-    if state.errors.iter().any(|(existing, _)| *existing == epoch) {
+fn record_error(state: &mut State, epoch: u64, message: String) {
+    if state.errors.iter().any(|entry| entry.epoch == epoch) {
         return;
     }
     let index = state
         .errors
         .iter()
-        .position(|(existing, _)| *existing > epoch)
+        .position(|entry| entry.epoch > epoch)
         .unwrap_or(state.errors.len());
-    state.errors.insert(index, (epoch, error));
+    state.errors.insert(
+        index,
+        EpochError {
+            epoch,
+            message,
+            reported: false,
+        },
+    );
 }
 
 fn worker_main(shared: Arc<Shared>) {
@@ -276,8 +290,10 @@ fn worker_loop(shared: &Arc<Shared>) {
                     state
                         .errors
                         .iter()
-                        .position(|(error_epoch, _)| *error_epoch == epoch)
-                        .map(|index| state.errors.remove(index).1)
+                        .position(|entry| entry.epoch == epoch)
+                        .map(|index| state.errors.remove(index))
+                        .filter(|entry| !entry.reported)
+                        .map(|entry| entry.message)
                 };
                 let _ = done.send(error);
             }
@@ -297,7 +313,8 @@ fn run_job(shared: &Arc<Shared>, epoch: u64, job: Job) {
         Ok(()) => return,
         Err(error) => format!("{error:#}"),
     };
-    log::error!("persistence worker job failed: {error}");
+    // 失败由调用方经 `take_unreported_error` / `flush` 报告一次，这里只留调试日志，避免重复。
+    log::debug!("persistence worker job failed: {error}");
     let mut state = shared.state.lock();
     record_error(&mut state, epoch, error);
 }

@@ -1020,14 +1020,23 @@ impl App {
         }
 
         let result = compio::runtime::spawn_blocking(playback_session::load).await;
-        let record = match result {
-            Ok(Ok(Some(record))) => record,
+        let detail = match result {
+            Ok(Ok(Some(record))) => Ok(record),
             Ok(Ok(None)) => return,
-            other => {
-                log::error!("playback memory could not be read: {other:?}");
-                status::error(self.lang_text(
-                    "播放记忆读取失败，保留原文件",
-                    "Playback memory could not be read; original preserved",
+            Ok(Err(error)) => Err(format!("{error:#}")),
+            Err(_) => Err(self
+                .lang_text("读取任务异常退出", "the load task panicked")
+                .to_string()),
+        };
+        let record = match detail {
+            Ok(record) => record,
+            Err(detail) => {
+                status::error(format!(
+                    "{}: {detail}",
+                    self.lang_text(
+                        "播放记忆读取失败，保留原文件",
+                        "Playback memory could not be read; original preserved",
+                    )
                 ));
                 return;
             }
