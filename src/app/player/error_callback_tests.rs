@@ -74,7 +74,6 @@ fn route_change_does_not_mask_a_pending_stream_failure() {
     assert_eq!(*output.failure.lock(), Some(fatal));
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn alsa_device_loss_is_a_failure_because_its_stream_worker_exits() {
     let output = events();
