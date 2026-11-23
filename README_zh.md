@@ -72,7 +72,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - 歌单页——专辑也复用它，没有独立的专辑页；头部（封面、标题、作者、简介、曲目数）加虚拟化曲目列表，歌曲每次获取 100 首。歌单与播放列表共用绑定来源的游标，任一侧续页都会同步追加到另一侧
 - 作者页：头像、名称、热门歌曲 / 专辑 / EP / 单曲数量，以及各分类的磁贴网格
 - 搜索页：关键词同时搜作者、歌单与单曲，末尾追加后缀可限定类型（见 [搜索语法](#搜索语法)）
-- 私人漫游：每天（UTC 日期）首次启动时刷新，把上次播放的歌曲保留在首位；若恢复的播放队列来自私人漫游则当次跳过刷新，等下次非漫游启动补刷；播放到列表末尾会续拉新歌（连拉三次并去重）追加到队尾；磁贴封面跟随当前播放的漫游歌曲
+- 私人漫游：每天（UTC 日期）首次启动时刷新，把上次播放的歌曲保留在首位；若恢复的播放队列来自私人漫游则当次跳过刷新，等下次非漫游启动补刷；播放到列表末尾会续拉新歌（连拉三次并去重）追加到队尾；磁贴封面跟随当前播放的漫游歌曲。在私人漫游页按 `M` 轮换推荐模式（默认 → 熟悉 → 探索，标题显示为 `私人漫游 · 默认`），每次切换都重新拉取整个列表；正在播放漫游时当前歌曲保留在首位，队列其后换成新模式的歌曲。模式随私人漫游数据保存
 - 键盘导航：`Enter` 打开或播放，`Esc` / `Left` 返回，`Tab` / `Down` 与 `Shift+Tab` / `Up` 移动，`PageUp` / `PageDown` 翻页
 - 鼠标：滚轮滚动，单击聚焦，双击打开；折叠播放栏的上一首 / 播放暂停 / 下一首、收藏与循环模式按钮，以及进度条可点击
 
@@ -143,7 +143,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 
 - 主题：从 `themes/*.toml` 动态加载——内置 20 款，默认 `frappe`；自己丢一个 toml 进去即可加入循环。校验不过的文件会被跳过，选中的主题损坏时回退默认主题
 - 界面语言：`zh` / `en`
-- 25 个可重绑快捷键，带冲突检测；`Ctrl+Alt+R` 恢复默认
+- 26 个可重绑快捷键，带冲突检测；`Ctrl+Alt+R` 恢复默认
 - 透明背景、封面边框、提示行开关
 - 启动：先出加载页（ASCII 标题 + 进度条），登录恢复、推荐加载等网络步骤在后台按步推进；登录态不可用时进入登录页
 - about 弹窗含盲文形象画，里面还藏了一个彩蛋（`easter-egg` cargo feature，默认编入，可用 `--no-default-features` 剔除）
@@ -212,7 +212,7 @@ sudo apt install -y build-essential cmake pkg-config \
 - `auth/session.toml`：持久化登录 cookie（服务端刷新的 cookie 会写回）
 - `auth/device.toml`：持久化设备 ID，登出后保留，客户端始终使用同一设备身份
 - `playback/session.toml`：播放记忆的队列（`playback_memory` 开启时写入）
-- `private_roam/session.toml`：私人漫游列表、最后播放位置与缓存封面
+- `private_roam/session.toml`：私人漫游列表、最后播放位置、推荐模式与缓存封面
 
 缓存目录默认使用系统缓存目录（Linux 上是 `~/.cache/cnmplayer`），可用 `cache.path` 指定。其中包含：
 
@@ -262,7 +262,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `cache.max_size_mb` | `500` | LRU 阶段的容量上限 |
 | `cache.max_age_days` | `7` | 按时间清理阶段的有效期 |
 | `cache.clean_on_startup` | `true` | 启动时执行清理 |
-| `keybind_*` | 见下文 | 25 个可重绑快捷键 |
+| `keybind_*` | 见下文 | 26 个可重绑快捷键 |
 
 清理按「先按时间、再按容量 LRU」两遍执行，且只统计目录下直属的文件。
 
@@ -300,9 +300,10 @@ sudo apt install -y build-essential cmake pkg-config \
 | `keybind_toggle_subscribe` | `L` | 歌手页收藏 / 取消收藏歌手，歌单页收藏 / 取消收藏歌单、专辑、EP、Single（仅主程序；标题右侧的爱心同效） |
 | `keybind_fullscreen_open_artist` | `Ctrl+A` | 进入当前歌曲的歌手页（仅全屏页）。多位歌手时每按一次高亮下一位，停按 0.8 秒进入高亮的歌手，按其他键取消 |
 | `keybind_fullscreen_open_album` | `Ctrl+S` | 进入当前歌曲的专辑页（仅全屏页） |
+| `keybind_private_roam_mode` | `M` | 轮换私人漫游推荐模式（默认 → 熟悉 → 探索）并重新拉取列表（仅私人漫游页） |
 
-仅全屏页生效的槽位在主程序里是空操作：那些按键会继续按页面导航处理。
-冲突检测只比较作用于同一侧的槽位，所以仅主程序与仅全屏页的槽位可以同键（`L`、`Ctrl+S`）。
+仅全屏页生效的槽位在主程序里是空操作：那些按键会继续按页面导航处理；`keybind_private_roam_mode` 在私人漫游页以外同样放行。
+冲突检测只比较作用于同一侧的槽位，所以仅主程序与仅全屏页的槽位可以同键（`L`、`Ctrl+S`、`M`）。
 关闭弹窗的键跟随对应槽位：设置弹窗由 `keybind_settings` 关闭、搜索框由 `keybind_search_box` 关闭，重绑后旧键随之失效。
 
 ### 固定快捷键
@@ -332,6 +333,7 @@ sudo apt install -y build-essential cmake pkg-config \
 - `Enter` 打开或播放当前项，`Esc` 或 `Left` 返回
 - `Tab` / `Down` 下一项，`Shift+Tab` / `Up` 上一项
 - `PageUp` / `PageDown` 整页移动（搜索页与歌单页）
+- 私人漫游页 `M` 轮换推荐模式
 
 设置弹窗：
 

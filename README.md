@@ -72,7 +72,7 @@ Playback belongs to the host: streaming with a local cache, queue memory, privat
 - Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list, 100 tracks per fetch. Browsing and playback share one source-bound cursor, so a page fetched by either is appended to both
 - Artist page: avatar, name, hot-song / album / EP / single counts and a tile grid per section
 - Search page: a keyword searches artists, playlists and songs at once, with a trailing suffix to narrow the type (see [Search syntax](#search-syntax))
-- Private roam: refreshed on the first startup of each UTC day, keeping the last played track at the head; skipped when the restored playback queue comes from private roam and caught up on the next non-roam startup; reaching the end of the list fetches more (three API calls merged and de-duplicated); the tile cover follows the currently playing roam song
+- Private roam: refreshed on the first startup of each UTC day, keeping the last played track at the head; skipped when the restored playback queue comes from private roam and caught up on the next non-roam startup; reaching the end of the list fetches more (three API calls merged and de-duplicated); the tile cover follows the currently playing roam song. On the private roam page `M` cycles the recommendation mode (Default → Familiar → Explore, shown in the title as `Private Roam · Default`) and refetches the whole list; while roam is playing the current song stays at the head and the rest of the queue switches to the new mode. The mode is saved with the roam data
 - Navigation: Enter opens or plays, Esc / Left goes back, Tab / Down and Shift+Tab / Up move, PageUp / PageDown jump one page
 - Mouse: the wheel scrolls, a single click focuses, a double click activates; the collapsed player bar's previous / play-pause / next, like and repeat-mode buttons and its progress bar are clickable
 
@@ -143,7 +143,7 @@ Entering the mode closes the sidebar and any open overlay. Settings, the search 
 
 - Themes: loaded dynamically from `themes/*.toml` — 20 built-ins, `frappe` by default; drop in your own toml and it joins the cycle. Files that fail validation are skipped, and a broken selected theme falls back to the default
 - UI language: `zh` / `en`
-- 25 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
+- 26 rebindable shortcuts with conflict detection; `Ctrl+Alt+R` restores the defaults
 - Transparent background, album-cover border and hint lines
 - Startup: a loading page (ASCII title plus progress bar) appears first, while login restore and recommendation fetches run in the background step by step; an unusable saved session hands over to the login page
 - About modal with braille art, and a hidden easter egg inside it (the `easter-egg` cargo feature, compiled in by default and removable with `--no-default-features`)
@@ -212,7 +212,7 @@ The root holds (files appear as you use the app):
 - `auth/session.toml` — the persisted login cookie (refreshed cookies from the server are written back)
 - `auth/device.toml` — the persisted device ID; kept across logouts so the client keeps one device identity
 - `playback/session.toml` — the remembered queue (written while `playback_memory` is on)
-- `private_roam/session.toml` — the private-roam list, its last played position and the cached cover
+- `private_roam/session.toml` — the private-roam list, its last played position, recommendation mode and the cached cover
 
 The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux) and can be moved with `cache.path`. It holds:
 
@@ -262,7 +262,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `cache.max_size_mb` | `500` | Size ceiling for the LRU pass |
 | `cache.max_age_days` | `7` | Age limit for the TTL pass |
 | `cache.clean_on_startup` | `true` | Run the cleanup while starting |
-| `keybind_*` | see below | 25 rebindable shortcuts |
+| `keybind_*` | see below | 26 rebindable shortcuts |
 
 Cleanup runs as an age pass followed by a size LRU pass, and only looks at files directly inside the directory.
 
@@ -300,9 +300,10 @@ A binding that collides with another slot is rejected, and `Ctrl+Alt+R` inside t
 | `keybind_toggle_subscribe` | `L` | Follow / unfollow the artist on the artist page, or collect / uncollect the playlist, album, EP or single on the playlist page (host only; the heart right of the title does the same) |
 | `keybind_fullscreen_open_artist` | `Ctrl+A` | Open the current song's artist page (fullscreen page only). With several artists each press highlights the next one; stop pressing for 0.8 s to open the highlighted artist, any other key cancels |
 | `keybind_fullscreen_open_album` | `Ctrl+S` | Open the current song's album page (fullscreen page only) |
+| `keybind_private_roam_mode` | `M` | Cycle the private roam mode (Default → Familiar → Explore) and refetch the list (private roam page only) |
 
-The fullscreen-only slots are inert in the host: there they fall through to page navigation instead.
-Conflicts are only checked between slots that act on the same side, so a host-only slot may share a key with a fullscreen-only one (`L`, `Ctrl+S`).
+The fullscreen-only slots are inert in the host: there they fall through to page navigation instead, and so does `keybind_private_roam_mode` outside the private roam page.
+Conflicts are only checked between slots that act on the same side, so a host-only slot may share a key with a fullscreen-only one (`L`, `Ctrl+S`, `M`).
 Keys that close a modal follow their slot: the settings modal closes on `keybind_settings` and the search box on `keybind_search_box`, so rebinding a slot also retires its old key.
 
 ### Fixed shortcuts
@@ -332,6 +333,7 @@ Search, playlist and artist pages:
 - `Enter` opens or plays the focused item, `Esc` or `Left` goes back
 - `Tab` / `Down` next item, `Shift+Tab` / `Up` previous item
 - `PageUp` / `PageDown` move a whole page (search and playlist pages)
+- `M` cycles the recommendation mode on the private roam page
 
 Settings modal:
 
