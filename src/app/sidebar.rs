@@ -20,6 +20,7 @@ use crate::data::config::Language;
 use crate::render::motion::Curve;
 use crate::render::motion::Toggle;
 use crate::render::motion::Trail;
+use crate::status;
 use anyhow::Result;
 use cria::ApiResponse;
 use std::pin::Pin;
@@ -214,7 +215,11 @@ async fn fetch_home_sidebar_page(
     .map_err(|err| err.to_string())?;
     let code = response_code(&response);
     if code != 200 {
-        return Err(format!("请求失败({code}): {}", response_message(&response)));
+        let label = match language {
+            Language::Zh => "请求失败",
+            Language::En => "Request failed",
+        };
+        return Err(format!("{label}({code}): {}", response_message(&response)));
     }
 
     let items = match kind {
@@ -805,7 +810,7 @@ impl App {
                         self.browse.home_sidebar.collected_playlists.len()
                     ),
                 };
-                self.browse.home.status_line = self.browse.home_sidebar.status_line.clone();
+                status::info(&self.browse.home_sidebar.status_line);
                 self.browse.home_sidebar.reset_focus();
             }
             Err(err) => {
@@ -816,8 +821,8 @@ impl App {
                     self.lang_text("主页歌单加载失败", "Failed to load home playlists"),
                     err
                 );
-                self.browse.home_sidebar.status_line = text.clone();
-                self.browse.home.status_line = text;
+                status::error(&text);
+                self.browse.home_sidebar.status_line = text;
             }
         }
     }
@@ -846,10 +851,12 @@ impl App {
                 };
             }
             Err(error) => {
-                self.browse.home_sidebar.status_line = format!(
+                let text = format!(
                     "{}: {error}",
                     self.lang_text("歌单分页加载失败", "Playlist page load failed")
                 );
+                status::error(&text);
+                self.browse.home_sidebar.status_line = text;
             }
         }
     }
@@ -891,19 +898,15 @@ impl App {
     pub(super) fn open_focused_home_sidebar_playlist(&mut self) {
         let (item_id, title, kind) = {
             let Some(item) = self.browse.home_sidebar.focused_playlist() else {
-                self.browse.home.status_line = self
-                    .lang_text("侧边栏暂无可打开歌单", "No sidebar playlist to open")
-                    .to_string();
+                status::info(self.lang_text("侧边栏暂无可打开歌单", "No sidebar playlist to open"));
                 return;
             };
 
             let Some(item_id) = item.id.clone() else {
-                self.browse.home.status_line = self
-                    .lang_text(
-                        "当前歌单缺少 ID，无法打开",
-                        "The selected playlist has no ID",
-                    )
-                    .to_string();
+                status::info(self.lang_text(
+                    "当前歌单缺少 ID，无法打开",
+                    "The selected playlist has no ID",
+                ));
                 return;
             };
 

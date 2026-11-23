@@ -76,7 +76,8 @@ with `--no-default-features` to drop it.
 
 | Path | Contents |
 | --- | --- |
-| `src/main.rs` | Entry point: terminal setup, asset root, and hand-off to the application. |
+| `src/main.rs` | Entry point: terminal setup, asset root, logging, the panic hook and the end-of-run error report, and hand-off to the application. |
+| `src/status.rs` | The single outlet for runtime status and error messages (see "Status and error reporting"). |
 | `src/app/` | Application core. `mod.rs` is the assembly point and top-level coordinator: the `App` struct with its shared state, sub-controllers and hit regions, plus the event handling that drives them. Domain types, requests and behaviour live in the module that owns the responsibility — `ApiState` and cover fetching in `api.rs`, response-shape helpers in `response.rs`, search in `search_controller.rs`, the focused browse/download/input/playback/settings/startup `*_controller.rs` modules, and the player, streaming, download and MPRIS modules. |
 | `src/ui/` | Host UI panels: login, home, playlist, author, search, settings, player bar, lyrics, loading, small-window and theme modules. |
 | `src/data/` | Shared `Config` plus assets, atomic persistence, sessions, playback/private-roam state, and theme loading. |
@@ -100,6 +101,17 @@ with `--no-default-features` to drop it.
 - **Keep visibility minimal.** Use `pub(crate)` only for interfaces genuinely shared with another top-level module (`src/ui/`, `src/render/`, `src/data/`, `src/tmplayer/`, `src/main.rs`); use `pub(super)` for items shared between siblings inside `src/app/`; everything else stays private to its module and is reached through the owning type's methods.
 - **Leave no compatibility shims when you move code.** Update every caller in the same change and delete the old path; a re-export that keeps a stale path compiling is not accepted.
 - **Keep tests in sibling files.** Production Rust modules must not embed test modules, test-only helpers, constants, or impls. Put tests for `foo.rs` in `foo/tests.rs` (and tests for `mod.rs` in the sibling `tests.rs`); keep production modules free of `cfg(test)` implementations. Preserve private access through the narrowest module visibility; do not add production APIs only for tests.
+
+## Status and error reporting
+
+The app never shows status or error text inside its UI — neither the host nor the fullscreen page has a status line or toast. Every such message goes through `src/status.rs`:
+
+- **`status::info(text)`** — status: what happened or why an action was ignored (opened a page, now playing, liked, download started/finished, keybind rebound, a required field is empty, a key cannot be bound, a relative download path was rejected). It is written to `Player.log` at info level only.
+- **`status::error(text)`** — errors: something the app tried to do failed or cannot be done (network or API failure, playback/decoding failure, failed save, unwritable download directory, timeouts). It is written to `Player.log` at error level and also collected for this run; after the terminal is restored on exit, the collected errors are printed to the main terminal (stdout; fd 2 is redirected to `Player.stderr.log`). Identical messages are listed once with a count; the list is capped and the rest is only counted.
+- **Fatal errors and panics** go through the same report. `main` reports the error returned by the app; `panic = "abort"` stays, and the panic hook restores the terminal, records the panic and prints the report before the process aborts.
+- **Do not add** in-app status lines, toasts or `status_line` fields, and do not write status/error text with `eprintln!` (stderr is a log file) or straight to stdout while the TUI runs. Plain `log::*` calls remain for internal diagnostics that are not user-facing messages.
+- **Exception: page content.** A page that failed to load keeps its error in the page itself (the placeholder description of a playlist/album/artist page) — that is page content, not a status line — and the error is still reported with `status::error`. The home sidebar header keeps its own sync summary line.
+- **Both languages.** Every error message must have Chinese and English text: use `lang_text` where `App` or a `Language` is available, otherwise `status::localized(zh, en)`, which follows the current UI language (kept in sync with `config.language`).
 
 ## Formatting and CI
 

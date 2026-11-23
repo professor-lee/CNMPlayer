@@ -21,7 +21,9 @@ use super::likes::fetch_liked_song_ids;
 use super::roam::fetch_private_roam_songs;
 use super::tracks::PlaylistTrack;
 use crate::data::config::Config;
+use crate::data::private_roam::PrivateRoamMode;
 use crate::launch;
+use crate::status;
 use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -86,21 +88,16 @@ impl StartupInit {
     }
 
     /// 启动后台初始化任务；`steps` 是计划步数，决定进度条分母。
+    /// `roam` 为 `None` 时跳过私人漫游刷新，否则按该模式拉取。
     pub(super) fn spawn(
         config: Config,
         api: ApiState,
         has_saved_session: bool,
-        skip_roam: bool,
+        roam: Option<PrivateRoamMode>,
         steps: usize,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
-        launch(run_startup_init(
-            api,
-            config,
-            has_saved_session,
-            skip_roam,
-            tx,
-        ));
+        launch(run_startup_init(api, config, has_saved_session, roam, tx));
 
         Self {
             rx: Some(rx),
@@ -207,7 +204,7 @@ async fn run_startup_init(
     mut api: ApiState,
     config: Config,
     has_saved_session: bool,
-    skip_roam: bool,
+    roam: Option<PrivateRoamMode>,
     tx: Sender<StartupEvent>,
 ) {
     let lang = config.language;
@@ -280,8 +277,8 @@ async fn run_startup_init(
         None => log::warn!("账号信息获取超时"),
     }
 
-    if !skip_roam {
-        match step(deadline, fetch_private_roam_songs(&mut api)).await {
+    if let Some(mode) = roam {
+        match step(deadline, fetch_private_roam_songs(&mut api, mode)).await {
             Some(tracks) => {
                 if !tracks.is_empty() {
                     let _ = tx.send(StartupEvent::Roam { tracks });
@@ -372,7 +369,7 @@ impl App {
                         self.lyric_fetch_generation = self.lyric_fetch_generation.wrapping_add(1);
                         let _ = self.lyric_fetch_tx.send(None);
                         self.lyric_fetch_inflight_song_id = None;
-                        self.set_runtime_status(self.lang_text(
+                        status::error(self.lang_text(
                             "播放记忆恢复超时，跳过本次恢复",
                             "Playback memory restore timed out; skipped this attempt",
                         ));

@@ -15,6 +15,8 @@ pub(crate) struct BrowseController {
     pub(super) home_sidebar_page_fetch: Option<super::sidebar::HomeSidebarPageFetchFuture>,
     pub(super) author_fetch: Option<super::author::AuthorFetchFuture>,
     pub(super) playlist_fetch: Option<super::playlist::PlaylistFetchSlot>,
+    /// 私人漫游页按键触发的模式切换（按新模式重新拉取列表）。
+    pub(super) private_roam_mode_switch: Option<super::roam::RoamModeSwitch>,
     /// 歌手 / 歌单 / 专辑收藏的期望 / 已确认状态（键见 `subscription`）。
     pub(super) subscriptions: super::likes::LikeMachine,
 }
@@ -25,6 +27,7 @@ impl BrowseController {
         self.home_sidebar_page_fetch = None;
         self.author_fetch = None;
         self.playlist_fetch = None;
+        self.private_roam_mode_switch = None;
         self.author = AuthorState::default();
         self.home = HomeState::default();
         self.home_sidebar = HomeSidebarState::default();

@@ -87,6 +87,7 @@ use crate::data::session;
 use crate::launch;
 use crate::render::motion::Transition;
 use crate::render::wake::WakeSignal;
+use crate::status;
 use crate::tmplayer::audio::spectrum::MINI_BARS;
 use crate::tmplayer::audio::spectrum::Spectrum;
 use crate::ui::theme::Theme;
@@ -234,7 +235,7 @@ pub(crate) struct App {
     mpris_last_playback: PlaybackRuntimeState,
     api: ApiState,
     persistence: PersistenceWorker,
-    /// 下载任务表（异步后台任务；状态行与图标都从这里读）。
+    /// 下载任务表（异步后台任务；图标从这里读）。
     downloads: DownloadController,
     pub(crate) covers: CoverPresentation,
 }
@@ -412,7 +413,7 @@ impl App {
             app.config.clone(),
             app.api.clone(),
             saved_cookie.is_some(),
-            skip_roam,
+            (!skip_roam).then_some(app.browse.private_roam.mode),
             steps,
         );
         app.begin_startup_loading(target);
@@ -456,8 +457,11 @@ impl App {
             .enqueue_latest(PersistenceKey::Session, session::clear_cookie);
     }
 
+    /// 退出时写完排队的存档；尚未报告过的失败与运行中的保存失败同一文案。
     pub(crate) fn flush_persistence(&self) -> Result<()> {
-        self.persistence.flush().map_err(anyhow::Error::msg)
+        self.persistence.flush().map_err(|error| {
+            anyhow::anyhow!("{}: {error}", self.lang_text("保存失败", "Save failed"))
+        })
     }
 
     pub(crate) fn apply_theme(&mut self, next: Theme) {
@@ -487,8 +491,8 @@ impl App {
     }
 
     pub(crate) async fn tick(&mut self) {
-        if let Some(error) = self.persistence.pending_error() {
-            self.set_runtime_status(format!(
+        if let Some(error) = self.persistence.take_unreported_error() {
+            status::error(format!(
                 "{}: {error}",
                 self.lang_text("保存失败", "Save failed")
             ));
@@ -509,6 +513,7 @@ impl App {
         self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
         self.tick_playlist_fetch();
+        self.tick_private_roam_mode_switch();
         self.tick_like_sync();
         self.tick_subscription_sync();
         self.tick_download();
@@ -562,12 +567,6 @@ impl App {
             let _ = tx.send(());
         })
         .detach();
-    }
-
-    pub(crate) fn set_runtime_status(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        self.browse.home.status_line = text.clone();
-        self.search.status_line = text;
     }
 
     fn lang_text<'a>(&self, zh: &'a str, en: &'a str) -> &'a str {

@@ -24,6 +24,7 @@ use super::text::char_index_for_display_column;
 use super::tracks::format_duration;
 use super::tracks::parse_artists;
 use crate::render::motion::Curve;
+use crate::status;
 use anyhow::Result;
 use anyhow::anyhow;
 use cria::ApiResponse;
@@ -442,7 +443,10 @@ impl App {
                 match self.load_more_search_results().await {
                     Ok(_) => {}
                     Err(err) => {
-                        self.search.status_line = format!("加载更多失败: {}", err);
+                        status::error(format!(
+                            "{}: {err}",
+                            self.lang_text("加载更多失败", "Failed to load more results")
+                        ));
                     }
                 }
             }
@@ -456,7 +460,10 @@ impl App {
             }
             Ok(_) => {}
             Err(err) => {
-                self.search.status_line = format!("加载更多失败: {}", err);
+                status::error(format!(
+                    "{}: {err}",
+                    self.lang_text("加载更多失败", "Failed to load more results")
+                ));
             }
         }
     }
@@ -469,12 +476,10 @@ impl App {
             };
 
             let Some(artist_id) = item.artist_id.clone() else {
-                self.search.status_line = self
-                    .lang_text(
-                        "当前结果缺少作者 ID，无法打开作者页",
-                        "The current result has no author ID",
-                    )
-                    .to_string();
+                status::info(self.lang_text(
+                    "当前结果缺少作者 ID，无法打开作者页",
+                    "The current result has no author ID",
+                ));
                 return;
             };
 
@@ -508,12 +513,10 @@ impl App {
             };
 
             let Some(album_id) = item.album_id.clone() else {
-                self.search.status_line = self
-                    .lang_text(
-                        "当前结果缺少专辑 ID，无法打开专辑页",
-                        "The current result has no album ID",
-                    )
-                    .to_string();
+                status::info(self.lang_text(
+                    "当前结果缺少专辑 ID，无法打开专辑页",
+                    "The current result has no album ID",
+                ));
                 return;
             };
 
@@ -558,12 +561,10 @@ impl App {
             };
 
             let Some(playlist_id) = item.playlist_id.clone() else {
-                self.search.status_line = self
-                    .lang_text(
-                        "当前结果缺少歌单 ID，无法打开歌单页",
-                        "The current result has no playlist ID",
-                    )
-                    .to_string();
+                status::info(self.lang_text(
+                    "当前结果缺少歌单 ID，无法打开歌单页",
+                    "The current result has no playlist ID",
+                ));
                 return;
             };
 
@@ -738,15 +739,16 @@ impl App {
         let raw_query = self.input.search_box_input.trim().to_string();
         let (keywords, filter) = parse_search_input(&raw_query);
         if keywords.is_empty() && !is_followed_author_query(&keywords, filter) {
-            self.search.status_line = self
-                .lang_text("请输入搜索关键词", "Please enter search keywords")
-                .to_string();
+            status::info(self.lang_text("请输入搜索关键词", "Please enter search keywords"));
             return;
         }
 
         self.search.query = raw_query;
         if let Err(err) = self.execute_search().await {
-            self.search.status_line = format!("搜索失败: {}", err);
+            status::error(format!(
+                "{}: {err}",
+                self.lang_text("搜索失败", "Search failed")
+            ));
             self.search.set_results(Vec::new(), 0, false);
         }
         self.playlist_section_return_snapshot = None;
@@ -758,7 +760,7 @@ impl App {
         let (keywords, scope) = parse_search_input(&self.search.query);
         let followed_author_query = is_followed_author_query(&keywords, scope);
         if keywords.is_empty() && !followed_author_query {
-            self.search.status_line = "请输入搜索关键词".to_string();
+            status::info(self.lang_text("请输入搜索关键词", "Please enter search keywords"));
             self.search.set_results(Vec::new(), 0, false);
             return Ok(());
         }
@@ -796,7 +798,11 @@ impl App {
             let mut items = page.items;
             self.load_search_item_covers(&mut items);
             self.search.set_results(items, next_offset, has_more);
-            self.search.status_line = format!("{} 搜索完成，共 {} 条", scope.display_name(), count);
+            status::info(format!(
+                "{} 搜索完成，共 {} 条",
+                scope.display_name(),
+                count
+            ));
             return Ok(());
         }
 
@@ -805,7 +811,11 @@ impl App {
         self.load_search_item_covers(&mut items);
         self.search
             .set_results(items, count, count >= SEARCH_RESULT_PAGE_SIZE);
-        self.search.status_line = format!("{} 搜索完成，共 {} 条", scope.display_name(), count);
+        status::info(format!(
+            "{} 搜索完成，共 {} 条",
+            scope.display_name(),
+            count
+        ));
         Ok(())
     }
 
@@ -824,7 +834,12 @@ impl App {
         let code = response_code(&songs);
         if code != 200 {
             let message = response_message(&songs);
-            return Err(anyhow!("请求失败({}): {}", code, message));
+            return Err(anyhow!(
+                "{}({}): {}",
+                self.lang_text("请求失败", "Request failed"),
+                code,
+                message
+            ));
         }
 
         let mut items = parse_optional_search_section(artists, SearchScope::Author);
@@ -840,7 +855,7 @@ impl App {
         let total = items.len();
         self.search
             .set_results(items, song_count, song_count >= SEARCH_RESULT_PAGE_SIZE);
-        self.search.status_line = format!("搜索完成，共 {} 条", total);
+        status::info(format!("搜索完成，共 {} 条", total));
         Ok(())
     }
 
@@ -910,20 +925,26 @@ impl App {
 
             if added == 0 {
                 if self.search.has_more {
-                    self.search.status_line =
-                        format!("{} 已加载 {} 条", scope.display_name(), self.search.len());
+                    status::info(format!(
+                        "{} 已加载 {} 条",
+                        scope.display_name(),
+                        self.search.len()
+                    ));
                 } else {
-                    self.search.status_line = format!(
+                    status::info(format!(
                         "{} 搜索结果已全部加载，共 {} 条",
                         scope.display_name(),
                         self.search.len()
-                    );
+                    ));
                 }
                 return Ok(0);
             }
 
-            self.search.status_line =
-                format!("{} 已加载 {} 条", scope.display_name(), self.search.len());
+            status::info(format!(
+                "{} 已加载 {} 条",
+                scope.display_name(),
+                self.search.len()
+            ));
             return Ok(added);
         }
 
@@ -940,16 +961,19 @@ impl App {
 
         if added == 0 {
             self.search.has_more = false;
-            self.search.status_line = format!(
+            status::info(format!(
                 "{} 搜索结果已全部加载，共 {} 条",
                 scope.display_name(),
                 self.search.len()
-            );
+            ));
             return Ok(0);
         }
 
-        self.search.status_line =
-            format!("{} 已加载 {} 条", scope.display_name(), self.search.len());
+        status::info(format!(
+            "{} 已加载 {} 条",
+            scope.display_name(),
+            self.search.len()
+        ));
         Ok(added)
     }
 }
@@ -959,7 +983,6 @@ pub(crate) struct SearchController {
     pub(super) query: String,
     pub(crate) focused_idx: usize,
     results: Vec<SearchItem>,
-    pub(crate) status_line: String,
     pub(crate) scope: SearchScope,
     pub(super) next_offset: usize,
     pub(super) has_more: bool,
@@ -980,7 +1003,6 @@ impl Default for SearchController {
             query: String::new(),
             focused_idx: 0,
             results: Vec::new(),
-            status_line: "输入关键词后按 Enter 搜索".to_string(),
             scope: SearchScope::Mixed,
             next_offset: 0,
             has_more: false,

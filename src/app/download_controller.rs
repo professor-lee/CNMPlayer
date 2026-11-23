@@ -12,6 +12,7 @@ use super::search_controller::SearchItem;
 use super::search_controller::SearchItemKind;
 use super::tracks::PlaylistTrack;
 use super::tracks::PlaylistTrackKind;
+use crate::status;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::path::PathBuf;
@@ -211,7 +212,7 @@ impl App {
     /// 主应用 Ctrl+Alt+D：下载聚焦的单曲（在途则取消）。
     pub(super) async fn download_focused_song(&mut self) {
         let Some(candidate) = self.focused_download_song() else {
-            self.set_runtime_status(self.lang_text(
+            status::info(self.lang_text(
                 "当前列表里没有可下载的单曲",
                 "No downloadable song in this list",
             ));
@@ -223,9 +224,7 @@ impl App {
     /// 全屏页 Ctrl+D / 点下载图标：下载当前播放的单曲（在途则取消）。
     pub(crate) fn download_current_song(&mut self) {
         let Some(track) = self.playback.now_playing.clone() else {
-            self.set_runtime_status(
-                self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"),
-            );
+            status::info(self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"));
             return;
         };
         self.toggle_download(DownloadCandidate {
@@ -242,7 +241,7 @@ impl App {
             || self.downloads.manager.is_downloading(&candidate.song_id)
         {
             self.downloads.manager.cancel(&candidate.song_id);
-            self.set_runtime_status(format!(
+            status::info(format!(
                 "{}: {}",
                 self.lang_text("已取消下载", "Download cancelled"),
                 candidate.title
@@ -251,7 +250,7 @@ impl App {
         }
 
         if self.downloads.manager.is_busy(&candidate.song_id) {
-            self.set_runtime_status(self.lang_text(
+            status::info(self.lang_text(
                 "正在取消上一任务，请稍候",
                 "Cancelling the previous download, please wait",
             ));
@@ -259,7 +258,7 @@ impl App {
         }
 
         let Some(root) = self.downloads.root.clone() else {
-            self.set_runtime_status(self.lang_text(
+            status::error(self.lang_text(
                 "下载不可用：没有可用的下载目录",
                 "Download unavailable: no usable download directory",
             ));
@@ -293,7 +292,7 @@ impl App {
         if !self.downloads.pending_intents.is_empty() || state.is_none() {
             let origin = self.downloads.pending_intents.origin();
             self.downloads.pending_intents.defer(origin, request);
-            self.set_runtime_status(self.lang_text(
+            status::info(self.lang_text(
                 "正在检查已有下载，请稍候",
                 "Checking existing downloads, please wait",
             ));
@@ -301,7 +300,7 @@ impl App {
         }
         match state {
             Some(DownloadState::Done) => {
-                self.set_runtime_status(self.lang_text("歌曲已下载", "Song already downloaded"));
+                status::info(self.lang_text("歌曲已下载", "Song already downloaded"));
                 return;
             }
             Some(DownloadState::Downloading) => return,
@@ -312,7 +311,7 @@ impl App {
         let queued = self.downloads.manager.is_active();
         match self.downloads.manager.enqueue(&self.api, request) {
             Ok(()) => {
-                let status = if queued {
+                let text = if queued {
                     format!(
                         "{}: {} ({})",
                         self.lang_text("已加入下载队列", "Queued for download"),
@@ -327,19 +326,19 @@ impl App {
                         level.as_api_level()
                     )
                 };
-                self.set_runtime_status(status);
+                status::info(text);
             }
-            Err(message) => self.set_runtime_status(message),
+            Err(message) => status::error(message),
         }
     }
 
-    /// 每帧搬运下载结果：完成 / 失败 / 取消都写状态行。
+    /// 每帧搬运下载结果：完成 / 取消写日志，失败按报错处理。
     pub(super) fn tick_download(&mut self) {
         self.refresh_current_download_state();
         for event in self.downloads.poll() {
             match event {
                 DownloadEvent::Started { title, level } => {
-                    self.set_runtime_status(format!(
+                    status::info(format!(
                         "{}: {title} ({})",
                         self.lang_text("开始下载", "Downloading"),
                         level.as_api_level()
@@ -352,30 +351,29 @@ impl App {
                     file_type,
                     tag_error,
                 } => {
-                    let mut text = format!(
+                    status::info(format!(
                         "{}: {} [{}.{}] -> {}",
                         self.lang_text("已下载", "Downloaded"),
                         title,
                         level,
                         file_type,
                         path.display()
-                    );
+                    ));
                     if let Some(error) = tag_error {
-                        text.push_str(&format!(
-                            " ({}{error})",
-                            self.lang_text("标签写入失败: ", "tag write failed: ")
+                        status::error(format!(
+                            "{}: {title}: {error}",
+                            self.lang_text("标签写入失败", "Tag write failed")
                         ));
                     }
-                    self.set_runtime_status(text);
                 }
                 DownloadEvent::Failed { title, error } => {
-                    self.set_runtime_status(format!(
+                    status::error(format!(
                         "{}: {title}: {error}",
                         self.lang_text("下载失败", "Download failed")
                     ));
                 }
                 DownloadEvent::Cancelled { title } => {
-                    self.set_runtime_status(format!(
+                    status::info(format!(
                         "{}: {title}",
                         self.lang_text("已取消下载", "Download cancelled")
                     ));
@@ -395,7 +393,7 @@ impl App {
                 })
             };
             let Some(request) = request else { break };
-            let status = format!(
+            let text = format!(
                 "{}: {} ({})",
                 if self.downloads.manager.is_active() {
                     self.lang_text("已加入下载队列", "Queued for download")
@@ -406,8 +404,8 @@ impl App {
                 request.level.as_api_level()
             );
             match self.downloads.manager.enqueue(&self.api, request) {
-                Ok(()) => self.set_runtime_status(status),
-                Err(message) => self.set_runtime_status(message),
+                Ok(()) => status::info(text),
+                Err(message) => status::error(message),
             }
         }
     }

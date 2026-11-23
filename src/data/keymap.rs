@@ -51,7 +51,7 @@ macro_rules! slot {
     };
 }
 
-pub(crate) const SLOTS: [KeySlot; 25] = [
+pub(crate) const SLOTS: [KeySlot; 26] = [
     slot!(keybind_search_box, Host, "搜索框", "Search Box"),
     slot!(keybind_fullscreen, Both, "全屏播放页", "Fullscreen"),
     slot!(keybind_settings, Both, "设置弹窗", "Settings"),
@@ -131,6 +131,12 @@ pub(crate) const SLOTS: [KeySlot; 25] = [
         Fullscreen,
         "进入专辑页",
         "Open Album"
+    ),
+    slot!(
+        keybind_private_roam_mode,
+        Host,
+        "私人漫游模式切换",
+        "Private Roam Mode"
     ),
 ];
 
@@ -277,6 +283,7 @@ const LAYOUT: &[(KeyGroup, &[KeyRow])] = &[
             KeyRow::Slot(8),
             KeyRow::Slot(9),
             KeyRow::Slot(17),
+            KeyRow::Slot(25),
             KeyRow::Slot(10),
             KeyRow::Slot(11),
             KeyRow::Slot(12),

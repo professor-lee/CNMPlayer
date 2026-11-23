@@ -27,6 +27,7 @@ use super::tracks::format_duration;
 use crate::data::persistence::PersistenceKey;
 use crate::data::playback_session;
 use crate::lyrics::LyricLine;
+use crate::status;
 use crate::tmplayer::audio::pcm_tap::PcmRing;
 use anyhow::Result;
 use rodio::Source;
@@ -275,7 +276,7 @@ impl App {
             return;
         }
         if self.playback.now_playing.is_none() {
-            self.set_runtime_status(
+            status::info(
                 self.lang_text("当前没有可控制的播放", "No controllable playback right now"),
             );
             return;
@@ -284,7 +285,7 @@ impl App {
         if self.playback.playback_state == PlaybackRuntimeState::Stopped
             && let Some(index) = self.playback.playback_index
         {
-            self.play_queue_index(index, false).await;
+            self.play_queue_index(index).await;
             return;
         }
 
@@ -311,7 +312,7 @@ impl App {
 
     pub(super) async fn play_previous_hotkey(&mut self) {
         if self.playback.playback_queue.is_empty() {
-            self.set_runtime_status(self.lang_text("当前播放队列为空", "Playback queue is empty"));
+            status::info(self.lang_text("当前播放队列为空", "Playback queue is empty"));
             return;
         }
 
@@ -334,13 +335,13 @@ impl App {
         };
 
         if let Some(index) = target {
-            self.play_queue_index(index, true).await;
+            self.play_queue_index(index).await;
         }
     }
 
     pub(super) async fn play_next_hotkey(&mut self) {
         if self.playback.playback_queue.is_empty() {
-            self.set_runtime_status(self.lang_text("当前播放队列为空", "Playback queue is empty"));
+            status::info(self.lang_text("当前播放队列为空", "Playback queue is empty"));
             return;
         }
 
@@ -359,7 +360,7 @@ impl App {
             self.playback.roam_advance = Some(true);
             return;
         }
-        if self.defer_playlist_advance(current, true) {
+        if self.defer_playlist_advance(current) {
             return;
         }
         let target = match self.playback.playback_repeat_mode {
@@ -379,13 +380,13 @@ impl App {
         };
 
         if let Some(index) = target {
-            self.play_queue_index(index, true).await;
+            self.play_queue_index(index).await;
         }
     }
 
     pub(super) fn cycle_repeat_mode_hotkey(&mut self) {
         self.playback.cycle_repeat_mode();
-        self.set_runtime_status(format!(
+        status::info(format!(
             "{}: {}",
             self.lang_text("播放模式", "Play Mode"),
             match self.playback.playback_repeat_mode {
@@ -413,7 +414,7 @@ impl App {
 
     async fn tick_playback(&mut self) {
         if self.playback.audio_player.take_output_pause_request() && self.pause_playback() {
-            self.set_runtime_status(self.lang_text(
+            status::info(self.lang_text(
                 "音频输出设备已变化，已暂停",
                 "Audio output device changed; paused",
             ));
@@ -442,24 +443,24 @@ impl App {
         {
             self.playback.audio_player.stop();
             self.playback.playback_state = PlaybackRuntimeState::Stopped;
-            self.set_runtime_status(format!(
+            status::error(format!(
                 "{}: {error}",
                 self.lang_text("播放失败", "Playback failed")
             ));
             return;
         }
-        if let Some(announce) = self.playback.page_advance {
+        if self.playback.page_advance {
             let current = self.playback.playback_index.unwrap_or(0);
             if let Some(target) = self.page_advance_target(current) {
-                self.playback.page_advance = None;
-                self.play_queue_index(target, announce).await;
+                self.playback.page_advance = false;
+                self.play_queue_index(target).await;
             } else if !self
                 .playback
                 .pagination
                 .as_ref()
                 .is_some_and(PlaylistPagination::is_pending)
             {
-                self.playback.page_advance = None;
+                self.playback.page_advance = false;
                 self.play_next_after_finish().await;
             }
             return;
@@ -477,7 +478,7 @@ impl App {
             } else {
                 self.playback.audio_player.stop();
                 self.playback.playback_state = PlaybackRuntimeState::Stopped;
-                self.set_runtime_status(self.lang_text(
+                status::error(self.lang_text(
                     "音频解码在下载完成前结束，已停止",
                     "Audio decoder ended before the stream completed; stopped",
                 ));
@@ -509,7 +510,7 @@ impl App {
             self.playback.roam_advance = Some(false);
             return;
         }
-        if self.defer_playlist_advance(current, false) {
+        if self.defer_playlist_advance(current) {
             return;
         }
 
@@ -558,14 +559,14 @@ impl App {
         };
 
         if let Some(index) = target {
-            self.play_queue_index(index, false).await;
+            self.play_queue_index(index).await;
         } else {
             self.playback.playback_state = PlaybackRuntimeState::Stopped;
-            self.set_runtime_status(self.lang_text("播放结束", "Playback finished"));
+            status::info(self.lang_text("播放结束", "Playback finished"));
         }
     }
 
-    fn defer_playlist_advance(&mut self, current: usize, announce: bool) -> bool {
+    fn defer_playlist_advance(&mut self, current: usize) -> bool {
         let loaded_exhausted = match self.playback.playback_repeat_mode {
             PlaybackRepeatMode::Sequence | PlaybackRepeatMode::LoopAll => {
                 current + 1 >= self.playback.playback_queue.len()
@@ -582,7 +583,7 @@ impl App {
             && pagination.has_more()
         {
             pagination.request(self.api.clone());
-            self.playback.page_advance = Some(announce);
+            self.playback.page_advance = true;
             return true;
         }
         false
@@ -600,11 +601,11 @@ impl App {
         self.playback.shuffle.next(queue, Some(current))
     }
 
-    pub(crate) async fn play_queue_index(&mut self, index: usize, announce: bool) {
+    pub(crate) async fn play_queue_index(&mut self, index: usize) {
         let Some(track) = self.playback.playback_queue.get(index).cloned() else {
             return;
         };
-        self.playback.page_advance = None;
+        self.playback.page_advance = false;
         self.finish_listen_session();
         self.playback.cancel_pending_start();
         self.playback.audio_player.stop();
@@ -749,28 +750,12 @@ impl App {
             retrying,
         });
         self.playback.playback_state = PlaybackRuntimeState::Stopped;
-        self.set_runtime_status(format!(
+        status::info(format!(
             "{}: {} - {}",
             self.lang_text("正在缓冲", "Buffering"),
-            self.playback
-                .now_playing
-                .as_ref()
-                .map(|track| track.title.as_str())
-                .unwrap_or_default(),
-            self.playback
-                .now_playing
-                .as_ref()
-                .map(|track| track.artist.as_str())
-                .unwrap_or_default(),
+            track.title,
+            track.artist
         ));
-        if announce {
-            self.set_runtime_status(format!(
-                "{}: {} - {}",
-                self.lang_text("正在缓冲", "Buffering"),
-                track.title,
-                track.artist
-            ));
-        }
     }
 
     fn poll_pending_start(&mut self) {
@@ -784,9 +769,7 @@ impl App {
                 return;
             }
             Err(TryRecvError::Disconnected) => {
-                self.set_runtime_status(
-                    self.lang_text("播放准备失败", "Playback preparation failed"),
-                );
+                status::error(self.lang_text("播放准备失败", "Playback preparation failed"));
                 self.playback.playback_state = PlaybackRuntimeState::Stopped;
                 return;
             }
@@ -826,7 +809,7 @@ impl App {
                             pending.start_paused,
                         ) {
                             self.playback.playback_state = PlaybackRuntimeState::Stopped;
-                            self.set_runtime_status(format!(
+                            status::error(format!(
                                 "{}: {err}",
                                 self.lang_text("播放失败", "Playback failed")
                             ));
@@ -836,7 +819,7 @@ impl App {
                             } else {
                                 PlaybackRuntimeState::Playing
                             };
-                            self.set_runtime_status(format!(
+                            status::info(format!(
                                 "{}: {} - {}",
                                 self.lang_text("正在播放", "Now Playing"),
                                 pending.track.title,
@@ -847,7 +830,7 @@ impl App {
                     }
                     Err(err) => {
                         self.playback.playback_state = PlaybackRuntimeState::Stopped;
-                        self.set_runtime_status(format!(
+                        status::error(format!(
                             "{}: {err}",
                             self.lang_text("播放失败", "Playback failed")
                         ));
@@ -866,7 +849,7 @@ impl App {
         pagination: Option<PlaylistPagination>,
     ) {
         if queue.is_empty() {
-            self.set_runtime_status(
+            status::info(
                 self.lang_text("当前页面没有可播放歌曲", "No playable songs on this page"),
             );
             return;
@@ -883,7 +866,7 @@ impl App {
         self.playback
             .replace_queue(queue, None, source_cover_url, source_id, pagination);
         let target = target.unwrap_or(0);
-        self.play_queue_index(target, true).await;
+        self.play_queue_index(target).await;
     }
 
     fn build_queue_from_playlist(&self) -> (Vec<PlaybackTrack>, usize) {
@@ -1037,14 +1020,23 @@ impl App {
         }
 
         let result = compio::runtime::spawn_blocking(playback_session::load).await;
-        let record = match result {
-            Ok(Ok(Some(record))) => record,
+        let detail = match result {
+            Ok(Ok(Some(record))) => Ok(record),
             Ok(Ok(None)) => return,
-            other => {
-                log::error!("playback memory could not be read: {other:?}");
-                self.set_runtime_status(self.lang_text(
-                    "播放记忆读取失败，保留原文件",
-                    "Playback memory could not be read; original preserved",
+            Ok(Err(error)) => Err(format!("{error:#}")),
+            Err(_) => Err(self
+                .lang_text("读取任务异常退出", "the load task panicked")
+                .to_string()),
+        };
+        let record = match detail {
+            Ok(record) => record,
+            Err(detail) => {
+                status::error(format!(
+                    "{}: {detail}",
+                    self.lang_text(
+                        "播放记忆读取失败，保留原文件",
+                        "Playback memory could not be read; original preserved",
+                    )
                 ));
                 return;
             }
@@ -1139,12 +1131,12 @@ impl App {
             self.playback.shuffle.restore(shuffle);
         }
         let target = target.unwrap_or(0);
-        self.play_queue_index(target, false).await;
+        self.play_queue_index(target).await;
         self.playback.restoring_memory = false;
         if is_roam {
             self.persist_playback_memory();
         }
-        self.set_runtime_status(self.lang_text("已恢复播放记忆", "Playback memory restored"));
+        status::info(self.lang_text("已恢复播放记忆", "Playback memory restored"));
     }
 }
 
@@ -1163,7 +1155,7 @@ pub(crate) struct PlaybackController {
     restoring_memory: bool,
     pub(super) pagination: Option<PlaylistPagination>,
     /// End-of-page advance waits for the shared page instead of stopping or wrapping early.
-    pub(super) page_advance: Option<bool>,
+    pub(super) page_advance: bool,
     roam_advance: Option<bool>,
     pending_start: Option<PendingPlayback>,
     playback_generation: u64,
@@ -1189,7 +1181,7 @@ impl PlaybackController {
             playback_state: PlaybackRuntimeState::Stopped,
             restoring_memory: false,
             pagination: None,
-            page_advance: None,
+            page_advance: false,
             roam_advance: None,
             pending_start: None,
             playback_generation: 0,
@@ -1230,7 +1222,7 @@ impl PlaybackController {
     }
 
     pub(super) fn cancel_deferred_advance(&mut self) {
-        self.page_advance = None;
+        self.page_advance = false;
         self.roam_advance = None;
     }
 
@@ -1270,7 +1262,7 @@ impl PlaybackController {
         self.playback_queue_source_id = None;
         self.restoring_memory = false;
         self.pagination = None;
-        self.page_advance = None;
+        self.page_advance = false;
         // 登出等清空路径不再以旧账号身份上报。
         self.listen = None;
     }
@@ -1292,6 +1284,6 @@ impl PlaybackController {
         self.playback_queue_cover = None;
         self.playback_queue_source_id = source_id;
         self.pagination = pagination;
-        self.page_advance = None;
+        self.page_advance = false;
     }
 }

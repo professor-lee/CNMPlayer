@@ -121,6 +121,8 @@ pub struct Config {
     pub keybind_fullscreen_open_artist: String,
     /// 全屏页：进入当前歌曲的专辑页。
     pub keybind_fullscreen_open_album: String,
+    /// 主应用：私人漫游页轮换推荐模式（默认 / 熟悉 / 探索）并重新拉取列表。
+    pub keybind_private_roam_mode: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

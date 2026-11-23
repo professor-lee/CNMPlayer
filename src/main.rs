@@ -2,6 +2,7 @@ mod app;
 mod data;
 mod lyrics;
 mod render;
+mod status;
 mod tmplayer;
 mod ui;
 
@@ -12,6 +13,7 @@ use app::App;
 use compio::fs::{create_dir_all, remove_file};
 use compio::runtime::spawn;
 use compio::time::sleep;
+use crossterm::cursor::Show;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, MouseEventKind,
 };
@@ -304,6 +306,9 @@ fn redirect_stderr_to_file(path: &std::path::Path) -> Result<()> {
 /// 而 stderr 文件由 `trim_stderr_log_if_needed` 就地截断。
 const LOG_MAX_FILE_SIZE_MB: u64 = 4;
 
+/// 程序日志；状态与报错都写到这里（见 `status`）。
+static LOG_PATH: LazyLock<PathBuf> = LazyLock::new(|| STORAGE.cache.join("Player.log"));
+
 #[cfg(unix)]
 pub static STDERR_LOG_PATH: LazyLock<PathBuf> =
     LazyLock::new(|| STORAGE.cache.join("Player.stderr.log"));
@@ -329,7 +334,7 @@ pub fn trim_stderr_log_if_needed() {}
 
 async fn init_logger() -> Result<()> {
     create_dir_all(&STORAGE.cache).await?;
-    let log_file = STORAGE.cache.join("Player.log");
+    let log_file = &*LOG_PATH;
     let _ = remove_file(&log_file).await;
     // ftail 轮转产生的历史文件不会自己消失，启动时一并清掉。
     for suffix in ["old", "old1", "old2", "old3"] {
@@ -345,16 +350,47 @@ async fn init_logger() -> Result<()> {
 
     let ftail = Ftail::new()
         .max_file_size(LOG_MAX_FILE_SIZE_MB)
-        .single_file_env_level(&log_file, false);
+        .single_file_env_level(log_file, false);
     Ok(ftail.init()?)
 }
 
 #[compio::main]
 async fn main() -> Result<()> {
     init_logger().await?;
+    install_panic_hook();
+    let result = run().await;
+    // fd 2 已重定向到日志文件，致命错误也要进退出报告才能出现在主终端上。
+    if let Err(err) = &result {
+        status::error(format!("{err:#}"));
+    }
+    status::print_error_report(&LOG_PATH);
+    result
+}
+
+/// `panic = "abort"`：钩子返回后进程直接终止，不会再走 `run` 里的终端恢复与退出报告，
+/// 所以在这里先恢复终端、记下 panic，再把本次运行的报错输出到主终端。
+/// 原钩子随后照常运行，其输出（含 backtrace）写入已重定向的 stderr 日志。
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen,
+            Show
+        );
+        status::error(format!("panic: {info}"));
+        status::print_error_report(&LOG_PATH);
+        default_hook(info);
+    }));
+}
+
+async fn run() -> Result<()> {
     let config = compio::runtime::spawn_blocking(Config::load_or_default)
         .await
         .map_err(|_| anyhow::anyhow!("configuration load task panicked"))??;
+    status::set_language(config.language);
     let theme = ThemeLoader::load_async(&config.theme)
         .await
         .unwrap_or_default();
@@ -505,18 +541,21 @@ async fn launch_tmplayer_fullscreen(
     let config = app.config.clone();
     app.set_fullscreen_context(true);
     let mut bridge = AppFullscreenBridge { app };
-    let (exit, status_text) =
+    let exit =
         match tmplayer::run_fullscreen(terminal, &config, bootstrap, host_snapshot, &mut bridge)
             .await
         {
-            Ok(exit) => (Some(exit), String::new()),
-            Err(err) => (None, format!("TMPlayer 运行失败: {}", err)),
+            Ok(exit) => Some(exit),
+            Err(err) => {
+                status::error(format!(
+                    "{}: {err}",
+                    status::localized("全屏页运行失败", "Fullscreen page failed")
+                ));
+                None
+            }
         };
     app.set_fullscreen_context(false);
     app.reset_main_spectrum();
-    if !status_text.is_empty() {
-        app.set_runtime_status(status_text);
-    }
     match exit {
         Some(tmplayer::FullscreenExit::BackToHostOpenSettings) => {
             app.open_settings_from_fullscreen()

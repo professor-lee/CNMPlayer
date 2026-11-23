@@ -67,6 +67,7 @@ keybind_download_fullscreen = "Ctrl+D"
 keybind_toggle_subscribe = "L"
 keybind_fullscreen_open_artist = "Ctrl+A"
 keybind_fullscreen_open_album = "Ctrl+S"
+keybind_private_roam_mode = "M"
  
 [cache]
 # 缓存根目录 (默认使用系统标准路径)

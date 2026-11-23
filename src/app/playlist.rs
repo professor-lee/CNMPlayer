@@ -26,6 +26,7 @@ use super::tracks::PlaylistTrackKind;
 use super::tracks::fetch_song_page_refs;
 use super::tracks::parse_tracks;
 use crate::data::config::Language;
+use crate::status;
 use anyhow::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -137,7 +138,11 @@ pub(super) async fn fetch_playlist_tracks_page(
         .map_err(|err| err.to_string())?;
     let code = response_code(&response);
     if code != 200 {
-        return Err(format!("请求失败({code}): {}", response_message(&response)));
+        return Err(format!(
+            "{}({code}): {}",
+            status::localized("请求失败", "Request failed"),
+            response_message(&response)
+        ));
     }
 
     let tracks = response
@@ -149,7 +154,11 @@ pub(super) async fn fetch_playlist_tracks_page(
         .map(|items| parse_tracks(items))
         .unwrap_or_default();
     if tracks.is_empty() && total_tracks.is_some_and(|total| offset < total) {
-        return Err("歌单分页返回空数据".to_string());
+        return Err(status::localized(
+            "歌单分页返回空数据",
+            "The playlist page returned no tracks",
+        )
+        .to_string());
     }
 
     let track_count = tracks.len();
@@ -395,7 +404,7 @@ pub(super) async fn fetch_album_page(
 /// 全屏页点专辑名要拉的东西：先 `song/detail` 解析出 `al.id`，再拉专辑页数据。
 ///
 /// 与作者页同理：整段不借 `&mut App`，交给 `spawn_shared` 后台跑；
-/// 全屏页只有显示名，本机音频 / 无播放时解析不出来，错误写进占位页与状态行。
+/// 全屏页只有显示名，本机音频 / 无播放时解析不出来，错误写进占位页并按报错记日志。
 pub(super) async fn fetch_album_page_from_song(
     api: ApiState,
     language: Language,
@@ -601,15 +610,12 @@ impl App {
                 let title = fetch.title.clone();
                 self.sync_private_roam_fetch(&fetch);
                 self.apply_playlist_fetch(fetch);
-                self.set_runtime_status(format!("{} {}", kind.opened(self.config.language), title));
+                status::info(format!("{} {}", kind.opened(self.config.language), title));
             }
             Err(message) => {
                 self.browse.playlist.description =
                     format!("{}: {message}", kind.failed(self.config.language));
-                self.set_runtime_status(format!(
-                    "{}: {message}",
-                    kind.failed(self.config.language)
-                ));
+                status::error(format!("{}: {message}", kind.failed(self.config.language)));
             }
         }
     }
@@ -649,11 +655,11 @@ impl App {
                         .pagination
                         .as_ref()
                         .is_some_and(|pager| pager.same_source(pagination))
-                        && self.playback.page_advance.take().is_some()
+                        && std::mem::take(&mut self.playback.page_advance)
                     {
                         self.playback.playback_state = PlaybackRuntimeState::Stopped;
                     }
-                    self.set_runtime_status(format!(
+                    status::error(format!(
                         "{}: {error}",
                         self.lang_text("歌单分页加载失败", "Playlist page load failed")
                     ));
@@ -701,7 +707,7 @@ impl App {
             };
 
             let Some(album_id) = track.id.clone() else {
-                self.set_runtime_status(self.lang_text(
+                status::info(self.lang_text(
                     "当前条目缺少专辑 ID，无法打开",
                     "The current item has no album ID",
                 ));
