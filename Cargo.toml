@@ -22,7 +22,7 @@ toml = "1.1"
 log = "0.4"
 ftail = "0.3"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache"] }
-ratatui-image = { version = "11", default-features = false, features = ["crossterm", "chafa-dyn"] }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 directories = "6"
 futures = "0.3"
@@ -49,6 +49,11 @@ lofty = "0.25.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# chafa 需要 pkg-config 能找到的原生 C 库（及运行期 glib），Windows 上没有可用的分发方式；
+# Windows 改用 ratatui-image 自带的半块渲染。
+[target.'cfg(not(windows))'.dependencies]
+ratatui-image = { version = "11", default-features = false, features = ["chafa-dyn"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"
