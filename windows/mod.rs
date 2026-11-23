@@ -4,4 +4,5 @@
 //! 只在 Windows 目标上编译；Linux 的构建与运行完全不经过这里。
 
 pub(crate) mod process;
+pub(crate) mod stderr;
 pub(crate) mod terminal;

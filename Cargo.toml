@@ -56,7 +56,7 @@ libc = "0.2"
 ratatui-image = { version = "11", default-features = false, features = ["chafa-dyn"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"
