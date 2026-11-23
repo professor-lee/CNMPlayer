@@ -510,6 +510,7 @@ impl App {
         self.tick_home_sidebar_page_fetch();
         self.tick_author_fetch();
         self.tick_playlist_fetch();
+        self.tick_private_roam_mode_switch();
         self.tick_like_sync();
         self.tick_subscription_sync();
         self.tick_download();

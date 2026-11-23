@@ -614,6 +614,10 @@ impl App {
         ) {
             return false;
         }
+        // 只在私人漫游页生效；其它页面继续按页面导航处理。
+        if matches!(action, KeybindAction::PrivateRoamMode) && !self.private_roam_page_active() {
+            return false;
+        }
 
         if !self.can_execute_global_hotkey() {
             return true;
@@ -669,6 +673,7 @@ impl App {
             KeybindAction::DownloadFullscreen => {}
             KeybindAction::ToggleSubscribe => self.toggle_subscription_hotkey(),
             KeybindAction::FullscreenOpenArtist | KeybindAction::FullscreenOpenAlbum => {}
+            KeybindAction::PrivateRoamMode => self.cycle_private_roam_mode_hotkey(),
         }
     }
 

@@ -38,6 +38,8 @@ pub(super) enum KeybindAction {
     FullscreenOpenArtist,
     /// 全屏页：进入当前歌曲的专辑页（宿主侧不处理）。
     FullscreenOpenAlbum,
+    /// 主应用：私人漫游页轮换推荐模式并重新拉取列表。
+    PrivateRoamMode,
 }
 
 impl KeybindAction {
@@ -69,6 +71,7 @@ impl KeybindAction {
             Self::ToggleSubscribe => 22,
             Self::FullscreenOpenArtist => 23,
             Self::FullscreenOpenAlbum => 24,
+            Self::PrivateRoamMode => 25,
         }
     }
 }
@@ -82,6 +85,8 @@ impl App {
         let actions = [
             // 与全屏收藏同默认键（L）：主应用侧必须先匹配到它，全屏页另走 `map_key`。
             KeybindAction::ToggleSubscribe,
+            // 与全屏循环模式同默认键（M），同理排在全屏动作之前。
+            KeybindAction::PrivateRoamMode,
             KeybindAction::SearchBox,
             KeybindAction::Fullscreen,
             KeybindAction::Settings,

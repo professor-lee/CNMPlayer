@@ -34,6 +34,15 @@ impl PrivateRoamMode {
             Self::Explore => "EXPLORE",
         }
     }
+
+    /// 轮换顺序：默认 → 熟悉 → 探索 → 默认。
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::Familiar,
+            Self::Familiar => Self::Explore,
+            Self::Explore => Self::Default,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

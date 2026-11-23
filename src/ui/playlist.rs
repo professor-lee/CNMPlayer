@@ -130,8 +130,13 @@ fn draw_playlist_header(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let mut cursor_y = info_area.y;
 
+    // 私人漫游标题后接「 · 模式」。
+    let title = match app.private_roam_title_mode() {
+        Some(mode) => format!("{} · {mode}", app.browse.playlist.title),
+        None => app.browse.playlist.title.clone(),
+    };
     frame.render_widget(
-        Paragraph::new(app.browse.playlist.title.as_str()).style(
+        Paragraph::new(title.as_str()).style(
             Style::default()
                 .fg(app.theme.color_text())
                 .add_modifier(Modifier::BOLD),
@@ -147,8 +152,7 @@ fn draw_playlist_header(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(key) = app.browse.playlist.subscribe_key.clone() {
         let heart = crate::ui::player_bar::subscribe_button_glyph(app.subscription_displayed(&key));
         let heart_w = UnicodeWidthStr::width(heart) as u16;
-        let title_w = (UnicodeWidthStr::width(app.browse.playlist.title.as_str()) as u16)
-            .min(info_area.width);
+        let title_w = (UnicodeWidthStr::width(title.as_str()) as u16).min(info_area.width);
         let x = info_area.x.saturating_add(title_w).saturating_add(1);
         if x.saturating_add(heart_w) <= info_area.x.saturating_add(info_area.width) {
             let rect = Rect {
@@ -478,14 +482,21 @@ fn draw_playlist_hint(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let roam_mode_key = app
+        .private_roam_title_mode()
+        .map(|_| app.config.keybind_private_roam_mode.as_str());
     let text = match app.config.language {
         Language::Zh => format!(
-            "Enter 播放/打开专辑  Esc 返回  {} 搜索  {} 全屏",
-            app.config.keybind_search_box, app.config.keybind_fullscreen
+            "Enter 播放/打开专辑  Esc 返回  {}{} 搜索  {} 全屏",
+            roam_mode_key.map_or(String::new(), |key| format!("{key} 切换漫游模式  ")),
+            app.config.keybind_search_box,
+            app.config.keybind_fullscreen
         ),
         Language::En => format!(
-            "Enter play/open album  Esc back  {} Search  {} Fullscreen",
-            app.config.keybind_search_box, app.config.keybind_fullscreen
+            "Enter play/open album  Esc back  {}{} Search  {} Fullscreen",
+            roam_mode_key.map_or(String::new(), |key| format!("{key} Roam mode  ")),
+            app.config.keybind_search_box,
+            app.config.keybind_fullscreen
         ),
     };
 

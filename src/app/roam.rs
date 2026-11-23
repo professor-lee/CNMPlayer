@@ -1,6 +1,10 @@
 use super::App;
+use super::Page;
 use super::api::ApiState;
 use super::home::HOME_PRIVATE_ROAM_TILE_ID;
+use super::owned_task::SharedTask;
+use super::owned_task::peek_shared;
+use super::owned_task::spawn_shared;
 use super::playback_controller::PlaybackTrack;
 use super::playlist::PlaylistFetch;
 use super::playlist::PlaylistState;
@@ -15,6 +19,7 @@ use crate::data::persistence::PersistenceKey;
 use crate::data::playback_session;
 use crate::data::private_roam;
 use crate::data::private_roam::PrivateRoamMode;
+use crate::status;
 use serde_json::Value;
 
 const PRIVATE_ROAM_TRACK_LIMIT: usize = 256;
@@ -223,6 +228,20 @@ impl PrivateRoamState {
                 .first()
                 .and_then(|track| track.cover_url.clone()),
         };
+    }
+}
+
+/// 在途的模式切换：目标模式与按它重新拉取的歌曲。
+pub(super) struct RoamModeSwitch {
+    mode: PrivateRoamMode,
+    task: SharedTask<Vec<PlaylistTrack>>,
+}
+
+fn private_roam_mode_label(language: Language, mode: PrivateRoamMode) -> &'static str {
+    match mode {
+        PrivateRoamMode::Default => lang_text(language, "默认", "Default"),
+        PrivateRoamMode::Familiar => lang_text(language, "熟悉", "Familiar"),
+        PrivateRoamMode::Explore => lang_text(language, "探索", "Explore"),
     }
 }
 
@@ -609,6 +628,138 @@ impl App {
                 None => tile.cover = Default::default(),
             }
         }
+    }
+
+    /// 当前页是否为已载入的私人漫游页（占位页没有 id，不算）。
+    pub(super) fn private_roam_page_active(&self) -> bool {
+        self.page == Page::Playlist
+            && self.browse.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)
+    }
+
+    /// 界面显示的模式：切换在途时显示目标模式。
+    fn private_roam_display_mode(&self) -> PrivateRoamMode {
+        self.browse
+            .private_roam_mode_switch
+            .as_ref()
+            .map_or(self.browse.private_roam.mode, |switch| switch.mode)
+    }
+
+    /// 歌单页标题后缀：浏览私人漫游时为当前模式名，其余歌单为 `None`。
+    pub(crate) fn private_roam_title_mode(&self) -> Option<&'static str> {
+        (self.browse.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID)).then(|| {
+            private_roam_mode_label(self.config.language, self.private_roam_display_mode())
+        })
+    }
+
+    /// 私人漫游页按键：轮换到下一模式并按新模式重新拉取列表。
+    /// 连按时以最后一次为准，覆盖在途拉取；输入路径不 `await` 网络。
+    pub(super) fn cycle_private_roam_mode_hotkey(&mut self) {
+        if !self.private_roam_page_active() {
+            return;
+        }
+        let mode = self.private_roam_display_mode().next();
+        let mut api = self.api.clone();
+        let task = spawn_shared(
+            Box::pin(async move { Some(fetch_private_roam_songs(&mut api, mode).await) }),
+            self.api.wake_signal(),
+        );
+        self.browse.private_roam_mode_switch = Some(RoamModeSwitch { mode, task });
+        status::info(format!(
+            "{}{}",
+            self.lang_text("正在切换私人漫游模式：", "Switching private roam mode: "),
+            private_roam_mode_label(self.config.language, mode)
+        ));
+    }
+
+    pub(super) fn tick_private_roam_mode_switch(&mut self) {
+        let Some(switch) = self.browse.private_roam_mode_switch.as_ref() else {
+            return;
+        };
+        let Some(fetched) = peek_shared(&switch.task).cloned() else {
+            return;
+        };
+        let mode = switch.mode;
+        self.browse.private_roam_mode_switch = None;
+        if fetched.is_empty() {
+            // 拉取失败保留旧模式与旧列表，标题随之回到旧模式。
+            status::error(format!(
+                "{}{}",
+                self.lang_text(
+                    "私人漫游模式切换失败，仍为：",
+                    "Private roam mode switch failed; still: "
+                ),
+                private_roam_mode_label(self.config.language, self.browse.private_roam.mode)
+            ));
+            return;
+        }
+        self.apply_private_roam_mode(mode, fetched);
+    }
+
+    /// 切换模式后整表换成新模式的歌曲。在播漫游时当前歌曲留在首位、队列其后换成新歌：
+    /// 播放跟踪、追加与续播都按歌曲 id 在列表里定位当前歌曲，旧歌留在队列里会失联。
+    fn apply_private_roam_mode(&mut self, mode: PrivateRoamMode, fetched: Vec<PlaylistTrack>) {
+        // 旧模式的追加结果不得混进新列表。
+        self.playback.roam_append = None;
+        let queue_is_roam = self.playback_queue_is_roam();
+        let playing = queue_is_roam
+            .then(|| self.current_song_id())
+            .flatten()
+            .and_then(|id| {
+                self.browse
+                    .private_roam
+                    .tracks
+                    .iter()
+                    .position(|track| track.id.as_deref() == Some(id.as_str()))
+            });
+        let (tracks, last_played_index) =
+            merge_private_roam_refresh(&self.browse.private_roam.tracks, playing, fetched);
+        let roam = &mut self.browse.private_roam;
+        roam.mode = mode;
+        roam.tracks = tracks;
+        roam.last_played_index = last_played_index;
+        roam.refresh_cover();
+
+        if queue_is_roam
+            && let Some(current) = self
+                .playback
+                .playback_index
+                .filter(|&index| index < self.playback.playback_queue.len())
+        {
+            let skip = usize::from(last_played_index.is_some());
+            let upcoming = self.browse.private_roam.tracks[skip..]
+                .iter()
+                .filter_map(PlaybackTrack::from_playlist_track);
+            self.playback.playback_queue.truncate(current + 1);
+            self.playback.playback_queue.extend(upcoming);
+            bound_private_roam_queue(
+                &mut self.playback.playback_queue,
+                &mut self.playback.playback_index,
+                self.playback.playback_queue_source_id.as_deref(),
+                &mut self.playback.page_advance,
+            );
+            self.persist_playback_memory();
+        }
+
+        self.sync_home_roam_tile_cover();
+        self.sync_private_roam_browse_mirrors();
+        if self.browse.playlist.id.as_deref() == Some(HOME_PRIVATE_ROAM_TILE_ID) {
+            self.browse
+                .playlist
+                .set_focus(last_played_index.unwrap_or(0));
+            let cover = self.browse.private_roam.cover_url.clone();
+            if self.browse.playlist.cover.url != cover {
+                match cover {
+                    Some(url) => self.browse.playlist.cover.load(self.api.clone(), url),
+                    None => self.browse.playlist.cover = Default::default(),
+                }
+            }
+        }
+        self.persist_private_roam();
+        status::info(format!(
+            "{}{}",
+            self.lang_text("私人漫游：", "Private roam: "),
+            private_roam_mode_label(self.config.language, mode)
+        ));
     }
 }
 
