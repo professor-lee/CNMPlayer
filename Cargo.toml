@@ -57,6 +57,7 @@ ratatui-image = { version = "11", default-features = false, features = ["chafa-d
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
+windows = { version = "0.62", features = ["Foundation", "Media", "Media_Playback", "Storage", "Storage_Streams"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"

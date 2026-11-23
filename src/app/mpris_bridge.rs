@@ -6,6 +6,8 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub(super) struct MprisSyncPayload {
     // Every latest-value snapshot retains Identity, even when updates coalesce.
+    // Windows 的 SMTC 显示名取自可执行文件，读不到这个字段。
+    #[cfg_attr(windows, allow(dead_code))]
     pub(super) identity: Arc<String>,
     pub(super) playback: PlaybackRuntimeState,
     pub(super) position: Duration,
@@ -16,10 +18,13 @@ pub(super) struct MprisSyncPayload {
 pub(super) enum MprisControlEvent {
     Play,
     Pause,
+    // SMTC 把物理播放/暂停键折算成 Play 或 Pause，也只有绝对定位，不产生下面两种事件。
+    #[cfg_attr(windows, allow(dead_code))]
     PlayPause,
     Stop,
     Next,
     Previous,
+    #[cfg_attr(windows, allow(dead_code))]
     SeekRelativeMicros(i64),
     SeekAbsoluteMicros(i64),
 }
@@ -336,7 +341,12 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Windows 系统媒体控件（SMTC），实现放在仓库的 windows/ 补丁目录。
+#[cfg(windows)]
+#[path = "../../windows/smtc.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "linux", windows)))]
 mod imp {
     use super::MprisControlEvent;
     use super::MprisSyncPayload;
