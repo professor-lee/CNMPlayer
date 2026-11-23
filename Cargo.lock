@@ -661,6 +661,7 @@ dependencies = [
  "symphonia",
  "toml",
  "unicode-width",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
