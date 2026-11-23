@@ -406,7 +406,7 @@ impl App {
 
         // 先出加载页，网络初始化交给后台任务：登录恢复这几步在旧实现里是
         // 进备用屏幕之前同步 await 的，终端因此有一段时间毫无反馈。
-        let skip_roam = app.private_roam_refreshed_today();
+        let skip_roam = !app.private_roam_startup_refresh_due().await;
         let (steps, target) = startup::initial_plan(saved_cookie.is_some(), skip_roam);
         app.startup.init = StartupInit::spawn(
             app.config.clone(),

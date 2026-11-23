@@ -516,3 +516,23 @@ fn oversized_roam_restore_rebases_occurrence_after_window_and_empty_filtering() 
     assert_eq!(state.tracks[244].title, "590");
     assert_eq!(state.tracks[245].id.as_deref(), Some("C"));
 }
+
+#[test]
+fn startup_refresh_skips_a_nonempty_roam_that_is_being_played() {
+    // (今天已刷新, 列表为空, 队列来自漫游) -> 是否刷新
+    let cases = [
+        ((false, false, false), true),
+        ((false, false, true), false),
+        ((false, true, true), true),
+        ((false, true, false), true),
+        ((true, false, false), false),
+        ((true, true, true), false),
+    ];
+    for ((refreshed_today, roam_empty, queue_is_roam), due) in cases {
+        assert_eq!(
+            super::private_roam_refresh_due(refreshed_today, roam_empty, queue_is_roam),
+            due,
+            "refreshed_today={refreshed_today} roam_empty={roam_empty} queue_is_roam={queue_is_roam}",
+        );
+    }
+}

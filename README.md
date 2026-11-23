@@ -72,7 +72,7 @@ Playback belongs to the host: streaming with a local cache, queue memory, privat
 - Playlist page — also used for albums, there is no separate album page; a header (cover, title, author, description, track count) above a virtualized track list, 100 tracks per fetch. Browsing and playback share one source-bound cursor, so a page fetched by either is appended to both
 - Artist page: avatar, name, hot-song / album / EP / single counts and a tile grid per section
 - Search page: a keyword searches artists, playlists and songs at once, with a trailing suffix to narrow the type (see [Search syntax](#search-syntax))
-- Private roam: keeps the last played track at the head; reaching the end of the list fetches more (three API calls merged and de-duplicated); the tile cover follows the currently playing roam song
+- Private roam: refreshed on the first startup of each UTC day, keeping the last played track at the head; skipped when the restored playback queue comes from private roam and caught up on the next non-roam startup; reaching the end of the list fetches more (three API calls merged and de-duplicated); the tile cover follows the currently playing roam song
 - Navigation: Enter opens or plays, Esc / Left goes back, Tab / Down and Shift+Tab / Up move, PageUp / PageDown jump one page
 - Mouse: the wheel scrolls, a single click focuses, a double click activates; the collapsed player bar's previous / play-pause / next, like and repeat-mode buttons and its progress bar are clickable
 
