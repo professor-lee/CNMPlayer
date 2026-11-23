@@ -287,21 +287,6 @@ pub(super) fn draw_page_reveal_with_snapshot<B: ratatui::backend::Backend>(
             }
         }
 
-        // toast
-        if let Some((msg, _)) = &app.toast {
-            let area = Rect {
-                x: size.x,
-                y: size.y,
-                width: size.width,
-                height: 1,
-            };
-            f.render_widget(
-                ratatui::widgets::Paragraph::new(msg.as_str())
-                    .style(Style::default().fg(app.theme.color_accent3())),
-                area,
-            );
-        }
-
         if app.config.show_hints {
             render_hint_in_border(f, app, bottom_row, layout_out.left);
         }

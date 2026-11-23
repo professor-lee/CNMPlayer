@@ -3,6 +3,7 @@ use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
 use crate::render::mark_animation_end_frame;
+use crate::status;
 use crate::tmplayer::app::state::{AppState, Overlay, PlaybackState, RepeatMode};
 use crate::tmplayer::ui::tui::Tui;
 use crate::tmplayer::ui::tui::layout::UiLayout;
@@ -758,7 +759,7 @@ async fn handle_action(
                     app.download_path_edit = None;
                     app.overlay = Overlay::DownloadSettingsModal;
                 }
-                7 => app.set_toast("Logout is unavailable in fullscreen"),
+                7 => status::info("Logout is unavailable in fullscreen"),
                 8 => app.overlay = Overlay::AboutModal,
                 _ => {}
             },
@@ -1120,7 +1121,7 @@ async fn handle_action(
                 .filter(|name| !name.trim().is_empty())
                 .count();
             match count {
-                0 => app.set_toast(match app.config.language {
+                0 => status::info(match app.config.language {
                     crate::data::config::Language::Zh => "当前歌曲没有歌手信息",
                     crate::data::config::Language::En => "The current song has no artist",
                 }),
@@ -1283,7 +1284,10 @@ async fn apply_settings_delta(
                 app.config.theme = key.clone();
                 save_and_sync_host_config(app, host_bridge).await;
             } else {
-                app.set_toast("Theme load error");
+                status::error(match app.config.language {
+                    crate::data::config::Language::Zh => format!("主题加载失败: {key}"),
+                    crate::data::config::Language::En => format!("Theme load error: {key}"),
+                });
             }
         }
         // Transparent background
@@ -1417,7 +1421,7 @@ fn begin_download_path_edit(app: &mut AppState) {
     app.overlay = Overlay::DownloadPathEditModal;
 }
 
-/// 回车确认：非法（空 / 非绝对 / 不可写）就保留修改前的值，只弹一次 toast。
+/// 回车确认：非法（空 / 非绝对 / 不可写）就保留修改前的值，原因只记日志。
 async fn commit_download_path_edit(app: &mut AppState, host_bridge: &mut impl HostPlaybackBridge) {
     let Some(edit) = app.download_path_edit.take() else {
         return;
@@ -1436,7 +1440,19 @@ async fn commit_download_path_edit(app: &mut AppState, host_bridge: &mut impl Ho
             save_and_sync_host_config(app, host_bridge).await;
             app.refresh_download_root();
         }
-        Err(_) => {}
+        Err(err) => {
+            let text = match app.config.language {
+                crate::data::config::Language::Zh => "下载路径无效，保留修改前的值",
+                crate::data::config::Language::En => {
+                    "Invalid download path, keeping the previous value"
+                }
+            };
+            // 相对路径是输入问题；目录不可写是环境故障，按报错处理。
+            match err {
+                crate::app::download::DownloadPathError::NotAbsolute => status::info(text),
+                crate::app::download::DownloadPathError::NotWritable => status::error(text),
+            }
+        }
     }
 }
 

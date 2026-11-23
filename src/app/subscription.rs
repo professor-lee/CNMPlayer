@@ -5,6 +5,7 @@ use super::likes::LikeToggleTask;
 use super::likes::ToggleOutcome;
 use super::owned_task::peek_shared;
 use super::owned_task::spawn_shared;
+use crate::status;
 
 /// 歌手 / 歌单 / 专辑收藏键：`artist:ID`、`playlist:ID`、`album:ID`。
 pub(super) fn artist_key(id: &str) -> String {
@@ -105,7 +106,7 @@ impl App {
         {
             ToggleOutcome::Settled { liked } => {
                 self.mark_sidebar_stale_for(&key);
-                self.set_runtime_status(format!(
+                status::info(format!(
                     "{} {}",
                     if liked {
                         self.lang_text("已收藏", "Followed")
@@ -118,7 +119,7 @@ impl App {
             ToggleOutcome::Superseded => self.mark_sidebar_stale_for(&key),
             ToggleOutcome::StaleFailure => {}
             ToggleOutcome::Failed { message } => {
-                self.set_runtime_status(format!(
+                status::error(format!(
                     "{}: {}",
                     self.lang_text("收藏操作失败", "Follow operation failed"),
                     message

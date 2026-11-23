@@ -6,6 +6,7 @@ use super::api::ApiState;
 use crate::data::config::AudioQuality;
 use crate::data::icons::UiIcons;
 use crate::launch;
+use crate::status;
 use anyhow::Context;
 use anyhow::Result;
 use compio::io::AsyncWrite;
@@ -257,7 +258,7 @@ pub(super) struct DownloadRequest {
     pub(super) target: DownloadTarget,
 }
 
-/// 任务结束的通知（由 `DownloadManager::poll` 交给 UI 写状态行）。
+/// 任务结束的通知（由 `DownloadManager::poll` 交给 UI 写日志）。
 #[derive(Debug, Clone)]
 pub(super) enum DownloadEvent {
     /// 排队中的任务真正开始写盘（先来后到，队列里可能有多个）。
@@ -454,15 +455,29 @@ impl DownloadManager {
     ) -> Result<(), String> {
         if let Some(job) = self.jobs.get(&request.song_id) {
             return Err(if job.cancelling {
-                "正在取消上一任务，请稍候".to_string()
+                status::localized(
+                    "正在取消上一任务，请稍候",
+                    "Cancelling the previous download, please wait",
+                )
             } else {
-                "该歌曲已在下载中".to_string()
-            });
+                status::localized("该歌曲已在下载中", "This song is already downloading")
+            }
+            .to_string());
         }
 
         match self.known_state_of(&request.song_id, &request.target) {
-            None => return Err("正在检查下载文件，请稍候".to_string()),
-            Some(DownloadState::Done) => return Err("该歌曲已下载".to_string()),
+            None => {
+                return Err(status::localized(
+                    "正在检查下载文件，请稍候",
+                    "Checking existing downloads, please wait",
+                )
+                .to_string());
+            }
+            Some(DownloadState::Done) => {
+                return Err(
+                    status::localized("该歌曲已下载", "Song already downloaded").to_string()
+                );
+            }
             Some(_) => {}
         }
         self.api = api.clone();
@@ -512,7 +527,7 @@ impl DownloadManager {
         {
             return Ok(());
         }
-        Err("下载任务未能启动".to_string())
+        Err(status::localized("下载任务未能启动", "The download task could not start").to_string())
     }
 
     /// 确保有一个活着的下载任务（`None` 或已关闭时现起一个）。
@@ -938,7 +953,12 @@ async fn write_metadata(
         (metadata, lyrics, cover)
     })
     .await
-    .map_err(|_| anyhow::anyhow!("元数据获取超时（音频文件已保留）"))?;
+    .map_err(|_| {
+        anyhow::anyhow!(status::localized(
+            "元数据获取超时（音频文件已保留）",
+            "Metadata fetch timed out (audio file kept)"
+        ))
+    })?;
     if shared.cancelled.load(Ordering::SeqCst) {
         return Ok(());
     }

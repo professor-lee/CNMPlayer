@@ -265,8 +265,6 @@ pub struct AppState {
     pub cover_anim: Option<CoverAnim>,
     pub pending_system_cover_anim: Option<(CoverSnapshot, i8, Instant)>,
 
-    pub toast: Option<(String, Instant)>,
-
     // Ask host CNMPlayer to open its settings after exiting fullscreen.
     pub request_host_settings_open: bool,
     /// 全屏页里点了作者名/专辑名这类"交给宿主接着做"的请求：
@@ -387,7 +385,6 @@ impl AppState {
 
             cover_anim: None,
             pending_system_cover_anim: None,
-            toast: None,
             request_host_settings_open: false,
             exit_request: None,
             artist_cycle: None,
@@ -405,10 +402,6 @@ impl AppState {
             last_frame: Instant::now(),
             position_anchor_at: Instant::now(),
         }
-    }
-
-    pub fn set_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
     }
 
     /// 下载图标旋转帧的相位（time-based）。
@@ -526,12 +519,6 @@ impl AppState {
             self.pending_system_cover_anim = None;
         }
 
-        if let Some((_, at)) = &self.toast
-            && now.duration_since(*at) > Duration::from_millis(1500)
-        {
-            self.toast = None;
-        }
-
         if let Some((index, at)) = self.artist_cycle
             && now.duration_since(at) >= ARTIST_CYCLE_COMMIT_AFTER
         {
@@ -635,7 +622,7 @@ impl AppState {
             return true;
         }
 
-        if self.toast.is_some() || self.artist_cycle.is_some() {
+        if self.artist_cycle.is_some() {
             return true;
         }
 

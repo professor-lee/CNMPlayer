@@ -16,6 +16,7 @@ use super::playlist::fetch_album_page_from_song;
 use super::tracks::artist_name_segments;
 use crate::data::config::Config;
 use crate::data::theme_loader::ThemeLoader;
+use crate::status;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -153,7 +154,7 @@ impl App {
 
     pub(crate) async fn fullscreen_play_queue_index(&mut self, index: usize) {
         if index < self.playback.playback_queue.len() {
-            self.play_queue_index(index, false).await;
+            self.play_queue_index(index).await;
         }
     }
 
@@ -195,12 +196,10 @@ impl App {
     /// `index` 是显示串（`now_playing.artist`，形如 "A / B"）里的段序号：
     /// 全屏页信息区按字符位置分段命中，点谁的名字就传谁的序号。
     /// 全屏页只有显示名（ID 要靠 `song/detail` 的 `ar` 补），
-    /// 本机音频 / 无播放时解析不出来，只在状态行里说明，不换页。
+    /// 本机音频 / 无播放时解析不出来，只记日志，不换页。
     pub(crate) fn open_author_page_from_fullscreen(&mut self, index: usize) {
         let Some(song_id) = self.current_song_id() else {
-            self.set_runtime_status(
-                self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"),
-            );
+            status::info(self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"));
             return;
         };
 
@@ -252,9 +251,7 @@ impl App {
     /// 与作者页同理：全屏页只有专辑显示名，ID 取 `song/detail` 的 `al.id`。
     pub(crate) fn open_album_page_from_fullscreen(&mut self) {
         let Some(song_id) = self.current_song_id() else {
-            self.set_runtime_status(
-                self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"),
-            );
+            status::info(self.lang_text("当前没有正在播放的歌曲", "Nothing is playing right now"));
             return;
         };
 
@@ -317,7 +314,7 @@ impl App {
                 .is_err()
         {
             config.download_path = self.config.download_path.clone();
-            self.set_runtime_status(self.lang_text(
+            status::error(self.lang_text(
                 "下载目录不可写，保留原设置",
                 "Download directory is not writable; keeping previous setting",
             ));
@@ -338,6 +335,7 @@ impl App {
             })
             .unwrap_or_else(|error| log::error!("apply EQ: {error:#}"));
         self.config = config;
+        status::set_language(self.config.language);
         self.sync_on_change();
         self.refresh_download_root();
         self.persist_config();
@@ -353,10 +351,10 @@ impl App {
             && self.page != Page::Login
             && let Err(error) = self.load_home_recommendations().await
         {
-            self.browse.home.status_line = format!(
+            status::error(format!(
                 "{}: {error}",
                 self.lang_text("推荐歌单刷新失败", "Failed to refresh home recommendations"),
-            );
+            ));
         }
     }
 

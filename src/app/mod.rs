@@ -87,6 +87,7 @@ use crate::data::session;
 use crate::launch;
 use crate::render::motion::Transition;
 use crate::render::wake::WakeSignal;
+use crate::status;
 use crate::tmplayer::audio::spectrum::MINI_BARS;
 use crate::tmplayer::audio::spectrum::Spectrum;
 use crate::ui::theme::Theme;
@@ -234,7 +235,7 @@ pub(crate) struct App {
     mpris_last_playback: PlaybackRuntimeState,
     api: ApiState,
     persistence: PersistenceWorker,
-    /// 下载任务表（异步后台任务；状态行与图标都从这里读）。
+    /// 下载任务表（异步后台任务；图标从这里读）。
     downloads: DownloadController,
     pub(crate) covers: CoverPresentation,
 }
@@ -488,7 +489,7 @@ impl App {
 
     pub(crate) async fn tick(&mut self) {
         if let Some(error) = self.persistence.pending_error() {
-            self.set_runtime_status(format!(
+            status::error(format!(
                 "{}: {error}",
                 self.lang_text("保存失败", "Save failed")
             ));
@@ -562,12 +563,6 @@ impl App {
             let _ = tx.send(());
         })
         .detach();
-    }
-
-    pub(crate) fn set_runtime_status(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        self.browse.home.status_line = text.clone();
-        self.search.status_line = text;
     }
 
     fn lang_text<'a>(&self, zh: &'a str, en: &'a str) -> &'a str {

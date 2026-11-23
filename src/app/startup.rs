@@ -22,6 +22,7 @@ use super::roam::fetch_private_roam_songs;
 use super::tracks::PlaylistTrack;
 use crate::data::config::Config;
 use crate::launch;
+use crate::status;
 use std::collections::HashSet;
 use std::sync::mpsc;
 use std::sync::mpsc::Receiver;
@@ -372,7 +373,7 @@ impl App {
                         self.lyric_fetch_generation = self.lyric_fetch_generation.wrapping_add(1);
                         let _ = self.lyric_fetch_tx.send(None);
                         self.lyric_fetch_inflight_song_id = None;
-                        self.set_runtime_status(self.lang_text(
+                        status::error(self.lang_text(
                             "播放记忆恢复超时，跳过本次恢复",
                             "Playback memory restore timed out; skipped this attempt",
                         ));

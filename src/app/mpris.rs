@@ -123,7 +123,7 @@ impl App {
                     MprisControlEvent::Pause => self.mpris_pause(),
                     MprisControlEvent::PlayPause => self.toggle_play_pause_hotkey().await,
                     MprisControlEvent::Stop => {
-                        self.playback.page_advance = None;
+                        self.playback.page_advance = false;
                         self.playback.cancel_pending_start();
                         self.playback.audio_player.stop();
                         self.playback.playback_state = PlaybackRuntimeState::Stopped;
@@ -148,7 +148,7 @@ impl App {
         }
         if self.playback.playback_state == PlaybackRuntimeState::Stopped {
             if let Some(index) = self.playback.playback_index {
-                self.play_queue_index(index, false).await;
+                self.play_queue_index(index).await;
             }
             return;
         }

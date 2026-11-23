@@ -15,6 +15,7 @@ use super::tracks::parse_artists;
 use super::tracks::parse_tracks;
 use super::tracks::pick_artist_id;
 use crate::data::config::Language;
+use crate::status;
 use anyhow::Result;
 use cria::ApiResponse;
 use crossterm::event::KeyCode;
@@ -532,7 +533,7 @@ impl App {
                 self.playlist_section_return_snapshot = None;
                 let title = fetch.title.clone();
                 self.apply_author_fetch(fetch);
-                self.set_runtime_status(format!(
+                status::info(format!(
                     "{} {}",
                     self.lang_text("已打开作者", "Opened artist"),
                     title
@@ -543,7 +544,7 @@ impl App {
                     "{}: {message}",
                     self.lang_text("作者页加载失败", "Failed to load the artist page")
                 );
-                self.set_runtime_status(format!(
+                status::error(format!(
                     "{}: {message}",
                     self.lang_text("打开作者页失败", "Failed to open the artist page"),
                 ));
@@ -600,7 +601,7 @@ impl App {
         };
 
         if tracks.is_empty() {
-            self.set_runtime_status(self.lang_text(
+            status::info(self.lang_text(
                 "当前分类暂无可用内容",
                 "This section has no available items",
             ));

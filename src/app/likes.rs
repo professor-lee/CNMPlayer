@@ -9,6 +9,7 @@ use super::response::response_code;
 use super::response::response_message;
 use super::text::lang_text;
 use crate::data::config::Language;
+use crate::status;
 use anyhow::Result;
 use anyhow::anyhow;
 use serde_json::Value;
@@ -123,7 +124,7 @@ pub(super) enum ToggleOutcome {
 /// 收藏不会冻结单线程事件循环的动画。
 ///
 /// - 连点：只保留最后一次期望；在途请求串行化，其回包不会覆盖更新的意图。
-/// - 失败：回滚显示到已确认集合，并写状态行。
+/// - 失败：回滚显示到已确认集合，并按报错记日志。
 ///
 /// 本结构不依赖 `App` 与网络：回包由调用方（tick 或单测）喂进 `on_*_result`。
 #[derive(Default)]
@@ -406,7 +407,7 @@ impl App {
     /// 收藏切换：立刻按期望值改界面（乐观更新），请求由 `tick_like_sync` 派发。
     pub(super) fn toggle_like_hotkey(&mut self) {
         let Some(song_id) = self.current_song_id() else {
-            self.set_runtime_status(self.lang_text(
+            status::info(self.lang_text(
                 "当前没有可收藏的歌曲",
                 "No song is available for like/unlike",
             ));
@@ -444,7 +445,7 @@ impl App {
         {
             ToggleOutcome::Settled { liked } => {
                 self.sync_like_display(&song_id);
-                self.set_runtime_status(if liked {
+                status::info(if liked {
                     self.lang_text("已收藏当前歌曲", "Liked current song")
                         .to_string()
                 } else {
@@ -456,7 +457,7 @@ impl App {
             ToggleOutcome::Failed { message } => {
                 // 意图已被状态机放弃，显示回滚到已确认值。
                 self.sync_like_display(&song_id);
-                self.set_runtime_status(format!(
+                status::error(format!(
                     "{}: {}",
                     self.lang_text("收藏操作失败", "Like operation failed"),
                     message

@@ -15,6 +15,7 @@ use crate::data::config::Config;
 use crate::data::config::Language;
 use crate::data::keymap::{self, KeyRow, KeyView, SLOTS};
 use crate::data::theme_loader::ThemeLoader;
+use crate::status;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -379,9 +380,9 @@ impl App {
     fn activate_keybind_row(&mut self, row: usize) {
         match keybind_rows().get(row) {
             Some(KeyRow::Slot(index)) => self.begin_keybind_rebind(*index),
-            Some(KeyRow::Fixed(_)) => self.set_runtime_status(
-                self.lang_text("固定键不可修改", "Fixed keys cannot be rebound"),
-            ),
+            Some(KeyRow::Fixed(_)) => {
+                status::info(self.lang_text("固定键不可修改", "Fixed keys cannot be rebound"))
+            }
             _ => {}
         }
     }
@@ -389,7 +390,7 @@ impl App {
     /// 开始重绑某个槽位。
     fn begin_keybind_rebind(&mut self, index: usize) {
         self.settings.keybind_rebinding = Some(index);
-        self.set_runtime_status(format!(
+        status::info(format!(
             "{} [{}]，{}",
             self.lang_text("正在重绑", "Rebinding"),
             self.keybind_name_for_index(index),
@@ -536,7 +537,7 @@ impl App {
     pub(super) fn activate_download_reset(&mut self) {
         if !self.settings.download_reset_armed {
             self.settings.download_reset_armed = true;
-            self.set_runtime_status(self.lang_text(
+            status::info(self.lang_text(
                 "再按一次确认恢复下载设置",
                 "Press again to restore download settings",
             ));
@@ -549,7 +550,7 @@ impl App {
         self.config.download_path = defaults.download_path;
         self.persist_config();
         self.refresh_download_root();
-        self.set_runtime_status(self.lang_text(
+        status::info(self.lang_text(
             "下载设置已恢复默认",
             "Download settings restored to defaults",
         ));
@@ -616,7 +617,7 @@ impl App {
                     Some(crate::app::download::DOWNLOAD_PATH_NULL.to_string());
                 self.persist_config();
                 self.refresh_download_root();
-                self.set_runtime_status(self.lang_text(
+                status::info(self.lang_text(
                     "已禁用下载（路径填 Null）",
                     "Downloads disabled (path is Null)",
                 ));
@@ -625,28 +626,35 @@ impl App {
                 self.config.download_path = Some(path.display().to_string());
                 self.persist_config();
                 self.refresh_download_root();
-                self.set_runtime_status(format!(
+                status::info(format!(
                     "{}: {}",
                     self.lang_text("下载路径已更新", "Download path updated"),
                     path.display()
                 ));
             }
             Err(err) => {
-                let reason = match err {
-                    crate::app::download::DownloadPathError::NotAbsolute => {
-                        self.lang_text("必须使用绝对路径", "path must be absolute")
-                    }
+                let (reason, not_writable) = match err {
+                    crate::app::download::DownloadPathError::NotAbsolute => (
+                        self.lang_text("必须使用绝对路径", "path must be absolute"),
+                        false,
+                    ),
                     crate::app::download::DownloadPathError::NotWritable => {
-                        self.lang_text("路径不可写", "path is not writable")
+                        (self.lang_text("路径不可写", "path is not writable"), true)
                     }
                 };
-                self.set_runtime_status(format!(
+                let text = format!(
                     "{}（{reason}）",
                     self.lang_text(
                         "下载路径无效，保留修改前的值",
                         "Invalid download path, keeping the previous value"
                     )
-                ));
+                );
+                // 相对路径是输入问题；目录不可写是环境故障，按报错处理。
+                if not_writable {
+                    status::error(text);
+                } else {
+                    status::info(text);
+                }
             }
         }
     }
@@ -668,7 +676,7 @@ impl App {
             match key.code {
                 KeyCode::Esc => {
                     self.settings.download_path_edit = None;
-                    self.set_runtime_status(
+                    status::info(
                         self.lang_text("已取消修改下载路径", "Download path edit cancelled"),
                     );
                 }
@@ -760,13 +768,11 @@ impl App {
             match key.code {
                 KeyCode::Esc => {
                     self.settings.keybind_rebinding = None;
-                    self.set_runtime_status(
-                        self.lang_text("已取消快捷键重绑", "Cancelled keybind rebinding"),
-                    );
+                    status::info(self.lang_text("已取消快捷键重绑", "Cancelled keybind rebinding"));
                 }
                 _ => {
                     let Some(binding) = key_event_to_keybind_text(key) else {
-                        self.set_runtime_status(self.lang_text(
+                        status::info(self.lang_text(
                             "该按键暂不支持绑定，请重试",
                             "This key is not supported for binding, please retry",
                         ));
@@ -774,7 +780,7 @@ impl App {
                     };
 
                     if binding == RESERVED_RESET_KEYBIND {
-                        self.set_runtime_status(self.lang_text(
+                        status::info(self.lang_text(
                             "Ctrl+Alt+R 为保留快捷键，不能重新绑定",
                             "Ctrl+Alt+R is reserved and cannot be rebound",
                         ));
@@ -782,7 +788,7 @@ impl App {
                     }
 
                     if let Some(conflict_index) = self.find_keybind_conflict(index, &binding) {
-                        self.set_runtime_status(format!(
+                        status::info(format!(
                             "{}: [{}] {} [{}]，{}",
                             self.lang_text("快捷键冲突", "Keybind conflict"),
                             binding,
@@ -796,7 +802,7 @@ impl App {
                     let name = self.keybind_name_for_index(index);
                     (SLOTS[index].get_mut)(&mut self.config).clone_from(&binding);
                     self.persist_config();
-                    self.set_runtime_status(format!(
+                    status::info(format!(
                         "{} [{}] {} {}",
                         self.lang_text("已将", "Bound"),
                         name,
@@ -812,9 +818,7 @@ impl App {
         if is_reserved_reset_combo(key) {
             self.reset_keybinds_to_default();
             self.persist_config();
-            self.set_runtime_status(
-                self.lang_text("已恢复默认快捷键", "Restored default keybinds"),
-            );
+            status::info(self.lang_text("已恢复默认快捷键", "Restored default keybinds"));
             return;
         }
 
@@ -878,6 +882,7 @@ impl App {
                     Language::Zh => Language::En,
                     Language::En => Language::Zh,
                 };
+                status::set_language(self.config.language);
                 self.persist_config();
             }
             1 => {
@@ -906,14 +911,14 @@ impl App {
                 if self.page == Page::Home
                     && let Err(err) = self.load_home_recommendations().await
                 {
-                    self.browse.home.status_line = format!(
+                    status::error(format!(
                         "{}: {}",
                         self.lang_text(
                             "推荐歌单刷新失败",
                             "Failed to refresh home recommendations",
                         ),
                         err
-                    );
+                    ));
                 }
             }
             5 => {

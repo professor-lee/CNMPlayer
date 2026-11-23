@@ -80,7 +80,7 @@ pub(super) fn bound_private_roam_queue(
     queue: &mut Vec<PlaybackTrack>,
     current: &mut Option<usize>,
     source_id: Option<&str>,
-    page_advance: &mut Option<bool>,
+    page_advance: &mut bool,
 ) {
     if source_id != Some(HOME_PRIVATE_ROAM_TILE_ID) {
         return;
@@ -89,7 +89,7 @@ pub(super) fn bound_private_roam_queue(
     queue.truncate(window.end);
     queue.drain(..window.start);
     *current = index;
-    *page_advance = None;
+    *page_advance = false;
 }
 
 fn sync_private_roam_playlist(playlist: &mut PlaylistState, tracks: &[PlaylistTrack]) {

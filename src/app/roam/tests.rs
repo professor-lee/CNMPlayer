@@ -167,7 +167,7 @@ fn roam_append_evicts_oldest_played_prefix_and_rebases_all_mirrors() {
     };
     // The selected target, not the previous playback index, anchors eviction.
     let mut current = Some(255);
-    let mut page_advance = Some(true);
+    let mut page_advance = true;
     queue.extend(state.append_tracks(numbered_tracks(255, 265)));
     bound_private_roam_queue(
         &mut queue,
@@ -187,7 +187,7 @@ fn roam_append_evicts_oldest_played_prefix_and_rebases_all_mirrors() {
     assert_eq!(queue[index + 1].song_id, "256");
     assert_eq!(queue.last().unwrap().song_id, "264");
     assert_eq!(queue.len(), 256);
-    assert_eq!(page_advance, None);
+    assert!(!page_advance);
     assert_eq!(playlist.focused_idx, 241);
     assert_eq!(playlist.scroll_offset, 231);
     assert_eq!(
@@ -209,7 +209,7 @@ fn repeated_roam_append_keeps_state_and_queue_bounded_in_upcoming_order() {
     };
     let mut queue = playback_tracks(&state.tracks);
     let mut current = None;
-    let mut page_advance = None;
+    let mut page_advance = false;
     for start in (9..2709).step_by(9) {
         state.last_played_index = Some(state.tracks.len() - 1);
         current = Some(queue.len() - 1);
@@ -267,7 +267,7 @@ fn legacy_roam_load_prioritizes_current_and_nearest_upcoming_songs() {
 fn oversized_roam_restore_and_persistence_use_the_same_current_window() {
     let mut queue = playback_tracks(&numbered_tracks(0, 1000));
     let mut current = Some(300);
-    let mut page_advance = Some(false);
+    let mut page_advance = true;
     // Persistence copies this exact slice and stores its rebased index.
     let (window, persisted_index) = private_roam_window(queue.len(), current);
     assert_eq!(window, 300..556);
@@ -283,7 +283,7 @@ fn oversized_roam_restore_and_persistence_use_the_same_current_window() {
     assert_eq!(queue[0].song_id, "300");
     assert_eq!(queue[1].song_id, "301");
     assert_eq!(queue[255].song_id, "555");
-    assert_eq!(page_advance, None);
+    assert!(!page_advance);
 }
 
 #[test]
@@ -291,12 +291,12 @@ fn roam_retention_does_not_change_ordinary_queues_or_browse_pages() {
     for source in [None, Some("ordinary-playlist")] {
         let mut queue = playback_tracks(&numbered_tracks(0, 600));
         let mut current = Some(599);
-        let mut page_advance = Some(true);
+        let mut page_advance = true;
         bound_private_roam_queue(&mut queue, &mut current, source, &mut page_advance);
         assert_eq!(queue.len(), 600);
         assert_eq!(queue[599].song_id, "599");
         assert_eq!(current, Some(599));
-        assert_eq!(page_advance, Some(true));
+        assert!(page_advance);
     }
     let mut playlist = PlaylistState {
         id: Some("ordinary-playlist".to_string()),
@@ -364,7 +364,7 @@ fn roam_append_preserves_current_with_different_state_and_queue_offsets() {
         };
         let mut queue = playback_tracks(&numbered_tracks(queue_start, end));
         let mut current = Some(queue.len() - 1);
-        let mut page_advance = None;
+        let mut page_advance = false;
         queue.extend(state.append_tracks(numbered_tracks(end, end + 9)));
         bound_private_roam_queue(
             &mut queue,

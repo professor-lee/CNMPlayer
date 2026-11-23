@@ -13,6 +13,7 @@ use super::response::first_non_empty;
 use super::response::parse_value_as_string;
 use super::response::response_code;
 use super::roam::fetch_private_roam_page;
+use crate::status;
 use anyhow::Result;
 use cria::ApiResponse;
 use crossterm::event::KeyCode;
@@ -68,7 +69,6 @@ pub(crate) struct HomeState {
     pub(crate) focused_idx: usize,
     pub(super) columns: usize,
     pub(crate) tiles: Vec<HomeTile>,
-    pub(crate) status_line: String,
     pub(super) scroll_row_offset: usize,
     pub(super) visible_rows: usize,
 }
@@ -79,7 +79,6 @@ impl Default for HomeState {
             focused_idx: 0,
             columns: 1,
             tiles: vec![HomeTile::placeholder_daily()],
-            status_line: "方向键/Tab 切换，Enter 进入".to_string(),
             scroll_row_offset: 0,
             visible_rows: 1,
         }
@@ -561,15 +560,14 @@ impl App {
         let title = tile.title.clone();
         let fallback_cover_url = tile.cover.url.clone();
         let Some(playlist_id) = tile.id.clone() else {
-            self.browse.home.status_line = "当前块暂无可用歌单".to_string();
+            status::info(self.lang_text("当前块暂无可用歌单", "This tile has no playlist"));
             return;
         };
 
         if playlist_id == HOME_PRIVATE_ROAM_TILE_ID && self.load_cached_private_roam_playlist() {
             self.playlist_return_page = Page::Home;
             self.playlist_section_return_snapshot = None;
-            self.browse.home.status_line =
-                format!("{} {}", self.lang_text("已打开", "Opened"), title);
+            status::info(format!("{} {}", self.lang_text("已打开", "Opened"), title));
             self.open_browse_page(Page::Playlist);
             return;
         }
@@ -608,8 +606,11 @@ impl App {
         task: PlaylistFetchTask,
         kind: PlaylistPageKind,
     ) {
-        self.browse.home.status_line =
-            format!("{} {}", self.lang_text("正在加载", "Loading"), title);
+        status::info(format!(
+            "{} {}",
+            self.lang_text("正在加载", "Loading"),
+            title
+        ));
         self.browse.playlist.cancel_pagination();
         self.browse.playlist = PlaylistState::placeholder(
             title,
@@ -640,11 +641,5 @@ impl App {
         self.browse.home.set_tiles(tiles);
         // 私人漫游 tile 封面：未播放过时为首歌封面，播放后为最后播放歌曲的封面
         self.sync_home_roam_tile_cover();
-        self.browse.home.status_line = self
-            .lang_text(
-                "方向键/Tab 切换，Enter 打开歌单",
-                "Use arrows/Tab to focus, Enter to open playlist",
-            )
-            .to_string();
     }
 }

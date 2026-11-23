@@ -14,6 +14,7 @@ use crate::data::config::AudioQuality;
 use crate::data::config::Language;
 use crate::data::persistence::PersistenceKey;
 use crate::data::private_roam;
+use crate::status;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -41,7 +42,6 @@ pub(crate) struct LoginState {
     pub(crate) captcha: String,
     pub(crate) qr_key: String,
     pub(crate) qr_url: String,
-    pub(crate) status_line: String,
 }
 
 impl Default for LoginState {
@@ -55,7 +55,6 @@ impl Default for LoginState {
             captcha: String::new(),
             qr_key: String::new(),
             qr_url: String::new(),
-            status_line: "按 F1 刷新二维码后扫码登录".to_string(),
         }
     }
 }
@@ -513,7 +512,7 @@ impl App {
 
         match fetch_qr_login_code(&mut self.api, self.config.language).await {
             Ok(code) => self.apply_qr_login_code(code),
-            Err(err) => self.login.status_line = format!("{err}"),
+            Err(err) => status::error(format!("{err}")),
         }
     }
 
@@ -521,23 +520,26 @@ impl App {
     pub(super) fn apply_qr_login_code(&mut self, code: QrLoginCode) {
         self.login.qr_key = code.key;
         self.login.qr_url = code.url.clone();
-        self.login.status_line = if code.url.is_empty() {
+        status::info(if code.url.is_empty() {
             "二维码已刷新，请按 Enter 轮询状态".to_string()
         } else {
             format!("二维码已刷新: {}", truncate_text(&code.url, 48))
-        };
+        });
     }
 
     pub(super) async fn check_qr_status_and_login(&mut self) {
         if self.login.qr_key.trim().is_empty() {
-            self.login.status_line = "请先按 Enter 刷新二维码".to_string();
+            status::info("请先按 Enter 刷新二维码");
             return;
         }
 
         let response = match self.api.login_qr_check(&self.login.qr_key).await {
             Ok(response) => response,
             Err(err) => {
-                self.login.status_line = format!("轮询二维码失败: {}", err);
+                status::error(format!(
+                    "{}: {err}",
+                    self.lang_text("轮询二维码失败", "QR code status check failed")
+                ));
                 return;
             }
         };
@@ -545,30 +547,34 @@ impl App {
         let code = response_code(&response);
         match code {
             800 => {
-                self.login.status_line = "二维码已过期，已自动刷新".to_string();
+                status::info("二维码已过期，已自动刷新");
                 self.refresh_qr_login().await;
             }
-            801 => self.login.status_line = "等待扫码".to_string(),
-            802 => self.login.status_line = "已扫码，等待确认".to_string(),
+            801 => status::info("等待扫码"),
+            802 => status::info("已扫码，等待确认"),
             803 | 200 => self.mark_login_success("二维码登录成功").await,
-            _ => {
-                self.login.status_line =
-                    format!("二维码状态异常({}): {}", code, response_message(&response))
-            }
+            _ => status::error(format!(
+                "{}({code}): {}",
+                self.lang_text("二维码状态异常", "Unexpected QR code status"),
+                response_message(&response)
+            )),
         }
     }
 
     async fn submit_username_login(&mut self) {
         let username = self.login.username.trim().to_string();
         if username.is_empty() || self.login.password.trim().is_empty() {
-            self.login.status_line = "请填写用户名和密码".to_string();
+            status::info("请填写用户名和密码");
             return;
         }
 
         let response = match self.api.login_email(&username, &self.login.password).await {
             Ok(response) => response,
             Err(err) => {
-                self.login.status_line = format!("登录失败: {}", err);
+                status::error(format!(
+                    "{}: {err}",
+                    self.lang_text("登录失败", "Login failed")
+                ));
                 return;
             }
         };
@@ -583,31 +589,42 @@ impl App {
             return;
         }
 
-        self.login.status_line = format!("登录失败({}): {}", code, response_message(&response));
+        status::error(format!(
+            "{}({code}): {}",
+            self.lang_text("登录失败", "Login failed"),
+            response_message(&response)
+        ));
     }
 
     async fn send_phone_captcha(&mut self) {
         let phone = self.login.phone.trim().to_string();
         if phone.is_empty() {
-            self.login.status_line = "请输入手机号".to_string();
+            status::info("请输入手机号");
             return;
         }
 
         let response = match self.api.captcha_sent(&phone).await {
             Ok(response) => response,
             Err(err) => {
-                self.login.status_line = format!("验证码发送失败: {}", err);
+                status::error(format!(
+                    "{}: {err}",
+                    self.lang_text("验证码发送失败", "Failed to send the verification code")
+                ));
                 return;
             }
         };
 
         let code = response_code(&response);
         if code == 200 {
-            self.login.status_line = format!("验证码已发送到 {}", phone);
+            status::info(format!("验证码已发送到 {}", phone));
             return;
         }
 
-        self.login.status_line = format!("发送失败({}): {}", code, response_message(&response));
+        status::error(format!(
+            "{}({code}): {}",
+            self.lang_text("验证码发送失败", "Failed to send the verification code"),
+            response_message(&response)
+        ));
     }
 
     async fn submit_phone_login(&mut self) {
@@ -615,14 +632,17 @@ impl App {
         let captcha = self.login.captcha.trim().to_string();
 
         if phone.is_empty() || captcha.is_empty() {
-            self.login.status_line = "请填写手机号和验证码".to_string();
+            status::info("请填写手机号和验证码");
             return;
         }
 
         let response = match self.api.login_phone_captcha(&phone, &captcha).await {
             Ok(response) => response,
             Err(err) => {
-                self.login.status_line = format!("手机号登录失败: {}", err);
+                status::error(format!(
+                    "{}: {err}",
+                    self.lang_text("手机号登录失败", "Phone login failed")
+                ));
                 return;
             }
         };
@@ -637,7 +657,11 @@ impl App {
             return;
         }
 
-        self.login.status_line = format!("登录失败({}): {}", code, response_message(&response));
+        status::error(format!(
+            "{}({code}): {}",
+            self.lang_text("登录失败", "Login failed"),
+            response_message(&response)
+        ));
     }
 
     pub(super) async fn resolve_current_user_id(&mut self) -> Result<String> {
@@ -666,7 +690,7 @@ impl App {
         let _ = self.refresh_liked_song_cache().await;
         self.browse.home_sidebar = HomeSidebarState::default();
         self.playlist_section_return_snapshot = None;
-        self.browse.home.status_line = text.to_string();
+        status::info(text);
         // 登录后这次刷新仍走同步链路：进度条只按时间缓动，不接后台步数。
         self.startup.init.reset_steps(0, 1);
         self.begin_startup_loading(Page::Home);
@@ -675,7 +699,10 @@ impl App {
             self.apply_private_roam_refresh(tracks);
         }
         if let Err(err) = self.load_home_recommendations().await {
-            self.browse.home.status_line = format!("{}，推荐歌单加载失败: {}", text, err);
+            status::error(format!(
+                "{}: {err}",
+                self.lang_text("推荐歌单加载失败", "Failed to load home recommendations")
+            ));
         }
         self.finish_startup_loading();
         self.try_restore_playback_memory().await;
