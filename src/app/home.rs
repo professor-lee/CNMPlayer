@@ -577,7 +577,8 @@ impl App {
         let task: PlaylistFetchTask = if playlist_id == HOME_DAILY_RECOMMEND_TILE_ID {
             Box::pin(async move { Some(fetch_daily_recommend_page(api, language).await) })
         } else if playlist_id == HOME_PRIVATE_ROAM_TILE_ID {
-            Box::pin(async move { Some(fetch_private_roam_page(api, language).await) })
+            let mode = self.browse.private_roam.mode;
+            Box::pin(async move { Some(fetch_private_roam_page(api, language, mode).await) })
         } else {
             let liked_playlist_id = self.browse.home_sidebar.liked_playlist_id.clone();
             let user_id = self.browse.home_sidebar.user_id.clone();

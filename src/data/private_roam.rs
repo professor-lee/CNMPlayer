@@ -15,6 +15,27 @@ pub struct PrivateRoamTrack {
     pub cover_url: Option<String>,
 }
 
+/// 私人漫游（私人 FM）推荐模式；序列化值即接口的 `mode` 参数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PrivateRoamMode {
+    #[default]
+    Default,
+    Familiar,
+    Explore,
+}
+
+impl PrivateRoamMode {
+    /// 接口 `mode` 参数值。
+    pub fn api_value(self) -> &'static str {
+        match self {
+            Self::Default => "DEFAULT",
+            Self::Familiar => "FAMILIAR",
+            Self::Explore => "EXPLORE",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PrivateRoamRecord {
     #[serde(default)]
@@ -22,6 +43,8 @@ pub struct PrivateRoamRecord {
     pub last_played_index: Option<usize>,
     pub last_played_cover_url: Option<String>,
     pub last_refresh_day: Option<i64>,
+    #[serde(default)]
+    pub mode: PrivateRoamMode,
     pub updated_at: i64,
 }
 

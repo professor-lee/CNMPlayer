@@ -14,6 +14,7 @@ use crate::data::config::Language;
 use crate::data::persistence::PersistenceKey;
 use crate::data::playback_session;
 use crate::data::private_roam;
+use crate::data::private_roam::PrivateRoamMode;
 use serde_json::Value;
 
 const PRIVATE_ROAM_TRACK_LIMIT: usize = 256;
@@ -140,6 +141,8 @@ pub(super) struct PrivateRoamState {
     pub(super) cover_url: Option<String>,
     /// 每日刷新标记：上次刷新的 UTC 天数
     pub(super) last_refresh_day: Option<i64>,
+    /// 推荐模式：每日刷新、追加与列表兜底拉取都按它请求
+    pub(super) mode: PrivateRoamMode,
 }
 
 impl PrivateRoamState {
@@ -177,6 +180,7 @@ impl PrivateRoamState {
             last_played_index,
             last_played_cover_url: record.last_played_cover_url,
             last_refresh_day: record.last_refresh_day,
+            mode: record.mode,
             cover_url: None,
         };
         state.refresh_cover();
@@ -223,12 +227,15 @@ impl PrivateRoamState {
 }
 
 /// 拉取一批私人漫游歌曲（接口每次固定返回 3 首，连拉几次去重）
-pub(super) async fn fetch_private_roam_songs(api: &mut ApiState) -> Vec<PlaylistTrack> {
+pub(super) async fn fetch_private_roam_songs(
+    api: &mut ApiState,
+    mode: PrivateRoamMode,
+) -> Vec<PlaylistTrack> {
     let mut tracks = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for _ in 0..3 {
-        let Ok(response) = api.personal_fm_mode("DEFAULT", 20).await else {
+        let Ok(response) = api.personal_fm_mode(mode.api_value(), 20).await else {
             continue;
         };
         if response_code(&response) != 200 {
@@ -284,8 +291,9 @@ fn private_roam_playlist_fetch(
 pub(super) async fn fetch_private_roam_page(
     mut api: ApiState,
     language: Language,
+    mode: PrivateRoamMode,
 ) -> Result<PlaylistFetch, String> {
-    let tracks = fetch_private_roam_songs(&mut api).await;
+    let tracks = fetch_private_roam_songs(&mut api, mode).await;
     if tracks.is_empty() {
         return Err(lang_text(language, "私人漫游为空", "Private roam is empty").to_string());
     }
@@ -452,8 +460,9 @@ impl App {
             return;
         }
         let mut api = self.api.clone();
+        let mode = self.browse.private_roam.mode;
         self.playback.roam_append = Some(super::owned_task::spawn_shared(
-            Box::pin(async move { Some(fetch_private_roam_songs(&mut api).await) }),
+            Box::pin(async move { Some(fetch_private_roam_songs(&mut api, mode).await) }),
             self.api.wake_signal(),
         ));
     }
@@ -564,6 +573,7 @@ impl App {
             last_played_index,
             last_played_cover_url: self.browse.private_roam.last_played_cover_url.clone(),
             last_refresh_day: self.browse.private_roam.last_refresh_day,
+            mode: self.browse.private_roam.mode,
             updated_at: 0,
         };
         let _ = self

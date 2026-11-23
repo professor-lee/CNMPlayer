@@ -695,7 +695,8 @@ impl App {
         self.startup.init.reset_steps(0, 1);
         self.begin_startup_loading(Page::Home);
         if !self.private_roam_refreshed_today() {
-            let tracks = fetch_private_roam_songs(&mut self.api).await;
+            let mode = self.browse.private_roam.mode;
+            let tracks = fetch_private_roam_songs(&mut self.api, mode).await;
             self.apply_private_roam_refresh(tracks);
         }
         if let Err(err) = self.load_home_recommendations().await {

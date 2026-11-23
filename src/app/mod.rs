@@ -413,7 +413,7 @@ impl App {
             app.config.clone(),
             app.api.clone(),
             saved_cookie.is_some(),
-            skip_roam,
+            (!skip_roam).then_some(app.browse.private_roam.mode),
             steps,
         );
         app.begin_startup_loading(target);
