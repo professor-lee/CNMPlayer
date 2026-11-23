@@ -198,7 +198,7 @@ sudo apt install -y build-essential cmake pkg-config \
 - Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime
 - A Nerd Font is required for the playback and navigation icons; the application never guesses glyph availability from `TERM`
 
-When the system default output changes or disappears (for example, unplugging headphones), playback pauses and keeps its position. It does not resume on its own; press play to continue on the current output. Only real output-stream failures stop playback, shown in the status line.
+When the system default output changes or disappears (for example, unplugging headphones), playback pauses and keeps its position. It does not resume on its own; press play to continue on the current output. Only real output-stream failures stop playback; the failure is reported as an error (see below).
 
 ## First Run and Asset Root
 
@@ -219,7 +219,7 @@ The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux
 - `audio/<song_id>__<quality>.audio` — finished downloads; a transfer in flight is a `.part` file and is removed on failure or cancellation (a hard kill can leave one behind)
 - `cover/` — cover images fetched for the now-playing track
 - `mpris_art/` — cover files exported for the MPRIS player
-- `Player.log` and `Player.stderr.log` — application log and the native audio backends' stderr (both capped at 4 MB)
+- `Player.log` and `Player.stderr.log` — application log and the native audio backends' stderr (both capped at 4 MB). The app shows no status or error text inside its UI: status messages go to `Player.log` only, and errors are also printed to the terminal after CNMPlayer exits (including fatal errors and panics)
 
 ## Configuration
 

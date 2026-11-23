@@ -60,7 +60,8 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/main.rs` | 入口：终端初始化、资产根目录，以及交给应用程序。 |
+| `src/main.rs` | 入口：终端初始化、资产根目录、日志、panic 钩子与运行结束后的报错清单，以及交给应用程序。 |
+| `src/status.rs` | 运行状态与报错文案的唯一出口（见「状态与报错」）。 |
 | `src/app/` | 应用核心。`mod.rs` 是装配点与顶层协调者：`App` 结构体（共享状态、各子控制器、命中区），以及驱动它们的事件处理。领域类型、请求与行为各自归对应职责模块 —— `ApiState` 与封面抓取在 `api.rs`，响应结构辅助函数在 `response.rs`，搜索在 `search_controller.rs`，browse/download/input/playback/settings/startup 各有对应的 `*_controller.rs`，另有 player、streaming、download 与 MPRIS 模块。 |
 | `src/ui/` | 主程序 UI 面板：登录、首页、歌单、作者、搜索、设置、播放栏、歌词、加载、小窗口与主题模块。 |
 | `src/data/` | 共享 `Config`，以及资产、原子持久化、会话、播放/私人漫游状态与主题加载。 |
@@ -84,6 +85,17 @@ Cargo feature：`default = ["easter-egg"]` —— About 弹窗里的形象彩蛋
 - **可见性取最小。** 只有确实被其他顶层模块（`src/ui/`、`src/render/`、`src/data/`、`src/tmplayer/`、`src/main.rs`）共用的接口才用 `pub(crate)`；`src/app/` 内部兄弟模块之间共用的用 `pub(super)`；其余保持模块私有，通过所属类型的方法访问。
 - **搬动代码时不留兼容层。** 在同一次改动里更新所有调用方并删掉旧路径；靠 re-export 让旧路径继续编译的写法不予接受。
 - **测试放在独立文件。** Rust 生产模块不得内嵌测试模块、测试专用辅助函数、常量或 impl。`foo.rs` 的测试放到同目录 `foo/tests.rs`，`mod.rs` 的测试放到同目录 `tests.rs`；生产模块不得保留 `cfg(test)` 实现。通过最小可见性保持对私有实现的访问，不得为了测试新增生产 API。
+
+## 状态与报错
+
+应用内不显示任何状态或报错文字——主程序与全屏页都没有状态行或 toast。这类文案一律经过 `src/status.rs`：
+
+- **`status::info(text)`**：状态，即发生了什么或某个操作为何被忽略（打开页面、正在播放、已收藏、开始/完成下载、重绑快捷键、必填项为空、按键不支持绑定、下载路径为相对路径被拒）。只以 info 级写入 `Player.log`。
+- **`status::error(text)`**：报错，即程序尝试做的事失败了或无法完成（网络或接口失败、播放/解码失败、保存失败、下载目录不可写、超时）。以 error 级写入 `Player.log`，同时记入本次运行的报错清单；退出并恢复终端后，清单输出到主终端（stdout；fd 2 已重定向到 `Player.stderr.log`）。相同文案只列一次并计数；清单条数有上限，超出部分只计数。
+- **致命错误与 panic** 走同一份清单：`main` 报告应用返回的错误；保留 `panic = "abort"`，由 panic 钩子先恢复终端、记下 panic 并输出清单，再终止进程。
+- **不要新增**应用内状态行、toast 或 `status_line` 字段；TUI 运行期间不要用 `eprintln!`（stderr 是日志文件）或直接写 stdout 输出状态/报错。不面向用户的内部诊断仍用普通 `log::*`。
+- **例外：页面内容。** 页面加载失败时错误保留在该页面里（歌单/专辑/作者占位页的简介），这是页面内容而不是状态行，同时仍用 `status::error` 报告。首页侧栏头部保留自己的同步摘要行。
+- **中英双语。** 每条报错都要有中英文：能拿到 `App` 或 `Language` 时用 `lang_text`，否则用 `status::localized(zh, en)`，它跟随当前界面语言（与 `config.language` 同步）。
 
 ## 格式与 CI
 

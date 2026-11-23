@@ -198,7 +198,7 @@ sudo apt install -y build-essential cmake pkg-config \
 - Linux 上的 PipeWire 音频（ALSA 后端已弃用），以及运行时的 chafa 共享库
 - 播放与导航图标要求 Nerd Font；程序不根据 `TERM` 猜测字形是否可用
 
-系统默认输出设备切换或消失时（例如拔掉耳机），播放会暂停并保留进度，不会自动继续；按播放即在当前输出设备上继续。只有输出流真正失效才会停止播放，并显示在状态行。
+系统默认输出设备切换或消失时（例如拔掉耳机），播放会暂停并保留进度，不会自动继续；按播放即在当前输出设备上继续。只有输出流真正失效才会停止播放，并作为报错记录（见下文）。
 
 ## 首次运行与资源目录
 
@@ -219,7 +219,7 @@ sudo apt install -y build-essential cmake pkg-config \
 - `audio/<song_id>__<quality>.audio`：已完成的下载；下载中的文件是 `.part`，失败或取消时会被删除（进程被强杀时可能残留）
 - `cover/`：当前播放歌曲的封面图缓存
 - `mpris_art/`：为 MPRIS 播放器导出的封面文件
-- `Player.log` 与 `Player.stderr.log`：程序日志与原生音频后端的 stderr（都限制在 4 MB）
+- `Player.log` 与 `Player.stderr.log`：程序日志与原生音频后端的 stderr（都限制在 4 MB）。应用内不显示状态与报错文字：状态只写入 `Player.log`，报错同时在 CNMPlayer 退出后输出到终端（包括致命错误与 panic）
 
 ## 配置
 
