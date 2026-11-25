@@ -87,6 +87,45 @@ jobs:
       - name: cargo clippy --all-targets --no-default-features
         run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
 
+  macos:
+    # Apple 芯片与 Intel 各一台：clippy 覆盖 macos/ 补丁目录，测试跑在真实的 macOS 上。
+    # 只做检查与测试，不出发布产物。
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          # GitHub 最后一个 x86_64 macOS 镜像，预计 2027 年 8 月下线，届时删掉这一项。
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy --all-targets --all-features
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: cargo clippy --all-targets --no-default-features
+        run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+
+      - name: cargo test --locked --all-targets
+        run: cargo test --workspace --locked --all-targets
+
+      - name: cargo test --locked --all-targets --no-default-features
+        run: cargo test --workspace --locked --all-targets --no-default-features
+
   aur-packaging:
     name: AUR packaging integration
     runs-on: ubuntu-24.04
