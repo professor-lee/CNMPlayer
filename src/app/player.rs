@@ -17,6 +17,11 @@ use parking_lot::Mutex;
 use rodio::DeviceSinkBuilder;
 use rodio::DeviceSinkError;
 use rodio::MixerDeviceSink;
+#[cfg(not(target_os = "macos"))]
+use rodio::MixerDeviceSink as OutputSink;
+// macOS：设备流可能被系统停掉，Player 接在可以换设备流的常驻混音器上，见 macos/audio_output.rs。
+#[cfg(target_os = "macos")]
+use crate::mac::audio_output::OutputSink;
 use rodio::Player;
 use rodio::Source;
 use rodio::cpal::Error;
@@ -36,7 +41,7 @@ use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
 use std::time::Duration;
 pub(super) struct AudioPlayer {
-    _device_sink: MixerDeviceSink,
+    _device_sink: OutputSink,
     player: Arc<Player>,
     output: Arc<OutputEvents>,
     cache_dir: PathBuf,
@@ -210,6 +215,9 @@ struct OutputEvents {
     failure: Mutex<Option<Error>>,
     /// The output route changed or vanished while the stream stayed alive.
     pause_requested: AtomicBool,
+    /// macOS：系统已无输出设备，cpal 停掉了当前设备流，恢复播放前要换一条新流。
+    #[cfg(target_os = "macos")]
+    output_lost: AtomicBool,
     wake: WakeSignal,
 }
 
@@ -218,6 +226,8 @@ impl OutputEvents {
         Self {
             failure: Mutex::new(None),
             pause_requested: AtomicBool::new(false),
+            #[cfg(target_os = "macos")]
+            output_lost: AtomicBool::new(false),
             wake,
         }
     }
@@ -229,7 +239,8 @@ impl OutputEvents {
 }
 
 fn error_cb(output: Arc<OutputEvents>, host: HostId) -> impl Fn(Error) {
-    // HostId::PipeWire 只在 Linux 上存在；其它平台的设备丢失按普通故障重建输出。
+    // HostId::PipeWire 只在 Linux 上存在；macOS 的设备丢失见下面单独的分支，
+    // 其它平台按普通故障重建输出。
     #[cfg(not(target_os = "linux"))]
     let _ = host;
     move |e| match e.kind() {
@@ -240,6 +251,13 @@ fn error_cb(output: Arc<OutputEvents>, host: HostId) -> impl Fn(Error) {
         // relinks once an output returns. On ALSA the stream worker exits instead.
         #[cfg(target_os = "linux")]
         ErrorKind::DeviceNotAvailable if host == HostId::PipeWire => output.request_pause(),
+        // CoreAudio 在系统已无默认输出时停掉这条流（不会自己恢复），同样按暂停处理，
+        // 恢复播放时由 `reattach_lost_output` 换上新流。
+        #[cfg(target_os = "macos")]
+        ErrorKind::DeviceNotAvailable => {
+            output.output_lost.store(true, Ordering::Release);
+            output.request_pause();
+        }
         // Xrun arrives on the realtime audio thread and the backend recovers by
         // itself; no locking or file I/O here.
         ErrorKind::Xrun => {}
@@ -253,14 +271,20 @@ fn error_cb(output: Arc<OutputEvents>, host: HostId) -> impl Fn(Error) {
     }
 }
 
-fn build_player(output: Arc<OutputEvents>) -> Result<(Player, MixerDeviceSink)> {
+fn open_device_sink(output: Arc<OutputEvents>) -> Result<MixerDeviceSink> {
     let host = rodio::cpal::default_host();
     let device = host
         .default_output_device()
         .ok_or(DeviceSinkError::NoDevice)?;
-    let sink = DeviceSinkBuilder::from_device(device)?
+    Ok(DeviceSinkBuilder::from_device(device)?
         .with_error_callback(error_cb(output, host.id()))
-        .open_stream()?;
+        .open_stream()?)
+}
+
+fn build_player(output: Arc<OutputEvents>) -> Result<(Player, OutputSink)> {
+    let sink = open_device_sink(output)?;
+    #[cfg(target_os = "macos")]
+    let sink = OutputSink::new(sink);
     let player = Player::connect_new(sink.mixer());
     Ok((player, sink))
 }
@@ -282,6 +306,30 @@ impl AudioPlayer {
         Ok(())
     }
 
+    /// macOS：系统一度没有任何输出设备时 cpal 停掉了设备流，恢复播放前换一条新流；
+    /// 曲目与位置都在 `Player` 里，不受影响。仍然没有可用设备时返回错误，调用方保持暂停。
+    #[cfg(target_os = "macos")]
+    fn reattach_lost_output(&mut self) -> Result<()> {
+        use anyhow::Context;
+
+        if !self.output.output_lost.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+        match open_device_sink(self.output.clone()) {
+            Ok(sink) => {
+                self._device_sink.reattach(sink);
+                Ok(())
+            }
+            Err(err) => {
+                self.output.output_lost.store(true, Ordering::Release);
+                Err(err).context(crate::status::localized(
+                    "没有可用的音频输出设备",
+                    "No audio output device available",
+                ))
+            }
+        }
+    }
+
     fn clear_and_play(
         &mut self,
         src: impl Source + Send + 'static,
@@ -291,6 +339,10 @@ impl AudioPlayer {
         // consume a new track's intent, and queued work must be admitted again.
         self.seek_worker.invalidate();
         self.rebuild_on_error()?;
+        #[cfg(target_os = "macos")]
+        if !start_paused {
+            self.reattach_lost_output()?;
+        }
         // 切歌前先取消旧流：音频线程可能正阻塞在旧 StreamingReader 的
         // read/seek 等待上，取消后立即释放，append 内部的 sleep_until_end
         // 才不会与下载互相等待形成死锁。
@@ -473,6 +525,11 @@ impl AudioPlayer {
         }
 
         if self.player.is_paused() {
+            #[cfg(target_os = "macos")]
+            if let Err(err) = self.reattach_lost_output() {
+                crate::status::error(format!("{err:#}"));
+                return;
+            }
             self.player.play();
         } else {
             self.player.pause();
