@@ -198,7 +198,10 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
             width: rows[1].width,
             height: 1,
         };
-        let style = if idx == app.general_settings_selected {
+        let style = if idx >= crate::app::settings_controller::SETTINGS_GENERAL_SELECTABLE {
+            // Windows 上暂时禁用的媒体来源名称行，见 SETTINGS_GENERAL_SELECTABLE。
+            Style::default().fg(app.theme.color_subtext())
+        } else if idx == app.general_settings_selected {
             Style::default()
                 .fg(app.theme.color_accent2())
                 .add_modifier(Modifier::BOLD)

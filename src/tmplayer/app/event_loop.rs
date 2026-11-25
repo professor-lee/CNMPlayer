@@ -1,4 +1,4 @@
-use crate::app::settings_controller::{SETTINGS_GENERAL_ITEMS, SETTINGS_GENERAL_MPRIS_ROW};
+use crate::app::settings_controller::{SETTINGS_GENERAL_MPRIS_ROW, SETTINGS_GENERAL_SELECTABLE};
 use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
@@ -873,8 +873,8 @@ async fn handle_action(
                 }
             } else if app.overlay == Overlay::GeneralSettingsModal {
                 app.general_settings_selected =
-                    (app.general_settings_selected + SETTINGS_GENERAL_ITEMS - 1)
-                        % SETTINGS_GENERAL_ITEMS;
+                    (app.general_settings_selected + SETTINGS_GENERAL_SELECTABLE - 1)
+                        % SETTINGS_GENERAL_SELECTABLE;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, -1);
             } else if app.overlay == Overlay::BarSettingsModal {
@@ -912,7 +912,7 @@ async fn handle_action(
                 app.settings_selected = (app.settings_selected + 1) % count;
             } else if app.overlay == Overlay::GeneralSettingsModal {
                 app.general_settings_selected =
-                    (app.general_settings_selected + 1) % SETTINGS_GENERAL_ITEMS;
+                    (app.general_settings_selected + 1) % SETTINGS_GENERAL_SELECTABLE;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, 1);
             } else if app.overlay == Overlay::BarSettingsModal {
@@ -1219,6 +1219,10 @@ async fn handle_action(
             match app.overlay {
                 Overlay::SettingsModal => app.settings_selected = idx,
                 Overlay::GeneralSettingsModal => {
+                    // 灰置行（Windows 上的媒体来源名称）不可选中，见 SETTINGS_GENERAL_SELECTABLE。
+                    if idx >= SETTINGS_GENERAL_SELECTABLE {
+                        return Ok(());
+                    }
                     app.general_settings_selected = idx.min(SETTINGS_GENERAL_MPRIS_ROW);
                     return Box::pin(handle_action(app, host_bridge, Action::Confirm, layout))
                         .await;

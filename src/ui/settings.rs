@@ -257,7 +257,10 @@ fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let lines: Vec<Line> = visible_rows
         .iter()
         .map(|&(idx, _)| {
-            let style = if idx == selected {
+            let style = if idx >= crate::app::settings_controller::SETTINGS_GENERAL_SELECTABLE {
+                // Windows 上暂时禁用的媒体来源名称行，见 SETTINGS_GENERAL_SELECTABLE。
+                Style::default().fg(app.theme.color_subtext())
+            } else if idx == selected {
                 Style::default().fg(accent2).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(text_color)
