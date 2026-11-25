@@ -249,7 +249,7 @@ macOS 上 `cargo build --release` 只需要 Rust 工具链与 Xcode Command Line
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
 | `scrobble` | `false` | 通用设置 → 听歌上报：切歌、播放停止与退出时，把 20 秒以上的实际收听时长（暂停不计）上报网易云“听歌排行”；可能存在风控风险 |
-| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer`。Windows 上该行显示为“媒体来源名称”并暂时禁用：SMTC 的来源名取自应用注册信息，不读取这一项。macOS 上该行显示为“正在播放名称”：控制中心显示的应用名由系统按进程决定，「正在播放」不读取这一项 |
+| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer`。Windows 上该行显示为“媒体来源名称”并暂时禁用：SMTC 的来源名取自应用注册信息，不读取这一项。macOS 上没有这一行：控制中心显示的应用名由系统按进程决定，「正在播放」不读取这一项 |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |
 | `download_audio_quality` | `exhigh` | 下载音质：与 `audio_quality` 同一套可选值，同样按 VIP 权限放开 |

@@ -180,7 +180,7 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
     let visible = usize::from(rows[1].height);
     app.general_settings_scroll = crate::ui::settings::scroll_for_focus(
         app.general_settings_scroll,
-        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
+        crate::app::settings_controller::SETTINGS_GENERAL_ROWS,
         visible,
         app.general_settings_selected,
     );
@@ -189,6 +189,8 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
         .map(Some)
         .chain(std::iter::once(None))
         .enumerate()
+        // macOS 不显示末行的名称输入框，见 SETTINGS_GENERAL_ROWS。
+        .take(crate::app::settings_controller::SETTINGS_GENERAL_ROWS)
         .skip(app.general_settings_scroll)
         .take(visible)
     {

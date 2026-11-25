@@ -31,15 +31,25 @@ pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 7;
 pub(crate) const SETTINGS_GENERAL_MPRIS_ROW: usize = SETTINGS_GENERAL_ITEMS - 1;
 const MPRIS_NAME_MAX_CHARS: usize = 256;
 
+/// 通用设置实际显示的行数。
+///
+/// macOS 不显示末行的名称输入框：控制中心「正在播放」显示的应用名由系统按进程决定，
+/// `macos/now_playing.rs` 不读取 `mpris_name`，这一项在 macOS 上没有作用。
+#[cfg(not(target_os = "macos"))]
+pub(crate) const SETTINGS_GENERAL_ROWS: usize = SETTINGS_GENERAL_ITEMS;
+#[cfg(target_os = "macos")]
+pub(crate) const SETTINGS_GENERAL_ROWS: usize = SETTINGS_GENERAL_MPRIS_ROW;
+
 /// 通用设置里可选中的行数（从第 0 行起连续）。
 ///
 /// Windows 版暂时禁用末行的「媒体来源名称」：系统媒体控件（SMTC）显示的来源名取自进程的
 /// AppUserModelID 与开始菜单快捷方式，`windows/smtc.rs` 并不读取 `mpris_name`，这一项改了也
 /// 不会生效。该行在 Windows 上灰置，键盘、滚轮、鼠标都选不中，也进不了编辑。
 /// 这是暂定做法：以后接入 AUMID 注册、让来源名可配置时，可能重新启用或改造这一项。
-#[cfg(not(windows))]
+/// macOS 上该行不显示（见 [`SETTINGS_GENERAL_ROWS`]），同样选不中。
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_ITEMS;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_MPRIS_ROW;
 
 /// 试图把槽位绑到恢复默认键时的提示；macOS 的恢复默认键不同，见 `macos/keybinds.rs`。

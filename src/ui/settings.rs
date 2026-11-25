@@ -185,13 +185,11 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
 }
 
 /// 通用设置末行（媒体服务名称输入框）的中英文标签。Linux 上对应 MPRIS 的 Identity，
-/// Windows 上对应系统媒体控件（SMTC）里的媒体来源，macOS 上对应控制中心的「正在播放」。
-#[cfg(not(any(windows, target_os = "macos")))]
+/// Windows 上对应系统媒体控件（SMTC）里的媒体来源；macOS 上不显示该行。
+#[cfg(not(windows))]
 pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["MPRIS服务名称", "MPRIS Service Name"];
 #[cfg(windows)]
 pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["媒体来源名称", "Media Source Name"];
-#[cfg(target_os = "macos")]
-pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["正在播放名称", "Now Playing Name"];
 
 /// 按键绑定页底部提示 `[中文, 英文]`；macOS 的恢复默认键不同，见 `macos/keybinds.rs`。
 #[cfg(not(target_os = "macos"))]
@@ -256,12 +254,12 @@ fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let visible = usize::from(rows[1].height);
     app.settings.general_scroll = scroll_for_focus(
         app.settings.general_scroll,
-        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
+        crate::app::settings_controller::SETTINGS_GENERAL_ROWS,
         visible,
         selected,
     );
     let visible_rows = scrolled_rows(
-        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
+        crate::app::settings_controller::SETTINGS_GENERAL_ROWS,
         visible,
         app.settings.general_scroll,
     );

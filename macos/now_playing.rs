@@ -8,7 +8,7 @@
 //! 由 `macos/main_thread.rs` 转的事件循环执行；遥控命令的回调也在主线程触发，经通道交回程序主体。
 //!
 //! 控制中心显示的应用名称与图标由系统按进程（应用包）决定，没有公开接口可改，所以不使用
-//! identity（设置里的「正在播放名称」）。
+//! identity（`mpris_name`）；macOS 的通用设置里也不显示这一项。
 
 use super::MprisControlEvent;
 use super::MprisSyncPayload;
