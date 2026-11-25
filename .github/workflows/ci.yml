@@ -5,6 +5,8 @@ on:
     branches: [main, develop]
   push:
     branches: [develop]
+  # 手动运行时 macOS 任务额外上传 release 二进制，供真机测试；不是正式发版产物。
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -89,7 +91,7 @@ jobs:
 
   macos:
     # Apple 芯片与 Intel 各一台：clippy 覆盖 macos/ 补丁目录，测试跑在真实的 macOS 上。
-    # 只做检查与测试，不出发布产物。
+    # 自动触发时只做检查与测试；手动运行（workflow_dispatch）时另外打包测试用二进制。
     name: macOS ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -125,6 +127,32 @@ jobs:
 
       - name: cargo test --locked --all-targets --no-default-features
         run: cargo test --workspace --locked --all-targets --no-default-features
+
+      # 检查或测试失败也照样打包，方便直接在真机上排查。
+      - name: Build test binary (manual runs only)
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
+        run: |
+          cargo build --locked --release
+          # 链接后 strip 过的二进制重新做 ad-hoc 签名，Apple 芯片上未签名的可执行文件会被直接杀掉。
+          codesign --force --sign - target/release/cnmplayer
+          codesign --verify --verbose target/release/cnmplayer
+          file target/release/cnmplayer
+          otool -L target/release/cnmplayer
+          name="CNMPlayer_${GITHUB_SHA::7}_macos_${{ matrix.arch }}"
+          mkdir -p "dist/$name"
+          cp target/release/cnmplayer LICENSE THIRD_PARTY_NOTICES.md "dist/$name/"
+          # 打成 tar 保留可执行权限（Actions 的 zip 制品会丢掉权限位）。
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          shasum -a 256 "dist/$name.tar.gz"
+          echo "ARCHIVE=dist/$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload test binary (manual runs only)
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && env.ARCHIVE != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cnmplayer-macos-${{ matrix.arch }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 14
 
   aur-packaging:
     name: AUR packaging integration
