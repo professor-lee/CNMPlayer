@@ -185,11 +185,13 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
 }
 
 /// 通用设置末行（媒体服务名称输入框）的中英文标签。Linux 上对应 MPRIS 的 Identity，
-/// Windows 上对应系统媒体控件（SMTC）里的媒体来源。
-#[cfg(not(windows))]
+/// Windows 上对应系统媒体控件（SMTC）里的媒体来源，macOS 上对应控制中心的「正在播放」。
+#[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["MPRIS服务名称", "MPRIS Service Name"];
 #[cfg(windows)]
 pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["媒体来源名称", "Media Source Name"];
+#[cfg(target_os = "macos")]
+pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["正在播放名称", "Now Playing Name"];
 
 fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let rows = Layout::default()
