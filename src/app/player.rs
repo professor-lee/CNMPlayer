@@ -217,7 +217,7 @@ struct OutputEvents {
     pause_requested: AtomicBool,
     /// macOS：系统已无输出设备，cpal 停掉了当前设备流，恢复播放前要换一条新流。
     #[cfg(target_os = "macos")]
-    output_lost: AtomicBool,
+    loss: crate::mac::audio_output::OutputLoss,
     wake: WakeSignal,
 }
 
@@ -227,7 +227,7 @@ impl OutputEvents {
             failure: Mutex::new(None),
             pause_requested: AtomicBool::new(false),
             #[cfg(target_os = "macos")]
-            output_lost: AtomicBool::new(false),
+            loss: Default::default(),
             wake,
         }
     }
@@ -255,7 +255,7 @@ fn error_cb(output: Arc<OutputEvents>, host: HostId) -> impl Fn(Error) {
         // 恢复播放时由 `reattach_lost_output` 换上新流。
         #[cfg(target_os = "macos")]
         ErrorKind::DeviceNotAvailable => {
-            output.output_lost.store(true, Ordering::Release);
+            output.loss.mark_lost();
             output.request_pause();
         }
         // Xrun arrives on the realtime audio thread and the backend recovers by
@@ -272,19 +272,34 @@ fn error_cb(output: Arc<OutputEvents>, host: HostId) -> impl Fn(Error) {
 }
 
 fn open_device_sink(output: Arc<OutputEvents>) -> Result<MixerDeviceSink> {
+    // macOS：新流接管前先清掉「已失效」标记（打开期间设备又消失时由新流的回调重新置位），
+    // 打不开时恢复原状，让空转线程继续代拉样本。
+    #[cfg(target_os = "macos")]
+    let loss = output.loss.clone();
+    #[cfg(target_os = "macos")]
+    let was_lost = loss.restore();
     let host = rodio::cpal::default_host();
-    let device = host
+    let sink = host
         .default_output_device()
-        .ok_or(DeviceSinkError::NoDevice)?;
-    Ok(DeviceSinkBuilder::from_device(device)?
-        .with_error_callback(error_cb(output, host.id()))
-        .open_stream()?)
+        .ok_or(DeviceSinkError::NoDevice)
+        .and_then(|device| {
+            DeviceSinkBuilder::from_device(device)?
+                .with_error_callback(error_cb(output, host.id()))
+                .open_stream()
+        });
+    #[cfg(target_os = "macos")]
+    if was_lost && sink.is_err() {
+        loss.mark_lost();
+    }
+    Ok(sink?)
 }
 
 fn build_player(output: Arc<OutputEvents>) -> Result<(Player, OutputSink)> {
+    #[cfg(target_os = "macos")]
+    let loss = output.loss.clone();
     let sink = open_device_sink(output)?;
     #[cfg(target_os = "macos")]
-    let sink = OutputSink::new(sink);
+    let sink = OutputSink::new(sink, loss);
     let player = Player::connect_new(sink.mixer());
     Ok((player, sink))
 }
@@ -312,22 +327,15 @@ impl AudioPlayer {
     fn reattach_lost_output(&mut self) -> Result<()> {
         use anyhow::Context;
 
-        if !self.output.output_lost.swap(false, Ordering::AcqRel) {
+        if !self.output.loss.is_lost() {
             return Ok(());
         }
-        match open_device_sink(self.output.clone()) {
-            Ok(sink) => {
-                self._device_sink.reattach(sink);
-                Ok(())
-            }
-            Err(err) => {
-                self.output.output_lost.store(true, Ordering::Release);
-                Err(err).context(crate::status::localized(
-                    "没有可用的音频输出设备",
-                    "No audio output device available",
-                ))
-            }
-        }
+        let sink = open_device_sink(self.output.clone()).context(crate::status::localized(
+            "没有可用的音频输出设备",
+            "No audio output device available",
+        ))?;
+        self._device_sink.reattach(sink);
+        Ok(())
     }
 
     fn clear_and_play(

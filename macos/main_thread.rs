@@ -10,6 +10,7 @@
 
 use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
+use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPort, NSRunLoop};
 use std::sync::Arc;
@@ -50,9 +51,13 @@ where
     // SAFETY: 端口与模式都是有效对象；端口在循环结束前一直存活。
     unsafe { run_loop.addPort_forMode(&keep_alive, NSDefaultRunLoopMode) };
     while !finished.load(Ordering::Acquire) {
-        let limit = NSDate::dateWithTimeIntervalSinceNow(IDLE_WAKE_SECS);
-        // SAFETY: 在主线程上以默认模式转一次当前线程的事件循环。
-        unsafe { run_loop.runMode_beforeDate(NSDefaultRunLoopMode, &limit) };
+        // 没有 NSApplication.run 替我们在每轮事件后清空自动释放池，自己包一层；
+        // 主队列任务（「正在播放」的更新）也在这一轮里执行。
+        autoreleasepool(|_| {
+            let limit = NSDate::dateWithTimeIntervalSinceNow(IDLE_WAKE_SECS);
+            // SAFETY: 在主线程上以默认模式转一次当前线程的事件循环。
+            unsafe { run_loop.runMode_beforeDate(NSDefaultRunLoopMode, &limit) };
+        });
     }
 
     match worker.join() {
