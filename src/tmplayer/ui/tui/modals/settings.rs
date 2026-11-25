@@ -170,10 +170,8 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
             lang_on_off(app, app.config.scrobble)
         ),
     ];
-    let name_prefix = format!(
-        "  {}: ",
-        lang_text(app, "MPRIS服务名称", "MPRIS Service Name")
-    );
+    let [label_zh, label_en] = crate::ui::settings::MEDIA_NAME_LABEL;
+    let name_prefix = format!("  {}: ", lang_text(app, label_zh, label_en));
     f.render_widget(
         Paragraph::new("").style(Style::default().fg(app.theme.color_subtext())),
         rows[2],

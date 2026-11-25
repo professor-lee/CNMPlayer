@@ -1511,7 +1511,8 @@ fn general_modal_scrolling_preserves_viewport_and_drawn_hit_rows() {
         render_general_settings_modal(f, f.area(), app, rows)
     });
     let name_row = rows.get(NAME_ROW).expect("focused name remains visible");
-    assert!(compact(&line_text(&buf, name_row.y)).contains("MPRIS服务名称:CNMPlayer"));
+    let label = crate::ui::settings::MEDIA_NAME_LABEL[0];
+    assert!(compact(&line_text(&buf, name_row.y)).contains(&format!("{label}:CNMPlayer")));
     let scroll = app.general_settings_scroll;
     assert!(scroll > 0);
     let layout = UiLayout {
@@ -1552,12 +1553,14 @@ fn empty_name_edit_draws_value_only_caret_and_ignores_row_clicks() {
         let row = rows
             .get(crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW)
             .unwrap();
-        let prefix = if language == crate::data::config::Language::Zh {
-            "  MPRIS服务名称: "
+        let [label_zh, label_en] = crate::ui::settings::MEDIA_NAME_LABEL;
+        let label = if language == crate::data::config::Language::Zh {
+            label_zh
         } else {
-            "  MPRIS Service Name: "
+            label_en
         };
-        let caret_x = row.x + crate::ui::settings::display_width(prefix) as u16;
+        let prefix = format!("  {label}: ");
+        let caret_x = row.x + crate::ui::settings::display_width(&prefix) as u16;
         assert_eq!(
             buf[(row.x + 2, row.y)].style().bg,
             Some(app.theme.color_surface())
@@ -1592,7 +1595,8 @@ fn long_chinese_name_edit_scrolls_only_when_caret_crosses_value_boundary() {
     let row = rows
         .get(crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW)
         .unwrap();
-    let value_x = row.x + crate::ui::settings::display_width("  MPRIS服务名称: ") as u16;
+    let prefix = format!("  {}: ", crate::ui::settings::MEDIA_NAME_LABEL[0]);
+    let value_x = row.x + crate::ui::settings::display_width(&prefix) as u16;
     let scroll = app.mpris_name_edit.as_ref().unwrap().window_col;
     assert!(scroll > 0);
     assert!((value_x..row.x + row.width).any(|x| {

@@ -247,7 +247,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
 | `scrobble` | `false` | General Settings → Scrobble to NetEase: report each listen of 20 s or more (paused time excluded) to NetEase listening history when switching songs, when playback stops and on exit; may carry account risk-control risk |
-| `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer` |
+| `mpris_name` | `""` | General Settings → MPRIS Service Name (shown as Media Source Name on Windows): plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer`. Windows SMTC does not read it yet |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
 | `audio_quality` | `exhigh` | `standard`, `higher`, `exhigh`, `lossless`, `hires`, `jyeffect`, `sky`, `dolby`, `jymaster`; clamped to `exhigh` without VIP |
 | `download_audio_quality` | `exhigh` | Download quality: same option set as `audio_quality`, VIP-aware as well |
