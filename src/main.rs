@@ -363,8 +363,24 @@ async fn init_logger() -> Result<()> {
     Ok(ftail.init()?)
 }
 
+#[cfg(not(target_os = "macos"))]
 #[compio::main]
 async fn main() -> Result<()> {
+    app_main().await
+}
+
+/// macOS：主线程要跑 Cocoa 事件循环（「正在播放」依赖它），程序主体与 compio 运行时改到子线程，
+/// 见 `macos/main_thread.rs`。
+#[cfg(target_os = "macos")]
+fn main() -> Result<()> {
+    mac::main_thread::run(|| {
+        compio::runtime::RuntimeBuilder::new()
+            .build()?
+            .block_on(app_main())
+    })
+}
+
+async fn app_main() -> Result<()> {
     init_logger().await?;
     install_panic_hook();
     let result = run().await;

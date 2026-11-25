@@ -60,6 +60,16 @@ ratatui-image = { version = "11", default-features = false, features = ["chafa-d
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 windows = { version = "0.62", features = ["Foundation", "Media", "Media_Playback", "Storage", "Storage_Streams"] }
 
+# 「正在播放」（MPNowPlayingInfoCenter / MPRemoteCommandCenter）与主线程 Cocoa 事件循环。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDate", "NSDictionary", "NSGeometry", "NSObject", "NSPort", "NSRunLoop", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder", "NSRunningApplication"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "MPMediaItem", "MPNowPlayingInfoCenter", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"
 
