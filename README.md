@@ -102,7 +102,7 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 - Like / unlike from the fullscreen page and from the collapsed player bar
 - Repeat modes: sequence → shuffle → loop all → loop one; shuffle plays every song in the queue once per round and previous walks back the songs actually played
 - Playlist playback prefetches the next page when entering the last three loaded tracks, and waits for an unfinished page instead of stopping or wrapping early. In shuffle mode the loaded songs are played through first (the next page is prefetched when three of them remain); each newly loaded page is shuffled on its own and played after them
-- System media control with metadata and cover art: MPRIS on Linux (bus suffix `cnmplayer`), System Media Transport Controls (SMTC) on Windows
+- System media control with metadata and cover art: MPRIS on Linux (bus suffix `cnmplayer`), System Media Transport Controls (SMTC) on Windows, Now Playing (Control Center, media keys, headphone buttons) on macOS
 
 ### Downloads
 
@@ -195,16 +195,18 @@ sudo apt install -y build-essential cmake pkg-config \
 
 On Windows, `cargo build --release` needs only the Rust toolchain (the MSVC target and its linker); no third-party C library is built or linked. chafa is not used there (cover art uses ratatui-image's built-in halfblock renderer), TLS goes through SChannel and audio through WASAPI. Windows builds are not produced or tested by CI yet.
 
+On macOS, `cargo build --release` needs only the Rust toolchain and the Xcode Command Line Tools (for the system frameworks); no third-party C library is built or linked. chafa is not used there either for now (halfblock renderer), TLS goes through the Security framework and audio through CoreAudio. CI checks and tests macOS on Apple silicon and Intel, but no macOS release artifacts are published yet.
+
 ### Requirements
 
-- Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime
+- Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime; macOS needs no extra runtime library
 - A Nerd Font is required for the playback and navigation icons; the application never guesses glyph availability from `TERM`
 
-When the system default output changes or disappears (for example, unplugging headphones), playback pauses and keeps its position. It does not resume on its own; press play to continue on the current output. Only real output-stream failures stop playback; the failure is reported as an error (see below).
+When the system default output changes or disappears (for example, unplugging headphones), playback pauses and keeps its position. It does not resume on its own; press play to continue on the current output. On macOS, if no output is left at all, the system stops the output stream; pressing play once an output is back opens a new stream and continues from the same position (with no output it stays paused and reports that no audio output device is available). Only real output-stream failures stop playback; the failure is reported as an error (see below).
 
 ## First Run and Asset Root
 
-On first run the app creates an asset directory under your OS config directory; on Linux this is usually `~/.config/cnmplayer`.
+On first run the app creates an asset directory under your OS config directory; on Linux this is usually `~/.config/cnmplayer`, on macOS `~/Library/Application Support/cnmplayer`.
 If `CNMPLAYER_ASSET_DIR` is set, that directory becomes the asset root instead.
 
 The root holds (files appear as you use the app):
@@ -216,11 +218,11 @@ The root holds (files appear as you use the app):
 - `playback/session.toml` — the remembered queue (written while `playback_memory` is on)
 - `private_roam/session.toml` — the private-roam list, its last played position, recommendation mode and the cached cover
 
-The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux) and can be moved with `cache.path`. It holds:
+The cache root defaults to the OS cache directory (`~/.cache/cnmplayer` on Linux, `~/Library/Caches/cnmplayer` on macOS) and can be moved with `cache.path`. It holds:
 
 - `audio/<song_id>__<quality>.audio` — finished downloads; a transfer in flight is a `.part` file and is removed on failure or cancellation (a hard kill can leave one behind)
 - `cover/` — cover images fetched for the now-playing track
-- `mpris_art/` — cover files exported for the MPRIS player
+- `mpris_art/` — cover files exported for the MPRIS player (Linux only)
 - `Player.log` and `Player.stderr.log` — application log and the native audio backends' stderr (both capped at 4 MB). The app shows no status or error text inside its UI: status messages go to `Player.log` only, and errors are also printed to the terminal after CNMPlayer exits (including fatal errors and panics)
 
 ## Configuration
@@ -247,7 +249,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
 | `scrobble` | `false` | General Settings → Scrobble to NetEase: report each listen of 20 s or more (paused time excluded) to NetEase listening history when switching songs, when playback stops and on exit; may carry account risk-control risk |
-| `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer`. On Windows the row is shown as Media Source Name and is disabled for now, because SMTC takes the source name from the app registration rather than this setting |
+| `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer`. On Windows the row is shown as Media Source Name and is disabled for now, because SMTC takes the source name from the app registration rather than this setting. On macOS the row is shown as Now Playing Name; Control Center takes the app name from the process, so Now Playing does not read this value |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
 | `audio_quality` | `exhigh` | `standard`, `higher`, `exhigh`, `lossless`, `hires`, `jyeffect`, `sky`, `dolby`, `jymaster`; clamped to `exhigh` without VIP |
 | `download_audio_quality` | `exhigh` | Download quality: same option set as `audio_quality`, VIP-aware as well |
@@ -273,7 +275,21 @@ Cleanup runs as an age pass followed by a size LRU pass, and only looks at files
 ### Rebindable
 
 Rebinding syntax: optional `Ctrl` / `Alt` / `Shift`, then a key name (`Esc`, `Enter`, `Space`, `Tab`, `BackTab`, arrows, `Home`, `End`, `PageUp`/`PgUp`, `PageDown`/`PgDn`, `Insert`, `Delete`, `Backspace`, `Plus`, `F1`–`F12`) or a single character.
-A binding that collides with another slot is rejected, and `Ctrl+Alt+R` inside the keybind modal restores every default.
+A binding that collides with another slot is rejected, and `Ctrl+Alt+R` (`Ctrl+R` on macOS) inside the keybind modal restores every default.
+
+The defaults below are those of Linux and Windows. macOS terminals type special characters with Option unless "Use Option as Meta key" (or the equivalent) is turned on, so the macOS build ships different defaults for the slots that use Option:
+
+| Setting | macOS default |
+| --- | --- |
+| `keybind_prev` / `keybind_next` | `Shift+Left` / `Shift+Right` |
+| `keybind_toggle_play_pause` | `Ctrl+P` |
+| `keybind_toggle_mode` | `Ctrl+O` |
+| `keybind_fullscreen_eq_reset` | `Ctrl+E` |
+| `keybind_toggle_like_collapsed` | `Ctrl+L` |
+| `keybind_small_window_toggle` | `Ctrl+X` |
+| `keybind_download` | `Ctrl+D` |
+
+These only apply to a newly created configuration, to keys missing from it and to restoring the defaults; keys already in your configuration file are kept.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -313,8 +329,8 @@ Keys that close a modal follow their slot: the settings modal closes on `keybind
 - `Esc` — close the current overlay, or go back from the current page
 - `Ctrl+C` — quit from any state
 - `Ctrl+K` — open the keybind list; press it again inside the list to close the whole modal on either UI, not return to settings. `Esc` retains its parent-navigation behavior. The host list shows every key grouped by function (General, Playback, Like & Download, Jump, Equalizer, Window, Fixed Keys); one-sided entries are tagged `(Host)` / `(Fullscreen)`, and focus skips the group headers. The fullscreen list shows only the keys that work on the fullscreen page.
-- `Ctrl+Up` / `Ctrl+Down` — switch the sidebar playlist section (Created / Collected) while the sidebar is open
-- `Ctrl+Alt+R` — restore the default keybinds (inside the keybind modal)
+- `Ctrl+Up` / `Ctrl+Down` (`Left` / `Right` on macOS) — switch the sidebar playlist section (Created / Collected) while the sidebar is open
+- `Ctrl+Alt+R` (`Ctrl+R` on macOS) — restore the default keybinds (inside the keybind modal)
 - `F1` / `F2` / `F3` — login method (QR / account / phone)
 
 ### Per page
@@ -357,7 +373,7 @@ Fullscreen page:
 ## Notes
 
 - There are no command line flags. The environment variables are `CNMPLAYER_ASSET_DIR` (asset root) and `COLORTERM` / `TERM` (color capability detection); on Windows, color detection also reads `WT_SESSION` (Windows Terminal), `TERM_PROGRAM` and `ConEmuANSI`, and defaults to true color when the console accepts VT sequences.
-- Prebuilt artifacts and AUR packages are produced for Linux `amd64` and `aarch64` only. Media control is MPRIS on Linux and SMTC on Windows (Windows 10 1607 or later); other platforms have none.
+- Prebuilt artifacts and AUR packages are produced for Linux `amd64` and `aarch64` only. Media control is MPRIS on Linux, SMTC on Windows (Windows 10 1607 or later) and Now Playing on macOS; other platforms have none. On macOS the program body runs on a worker thread while the main thread runs the Cocoa event loop that Now Playing needs; the app adds no Dock icon and does not take focus from the terminal.
 - API responses and cover downloads have a 30-second deadline covering headers and the complete body; slow audio bodies stay cooperatively cancellable instead of imposing a total song-download deadline.
 - Cover art never falls back to ASCII art: at most a transient halfblock preview is shown while loading, and missing or failed artwork stays blank.
 
@@ -367,11 +383,11 @@ Fullscreen page:
 - TUI: ratatui + crossterm
 - Async and networking: compio + cyper
 - NetEase API client: [CRIA](https://github.com/alpaca-herd/cria) (crate `cria-api`, imported as `cria`), split out of this repository; see *Related Projects*
-- Playback: rodio + symphonia (mp3 / flac) over PipeWire (WASAPI on Windows)
+- Playback: rodio + symphonia (mp3 / flac) over PipeWire (WASAPI on Windows, CoreAudio on macOS)
 - Metadata, artwork and download tags: image + qrcode + lofty
-- Image rendering: ratatui-image + chafa (built-in halfblocks on Windows)
+- Image rendering: ratatui-image + chafa (built-in halfblocks on Windows and macOS)
 - Visualization: internal Cava Rust spectrum port (realfft) fed by a shared playback PCM tap
-- System media control: mpris-server on Linux, SMTC through the `windows` crate on Windows
+- System media control: mpris-server on Linux, SMTC through the `windows` crate on Windows, MPNowPlayingInfoCenter / MPRemoteCommandCenter through `objc2-media-player` on macOS
 - Fullscreen playback: embedded `src/tmplayer/` UI using host playback and shared configuration
 
 ## Development
@@ -384,10 +400,12 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on stable, then fmt and clippy gates. The API client is checked in the CRIA repository's own CI.
+CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on stable, then fmt and clippy gates, plus clippy and tests on macOS (Apple silicon and Intel). The API client is checked in the CRIA repository's own CI.
 Release (`release.yml`) runs the test gates before publishing, publishes `SHA256SUMS` alongside the `x86_64` and `aarch64` tarballs, and maintains the AUR packages.
 
 Windows-only code lives in `windows/` and is mounted with `#[cfg(windows)]` + `#[path]`, so Linux builds never compile it. Check it from Linux with `rustup target add x86_64-pc-windows-gnu` and `cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings`.
+
+macOS-only code lives in `macos/` the same way (`#[cfg(target_os = "macos")]` + `#[path]`). Type-check it from Linux with `rustup target add aarch64-apple-darwin` and `cargo clippy --target aarch64-apple-darwin --all-targets --all-features -- -D warnings`; linking and running need a Mac (or the macOS CI job).
 
 ## Related Projects
 

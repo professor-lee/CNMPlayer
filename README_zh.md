@@ -102,7 +102,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - 收藏 / 取消收藏：全屏页与折叠播放栏都可操作
 - 循环模式：顺序 → 随机 → 列表循环 → 单曲循环；随机模式每轮把队列中每首歌各播一次，“上一首”沿实际播放历史回退
 - 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷。随机模式先播完已加载并洗好的曲目（剩三首时预取下一页），新加载的一页单独洗牌后接在其后播放
-- 系统媒体控制，包含元数据与封面：Linux 上为 MPRIS（总线后缀 `cnmplayer`），Windows 上为系统媒体传输控件（SMTC）
+- 系统媒体控制，包含元数据与封面：Linux 上为 MPRIS（总线后缀 `cnmplayer`），Windows 上为系统媒体传输控件（SMTC），macOS 上为「正在播放」（控制中心、媒体键、耳机按键）
 
 ### 下载
 
@@ -195,16 +195,18 @@ sudo apt install -y build-essential cmake pkg-config \
 
 Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其链接器），不编译、不链接任何第三方 C 库：不使用 chafa（封面改用 ratatui-image 自带的半块渲染），TLS 走 SChannel，音频走 WASAPI。CI 目前还不构建、不测试 Windows 版本。
 
+macOS 上 `cargo build --release` 只需要 Rust 工具链与 Xcode Command Line Tools（提供系统框架），不编译、不链接任何第三方 C 库：暂时同样不使用 chafa（半块渲染），TLS 走 Security 框架，音频走 CoreAudio。CI 会在 Apple 芯片与 Intel 上检查并测试 macOS 版本，但暂不发布 macOS 预编译产物。
+
 ### 运行要求
 
-- Linux 上的 PipeWire 音频（ALSA 后端已弃用），以及运行时的 chafa 共享库
+- Linux 上的 PipeWire 音频（ALSA 后端已弃用），以及运行时的 chafa 共享库；macOS 不需要额外的运行时库
 - 播放与导航图标要求 Nerd Font；程序不根据 `TERM` 猜测字形是否可用
 
-系统默认输出设备切换或消失时（例如拔掉耳机），播放会暂停并保留进度，不会自动继续；按播放即在当前输出设备上继续。只有输出流真正失效才会停止播放，并作为报错记录（见下文）。
+系统默认输出设备切换或消失时（例如拔掉耳机），播放会暂停并保留进度，不会自动继续；按播放即在当前输出设备上继续。macOS 上如果已经没有任何输出设备，系统会停掉音频流；设备回来后按播放会换一条新的音频流，从原位置继续（仍没有设备时保持暂停，并提示没有可用的音频输出设备）。只有输出流真正失效才会停止播放，并作为报错记录（见下文）。
 
 ## 首次运行与资源目录
 
-首次运行时，程序会在系统配置目录下创建资产目录；Linux 上通常是 `~/.config/cnmplayer`。
+首次运行时，程序会在系统配置目录下创建资产目录；Linux 上通常是 `~/.config/cnmplayer`，macOS 上是 `~/Library/Application Support/cnmplayer`。
 如果设置了 `CNMPLAYER_ASSET_DIR`，则会改用该目录作为资产根目录。
 
 该目录下会有（随使用逐步生成）：
@@ -216,11 +218,11 @@ Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其
 - `playback/session.toml`：播放记忆的队列（`playback_memory` 开启时写入）
 - `private_roam/session.toml`：私人漫游列表、最后播放位置、推荐模式与缓存封面
 
-缓存目录默认使用系统缓存目录（Linux 上是 `~/.cache/cnmplayer`），可用 `cache.path` 指定。其中包含：
+缓存目录默认使用系统缓存目录（Linux 上是 `~/.cache/cnmplayer`，macOS 上是 `~/Library/Caches/cnmplayer`），可用 `cache.path` 指定。其中包含：
 
 - `audio/<song_id>__<quality>.audio`：已完成的下载；下载中的文件是 `.part`，失败或取消时会被删除（进程被强杀时可能残留）
 - `cover/`：当前播放歌曲的封面图缓存
-- `mpris_art/`：为 MPRIS 播放器导出的封面文件
+- `mpris_art/`：为 MPRIS 播放器导出的封面文件（仅 Linux）
 - `Player.log` 与 `Player.stderr.log`：程序日志与原生音频后端的 stderr（都限制在 4 MB）。应用内不显示状态与报错文字：状态只写入 `Player.log`，报错同时在 CNMPlayer 退出后输出到终端（包括致命错误与 panic）
 
 ## 配置
@@ -247,7 +249,7 @@ Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
 | `scrobble` | `false` | 通用设置 → 听歌上报：切歌、播放停止与退出时，把 20 秒以上的实际收听时长（暂停不计）上报网易云“听歌排行”；可能存在风控风险 |
-| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer`。Windows 上该行显示为“媒体来源名称”并暂时禁用：SMTC 的来源名取自应用注册信息，不读取这一项 |
+| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer`。Windows 上该行显示为“媒体来源名称”并暂时禁用：SMTC 的来源名取自应用注册信息，不读取这一项。macOS 上该行显示为“正在播放名称”：控制中心显示的应用名由系统按进程决定，「正在播放」不读取这一项 |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |
 | `download_audio_quality` | `exhigh` | 下载音质：与 `audio_quality` 同一套可选值，同样按 VIP 权限放开 |
@@ -273,7 +275,21 @@ Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其
 ### 可重绑
 
 绑定写法：可选 `Ctrl` / `Alt` / `Shift`，然后是键名（`Esc`、`Enter`、`Space`、`Tab`、`BackTab`、方向键、`Home`、`End`、`PageUp`/`PgUp`、`PageDown`/`PgDn`、`Insert`、`Delete`、`Backspace`、`Plus`、`F1`–`F12`）或单个字符。
-与其它槽位冲突的绑定会被拒绝，在按键绑定弹窗内按 `Ctrl+Alt+R` 可恢复全部默认值。
+与其它槽位冲突的绑定会被拒绝，在按键绑定弹窗内按 `Ctrl+Alt+R`（macOS 上为 `Ctrl+R`）可恢复全部默认值。
+
+下表的默认值适用于 Linux 与 Windows。macOS 终端默认用 Option 输入特殊字符（需手动打开「将 Option 键用作 Meta 键」或同类设置才会发出 Alt 组合键），所以 macOS 版把用到 Option 的槽位换成了另一套默认值：
+
+| 配置项 | macOS 默认值 |
+| --- | --- |
+| `keybind_prev` / `keybind_next` | `Shift+Left` / `Shift+Right` |
+| `keybind_toggle_play_pause` | `Ctrl+P` |
+| `keybind_toggle_mode` | `Ctrl+O` |
+| `keybind_fullscreen_eq_reset` | `Ctrl+E` |
+| `keybind_toggle_like_collapsed` | `Ctrl+L` |
+| `keybind_small_window_toggle` | `Ctrl+X` |
+| `keybind_download` | `Ctrl+D` |
+
+这些默认值只用于新生成的配置、配置里缺失的键与「恢复默认快捷键」；配置文件里已有的键位保持不变。
 
 | 配置项 | 默认值 | 作用 |
 | --- | --- | --- |
@@ -313,8 +329,8 @@ Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其
 - `Esc`：关闭当前浮层，或从当前页面返回
 - `Ctrl+C`：任意状态下退出
 - `Ctrl+K`：打开按键绑定列表；列表内再次按下时，两端均直接关闭整窗，不回到设置根页。`Esc` 仍保留返回上级的行为。主程序列表按功能分组（常规、播放控制、收藏与下载、跳转、均衡器、窗口、固定键）列出全部按键，只在一侧生效的条目标注「（主程序）」/「（全屏）」，聚焦切换会跳过分组标题；全屏页列表只显示全屏页可用的按键。
-- `Ctrl+Up` / `Ctrl+Down`：侧边栏展开时切换歌单分区（用户创建 / 用户收藏）
-- `Ctrl+Alt+R`：恢复默认快捷键（在按键绑定弹窗内）
+- `Ctrl+Up` / `Ctrl+Down`（macOS 上为 `Left` / `Right`）：侧边栏展开时切换歌单分区（用户创建 / 用户收藏）
+- `Ctrl+Alt+R`（macOS 上为 `Ctrl+R`）：恢复默认快捷键（在按键绑定弹窗内）
 - `F1` / `F2` / `F3`：登录方式（二维码 / 账号 / 手机号）
 
 ### 各页面
@@ -357,7 +373,7 @@ Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其
 ## 注意事项
 
 - 没有命令行参数。可用的环境变量是 `CNMPLAYER_ASSET_DIR`（资产根目录）与 `COLORTERM` / `TERM`（颜色能力探测）；Windows 上颜色探测还读取 `WT_SESSION`（Windows Terminal）、`TERM_PROGRAM` 与 `ConEmuANSI`，控制台能处理 VT 序列时默认真彩色。
-- 预编译产物与 AUR 包只提供 Linux `amd64` 与 `aarch64`；媒体控制在 Linux 上为 MPRIS、Windows 上为 SMTC（Windows 10 1607 起），其他平台没有。
+- 预编译产物与 AUR 包只提供 Linux `amd64` 与 `aarch64`；媒体控制在 Linux 上为 MPRIS、Windows 上为 SMTC（Windows 10 1607 起）、macOS 上为「正在播放」，其他平台没有。macOS 上程序主体运行在子线程，主线程运行「正在播放」所需的 Cocoa 事件循环；程序不会在程序坞显示图标，也不会抢走终端的焦点。
 - API 回包与封面下载从响应头到完整 body 共用 30 秒 deadline；音频 body 不设整首下载总时限，仍可协作式取消。
 - 封面不会回退到 ASCII 字符画：加载阶段最多显示临时 halfblock 预览，无封面或失败时保持空白。
 
@@ -367,11 +383,11 @@ Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其
 - TUI：ratatui + crossterm
 - 异步与网络：compio + cyper
 - 网易云 API：[CRIA](https://github.com/alpaca-herd/cria)（crate `cria-api`，导入名 `cria`），由本仓库拆分而来，见「相关项目」
-- 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire（Windows 上为 WASAPI）
+- 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire（Windows 上为 WASAPI，macOS 上为 CoreAudio）
 - 元数据、封面与下载标签：image + qrcode + lofty
-- 图像渲染：ratatui-image + chafa（Windows 上为自带半块渲染）
+- 图像渲染：ratatui-image + chafa（Windows 与 macOS 上为自带半块渲染）
 - 可视化：内部 Cava Rust 频谱移植（realfft），由共享播放 PCM 抽头驱动
-- 系统媒体控制：Linux 上为 mpris-server，Windows 上经 `windows` crate 接入 SMTC
+- 系统媒体控制：Linux 上为 mpris-server，Windows 上经 `windows` crate 接入 SMTC，macOS 上经 `objc2-media-player` 接入 MPNowPlayingInfoCenter / MPRemoteCommandCenter
 - 全屏播放：内置 `src/tmplayer/` UI，使用主程序播放链路与共享配置
 
 ## 开发
@@ -384,10 +400,12 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-CI（`ci.yml`）会在 stable 上执行默认特性和 `--no-default-features` 的 check/test，并执行 fmt、clippy 门禁；API 客户端由 CRIA 仓库自身的 CI 检查。
+CI（`ci.yml`）会在 stable 上执行默认特性和 `--no-default-features` 的 check/test，并执行 fmt、clippy 门禁，另在 macOS（Apple 芯片与 Intel）上执行 clippy 与测试；API 客户端由 CRIA 仓库自身的 CI 检查。
 发版（`release.yml`）会在发布前执行测试门禁，随 `x86_64` 与 `aarch64` 压缩包发布 `SHA256SUMS`，并维护 AUR 包。
 
 Windows 专用代码放在 `windows/`，以 `#[cfg(windows)]` + `#[path]` 挂载，Linux 构建不会编译它。在 Linux 上可先 `rustup target add x86_64-pc-windows-gnu`，再用 `cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings` 检查。
+
+macOS 专用代码同样放在 `macos/`（`#[cfg(target_os = "macos")]` + `#[path]` 挂载）。在 Linux 上可先 `rustup target add aarch64-apple-darwin`，再用 `cargo clippy --target aarch64-apple-darwin --all-targets --all-features -- -D warnings` 做类型检查；链接与运行需要 Mac（或 macOS CI）。
 
 ## 相关项目
 
