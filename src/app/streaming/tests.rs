@@ -306,6 +306,9 @@ async fn slow_chunks_reset_watchdog_beyond_one_timeout_window() {
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
+        // 逐字节慢发：关掉 Nagle，否则小包要等上一段的 ACK，macOS 回环的延迟 ACK
+        // 会把间隔拉到超过 70ms 的看门狗，测的就不是「慢但持续」了。
+        socket.set_nodelay(true).unwrap();
         let mut request = [0; 4096];
         assert!(socket.read(&mut request).unwrap() > 0);
         socket
