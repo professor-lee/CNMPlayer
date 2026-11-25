@@ -1,4 +1,4 @@
-use crate::app::settings_controller::{SETTINGS_GENERAL_ITEMS, SETTINGS_GENERAL_MPRIS_ROW};
+use crate::app::settings_controller::{SETTINGS_GENERAL_MPRIS_ROW, SETTINGS_GENERAL_SELECTABLE};
 use crate::data::config::{BarChannels, BarNumber, Config, VisualizeMode};
 use crate::data::theme_loader::ThemeLoader;
 use crate::render::frame_clock::FrameClock;
@@ -13,7 +13,7 @@ use crate::tmplayer::{
     HostRepeatMode,
 };
 use anyhow::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{Terminal, backend::Backend};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -448,7 +448,8 @@ where
             }
             while event::poll(Duration::ZERO)? {
                 match event::read()? {
-                    Event::Key(k) => {
+                    // Windows 每次按键还会再报一次 Release；只处理按下，与主界面一致。
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
                         let action = map_key(k, app.overlay, &app.config);
                         let exits_fullscreen = matches!(action, Action::Quit);
                         handle_action(app, host_bridge, action, &last_layout).await?;
@@ -872,8 +873,8 @@ async fn handle_action(
                 }
             } else if app.overlay == Overlay::GeneralSettingsModal {
                 app.general_settings_selected =
-                    (app.general_settings_selected + SETTINGS_GENERAL_ITEMS - 1)
-                        % SETTINGS_GENERAL_ITEMS;
+                    (app.general_settings_selected + SETTINGS_GENERAL_SELECTABLE - 1)
+                        % SETTINGS_GENERAL_SELECTABLE;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, -1);
             } else if app.overlay == Overlay::BarSettingsModal {
@@ -911,7 +912,7 @@ async fn handle_action(
                 app.settings_selected = (app.settings_selected + 1) % count;
             } else if app.overlay == Overlay::GeneralSettingsModal {
                 app.general_settings_selected =
-                    (app.general_settings_selected + 1) % SETTINGS_GENERAL_ITEMS;
+                    (app.general_settings_selected + 1) % SETTINGS_GENERAL_SELECTABLE;
             } else if app.overlay == Overlay::DownloadSettingsModal {
                 move_download_selection(app, 1);
             } else if app.overlay == Overlay::BarSettingsModal {
@@ -1218,6 +1219,10 @@ async fn handle_action(
             match app.overlay {
                 Overlay::SettingsModal => app.settings_selected = idx,
                 Overlay::GeneralSettingsModal => {
+                    // 灰置行（Windows 上的媒体来源名称）不可选中，见 SETTINGS_GENERAL_SELECTABLE。
+                    if idx >= SETTINGS_GENERAL_SELECTABLE {
+                        return Ok(());
+                    }
                     app.general_settings_selected = idx.min(SETTINGS_GENERAL_MPRIS_ROW);
                     return Box::pin(handle_action(app, host_bridge, Action::Confirm, layout))
                         .await;

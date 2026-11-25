@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorCapability {
     TrueColor,
+    // Windows 的探测不产出 256 色档（见 windows/terminal.rs）。
+    #[cfg_attr(windows, allow(dead_code))]
     Ansi256,
     NoColor,
 }
@@ -163,19 +165,27 @@ impl Default for Theme {
 }
 
 pub fn detect_color_capability() -> ColorCapability {
-    let colorterm = std::env::var("COLORTERM")
-        .unwrap_or_default()
-        .to_lowercase();
-    if colorterm.contains("truecolor") || colorterm.contains("24bit") {
-        return ColorCapability::TrueColor;
+    #[cfg(windows)]
+    {
+        crate::win::terminal::color_capability()
     }
 
-    let term = std::env::var("TERM").unwrap_or_default().to_lowercase();
-    if term.contains("256color") {
-        return ColorCapability::Ansi256;
-    }
+    #[cfg(not(windows))]
+    {
+        let colorterm = std::env::var("COLORTERM")
+            .unwrap_or_default()
+            .to_lowercase();
+        if colorterm.contains("truecolor") || colorterm.contains("24bit") {
+            return ColorCapability::TrueColor;
+        }
 
-    ColorCapability::NoColor
+        let term = std::env::var("TERM").unwrap_or_default().to_lowercase();
+        if term.contains("256color") {
+            return ColorCapability::Ansi256;
+        }
+
+        ColorCapability::NoColor
+    }
 }
 
 fn map_color(cap: ColorCapability, rgb: (u8, u8, u8)) -> Color {

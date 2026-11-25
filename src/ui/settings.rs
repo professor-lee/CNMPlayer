@@ -184,6 +184,13 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     }
 }
 
+/// 通用设置末行（媒体服务名称输入框）的中英文标签。Linux 上对应 MPRIS 的 Identity，
+/// Windows 上对应系统媒体控件（SMTC）里的媒体来源。
+#[cfg(not(windows))]
+pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["MPRIS服务名称", "MPRIS Service Name"];
+#[cfg(windows)]
+pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["媒体来源名称", "Media Source Name"];
+
 fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -232,7 +239,8 @@ fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             on_off(app, app.config.scrobble)
         ),
     ];
-    let name_prefix = format!("{}: ", l(app, "MPRIS服务名称", "MPRIS Service Name"));
+    let [label_zh, label_en] = MEDIA_NAME_LABEL;
+    let name_prefix = format!("{}: ", l(app, label_zh, label_en));
     let selected = app.settings.general_selected;
     let visible = usize::from(rows[1].height);
     app.settings.general_scroll = scroll_for_focus(
@@ -249,7 +257,10 @@ fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let lines: Vec<Line> = visible_rows
         .iter()
         .map(|&(idx, _)| {
-            let style = if idx == selected {
+            let style = if idx >= crate::app::settings_controller::SETTINGS_GENERAL_SELECTABLE {
+                // Windows 上暂时禁用的媒体来源名称行，见 SETTINGS_GENERAL_SELECTABLE。
+                Style::default().fg(app.theme.color_subtext())
+            } else if idx == selected {
                 Style::default().fg(accent2).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(text_color)

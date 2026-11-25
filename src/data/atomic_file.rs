@@ -70,6 +70,9 @@ struct TempFile {
 
 impl TempFile {
     fn create(parent: &Path, target: &Path, mode: Option<u32>) -> Result<Self> {
+        // Windows 没有 Unix 权限位，会话文件靠 %APPDATA% 的 ACL 隔离。
+        #[cfg(not(unix))]
+        let _ = mode;
         let base = target
             .file_name()
             .and_then(|name| name.to_str())

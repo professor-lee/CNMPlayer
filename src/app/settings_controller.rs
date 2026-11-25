@@ -31,6 +31,17 @@ pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 7;
 pub(crate) const SETTINGS_GENERAL_MPRIS_ROW: usize = SETTINGS_GENERAL_ITEMS - 1;
 const MPRIS_NAME_MAX_CHARS: usize = 256;
 
+/// 通用设置里可选中的行数（从第 0 行起连续）。
+///
+/// Windows 版暂时禁用末行的「媒体来源名称」：系统媒体控件（SMTC）显示的来源名取自进程的
+/// AppUserModelID 与开始菜单快捷方式，`windows/smtc.rs` 并不读取 `mpris_name`，这一项改了也
+/// 不会生效。该行在 Windows 上灰置，键盘、滚轮、鼠标都选不中，也进不了编辑。
+/// 这是暂定做法：以后接入 AUMID 注册、让来源名可配置时，可能重新启用或改造这一项。
+#[cfg(not(windows))]
+pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_ITEMS;
+#[cfg(windows)]
+pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_MPRIS_ROW;
+
 const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 
 const SETTINGS_LYRICS_ITEMS: usize = 5;
@@ -191,6 +202,10 @@ impl App {
                 }
             }
             Overlay::SettingsGeneral => {
+                // 灰置行（Windows 上的媒体来源名称）不可选中，见 SETTINGS_GENERAL_SELECTABLE。
+                if index >= SETTINGS_GENERAL_SELECTABLE {
+                    return;
+                }
                 self.settings.general_selected = index;
                 self.activate_settings_general_item(1).await;
             }
@@ -249,9 +264,10 @@ impl App {
 
         match self.overlay {
             Some(Overlay::Settings) => step(&mut self.settings.selected, SETTINGS_ROOT_ITEMS),
-            Some(Overlay::SettingsGeneral) => {
-                step(&mut self.settings.general_selected, SETTINGS_GENERAL_ITEMS)
-            }
+            Some(Overlay::SettingsGeneral) => step(
+                &mut self.settings.general_selected,
+                SETTINGS_GENERAL_SELECTABLE,
+            ),
             Some(Overlay::SettingsPlayback) => step(
                 &mut self.settings.playback_selected,
                 SETTINGS_PLAYBACK_ITEMS,
@@ -363,12 +379,12 @@ impl App {
             }
             KeyCode::Up | KeyCode::BackTab => {
                 self.settings.general_selected =
-                    (self.settings.general_selected + SETTINGS_GENERAL_ITEMS - 1)
-                        % SETTINGS_GENERAL_ITEMS;
+                    (self.settings.general_selected + SETTINGS_GENERAL_SELECTABLE - 1)
+                        % SETTINGS_GENERAL_SELECTABLE;
             }
             KeyCode::Down | KeyCode::Tab => {
                 self.settings.general_selected =
-                    (self.settings.general_selected + 1) % SETTINGS_GENERAL_ITEMS;
+                    (self.settings.general_selected + 1) % SETTINGS_GENERAL_SELECTABLE;
             }
             KeyCode::Left => self.apply_settings_general_delta(-1).await,
             KeyCode::Right | KeyCode::Enter => self.activate_settings_general_item(1).await,

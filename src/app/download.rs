@@ -219,7 +219,11 @@ pub(super) fn download_file_stem(title: &str, artist: &str, album: &str) -> Stri
             parts.push(part);
         }
     }
-    truncate_bytes(&parts.join(" - "), STEM_BYTE_BUDGET)
+    let stem = truncate_bytes(&parts.join(" - "), STEM_BYTE_BUDGET);
+    // 标题恰好是 CON/NUL/COM1 等保留设备名时 Windows 建不出文件。
+    #[cfg(windows)]
+    let stem = crate::win::filename::avoid_reserved_stem(stem);
+    stem
 }
 
 /// 一次下载的目标位置：下载根目录 + 文件名主干（所有下载都直接落根目录）。

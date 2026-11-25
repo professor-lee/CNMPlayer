@@ -229,12 +229,16 @@ impl OutputEvents {
 }
 
 fn error_cb(output: Arc<OutputEvents>, host: HostId) -> impl Fn(Error) {
+    // HostId::PipeWire 只在 Linux 上存在；其它平台的设备丢失按普通故障重建输出。
+    #[cfg(not(target_os = "linux"))]
+    let _ = host;
     move |e| match e.kind() {
         // The stream is still alive. Pause so playback does not jump to another
         // device, and keep the source so the position survives.
         ErrorKind::DeviceChanged => output.request_pause(),
         // PipeWire reports this when the default output disappears; the same stream
         // relinks once an output returns. On ALSA the stream worker exits instead.
+        #[cfg(target_os = "linux")]
         ErrorKind::DeviceNotAvailable if host == HostId::PipeWire => output.request_pause(),
         // Xrun arrives on the realtime audio thread and the backend recovers by
         // itself; no locking or file I/O here.
@@ -889,7 +893,7 @@ pub(super) fn resolve_cache_root(config: &Config) -> PathBuf {
     STORAGE.cache.clone()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod error_callback_tests;
 
 #[cfg(test)]

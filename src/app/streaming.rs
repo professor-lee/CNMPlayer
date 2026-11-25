@@ -90,7 +90,16 @@ fn process_liveness(pid: u32) -> ProcessLiveness {
         }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        match crate::win::process::process_alive(pid) {
+            Some(true) => ProcessLiveness::Live,
+            Some(false) => ProcessLiveness::Dead,
+            None => ProcessLiveness::Unknown,
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         ProcessLiveness::Unknown

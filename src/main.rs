@@ -5,6 +5,9 @@ mod render;
 mod status;
 mod tmplayer;
 mod ui;
+#[cfg(windows)]
+#[path = "../windows/mod.rs"]
+mod win;
 
 use crate::render::frame_clock::FrameClock;
 use crate::render::mark_animation_end_frame;
@@ -302,6 +305,9 @@ fn redirect_stderr_to_file(path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+use crate::win::stderr::redirect_stderr_to_file;
+
 /// 单个日志文件的体积上限（MB）。超出后 ftail 轮转为 `.old`，
 /// 而 stderr 文件由 `trim_stderr_log_if_needed` 就地截断。
 const LOG_MAX_FILE_SIZE_MB: u64 = 4;
@@ -309,13 +315,13 @@ const LOG_MAX_FILE_SIZE_MB: u64 = 4;
 /// 程序日志；状态与报错都写到这里（见 `status`）。
 static LOG_PATH: LazyLock<PathBuf> = LazyLock::new(|| STORAGE.cache.join("Player.log"));
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub static STDERR_LOG_PATH: LazyLock<PathBuf> =
     LazyLock::new(|| STORAGE.cache.join("Player.stderr.log"));
 
-/// stderr 文件超限就截断。fd 2 以 `O_APPEND` 打开，
+/// stderr 文件超限就截断。fd 2 以 `O_APPEND` 打开（Windows 句柄为 `FILE_APPEND_DATA`），
 /// 截断只是把长度归零，写偏移由内核在每次写入时重算，不会产生空洞。
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn trim_stderr_log_if_needed() {
     let path = &*STDERR_LOG_PATH;
     let Ok(meta) = std::fs::metadata(path) else {
@@ -329,7 +335,7 @@ pub fn trim_stderr_log_if_needed() {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn trim_stderr_log_if_needed() {}
 
 async fn init_logger() -> Result<()> {
@@ -341,7 +347,7 @@ async fn init_logger() -> Result<()> {
         let _ = remove_file(log_file.with_extension(format!("log.{suffix}"))).await;
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         let stderr_file = STDERR_LOG_PATH.clone();
         let _ = remove_file(&stderr_file).await;

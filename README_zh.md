@@ -102,7 +102,7 @@ CNMPlayer（Customized Netease Music Player）是一个运行在终端中的网�
 - 收藏 / 取消收藏：全屏页与折叠播放栏都可操作
 - 循环模式：顺序 → 随机 → 列表循环 → 单曲循环；随机模式每轮把队列中每首歌各播一次，“上一首”沿实际播放历史回退
 - 歌单播放进入已加载列表最后三首时预取下一页；到达尚未完成的分页边界时会等待续页，不会提前结束或回卷。随机模式先播完已加载并洗好的曲目（剩三首时预取下一页），新加载的一页单独洗牌后接在其后播放
-- Linux 媒体控制（MPRIS，总线后缀 `cnmplayer`），包含元数据与封面
+- 系统媒体控制，包含元数据与封面：Linux 上为 MPRIS（总线后缀 `cnmplayer`），Windows 上为系统媒体传输控件（SMTC）
 
 ### 下载
 
@@ -193,6 +193,8 @@ sudo apt install -y build-essential cmake pkg-config \
 
 `libchafa-dev` 要求 chafa ≥ 1.8.0（图像渲染通过 `pkg-config` 探测），`libclang-dev` 与 `libpipewire-0.3-dev` 则是 PipeWire 音频后端在构建期生成绑定所需。`libasound2-dev` 只在构建期需要：`cpal` 在 Linux 上无条件编译其 ALSA 后端，而播放本身走 PipeWire。
 
+Windows 上 `cargo build --release` 只需要 Rust 工具链（MSVC 目标及其链接器），不编译、不链接任何第三方 C 库：不使用 chafa（封面改用 ratatui-image 自带的半块渲染），TLS 走 SChannel，音频走 WASAPI。CI 目前还不构建、不测试 Windows 版本。
+
 ### 运行要求
 
 - Linux 上的 PipeWire 音频（ALSA 后端已弃用），以及运行时的 chafa 共享库
@@ -245,7 +247,7 @@ sudo apt install -y build-essential cmake pkg-config \
 | `small_window_display` | `true` | 终端过小时启用紧凑布局 |
 | `home_more_recommend` | `false` | 首页在三块固定磁贴之外展开更多推荐 |
 | `scrobble` | `false` | 通用设置 → 听歌上报：切歌、播放停止与退出时，把 20 秒以上的实际收听时长（暂停不计）上报网易云“听歌排行”；可能存在风控风险 |
-| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer` |
+| `mpris_name` | `""` | 通用设置 → MPRIS服务名称：支持纯文本及 `@play`（当前曲名，暂停保留）；留空或无当前曲名时使用 `CNMPlayer`。Windows 上该行显示为“媒体来源名称”并暂时禁用：SMTC 的来源名取自应用注册信息，不读取这一项 |
 | `default_opening_title` | `""` | 替换登录页与加载页的 ASCII 标题，支持 `\n` |
 | `audio_quality` | `exhigh` | `standard`、`higher`、`exhigh`、`lossless`、`hires`、`jyeffect`、`sky`、`dolby`、`jymaster`；非 VIP 账号会被限制到 `exhigh` |
 | `download_audio_quality` | `exhigh` | 下载音质：与 `audio_quality` 同一套可选值，同样按 VIP 权限放开 |
@@ -354,8 +356,8 @@ sudo apt install -y build-essential cmake pkg-config \
 
 ## 注意事项
 
-- 没有命令行参数。可用的环境变量是 `CNMPLAYER_ASSET_DIR`（资产根目录）与 `COLORTERM` / `TERM`（颜色能力探测）。
-- 预编译产物与 AUR 包只提供 Linux `amd64` 与 `aarch64`；MPRIS 同样仅 Linux 可用。
+- 没有命令行参数。可用的环境变量是 `CNMPLAYER_ASSET_DIR`（资产根目录）与 `COLORTERM` / `TERM`（颜色能力探测）；Windows 上颜色探测还读取 `WT_SESSION`（Windows Terminal）、`TERM_PROGRAM` 与 `ConEmuANSI`，控制台能处理 VT 序列时默认真彩色。
+- 预编译产物与 AUR 包只提供 Linux `amd64` 与 `aarch64`；媒体控制在 Linux 上为 MPRIS、Windows 上为 SMTC（Windows 10 1607 起），其他平台没有。
 - API 回包与封面下载从响应头到完整 body 共用 30 秒 deadline；音频 body 不设整首下载总时限，仍可协作式取消。
 - 封面不会回退到 ASCII 字符画：加载阶段最多显示临时 halfblock 预览，无封面或失败时保持空白。
 
@@ -365,11 +367,11 @@ sudo apt install -y build-essential cmake pkg-config \
 - TUI：ratatui + crossterm
 - 异步与网络：compio + cyper
 - 网易云 API：[CRIA](https://github.com/alpaca-herd/cria)（crate `cria-api`，导入名 `cria`），由本仓库拆分而来，见「相关项目」
-- 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire
+- 播放：rodio + symphonia（mp3 / flac），后端为 PipeWire（Windows 上为 WASAPI）
 - 元数据、封面与下载标签：image + qrcode + lofty
-- 图像渲染：ratatui-image + chafa
+- 图像渲染：ratatui-image + chafa（Windows 上为自带半块渲染）
 - 可视化：内部 Cava Rust 频谱移植（realfft），由共享播放 PCM 抽头驱动
-- Linux 媒体控制：mpris-server
+- 系统媒体控制：Linux 上为 mpris-server，Windows 上经 `windows` crate 接入 SMTC
 - 全屏播放：内置 `src/tmplayer/` UI，使用主程序播放链路与共享配置
 
 ## 开发
@@ -384,6 +386,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 CI（`ci.yml`）会在 stable 上执行默认特性和 `--no-default-features` 的 check/test，并执行 fmt、clippy 门禁；API 客户端由 CRIA 仓库自身的 CI 检查。
 发版（`release.yml`）会在发布前执行测试门禁，随 `x86_64` 与 `aarch64` 压缩包发布 `SHA256SUMS`，并维护 AUR 包。
+
+Windows 专用代码放在 `windows/`，以 `#[cfg(windows)]` + `#[path]` 挂载，Linux 构建不会编译它。在 Linux 上可先 `rustup target add x86_64-pc-windows-gnu`，再用 `cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings` 检查。
 
 ## 相关项目
 

@@ -555,6 +555,8 @@ async fn settings_preserve_sidebar_visibility_focus_and_modal_input() {
     }
 }
 
+// 依赖键盘导航能落到名称行；Windows 上该行暂时禁用（见 SETTINGS_GENERAL_SELECTABLE）。
+#[cfg(not(windows))]
 #[compio::test]
 async fn name_edit_cancels_to_general_then_root_without_saving() {
     let mut app = AppState::new(

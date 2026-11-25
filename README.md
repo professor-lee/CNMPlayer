@@ -102,7 +102,7 @@ Artists and playlists are capped at the 5 most relevant hits and never paginate;
 - Like / unlike from the fullscreen page and from the collapsed player bar
 - Repeat modes: sequence → shuffle → loop all → loop one; shuffle plays every song in the queue once per round and previous walks back the songs actually played
 - Playlist playback prefetches the next page when entering the last three loaded tracks, and waits for an unfinished page instead of stopping or wrapping early. In shuffle mode the loaded songs are played through first (the next page is prefetched when three of them remain); each newly loaded page is shuffled on its own and played after them
-- Linux media control (MPRIS, bus suffix `cnmplayer`) with metadata and cover art
+- System media control with metadata and cover art: MPRIS on Linux (bus suffix `cnmplayer`), System Media Transport Controls (SMTC) on Windows
 
 ### Downloads
 
@@ -193,6 +193,8 @@ sudo apt install -y build-essential cmake pkg-config \
 
 `libchafa-dev` must be chafa ≥ 1.8.0 (the image renderer probes it through `pkg-config`), and `libclang-dev` plus `libpipewire-0.3-dev` are needed because the PipeWire audio backend generates bindings at build time. `libasound2-dev` is a build-time requirement only: `cpal` compiles its ALSA backend unconditionally on Linux, while playback itself goes through PipeWire.
 
+On Windows, `cargo build --release` needs only the Rust toolchain (the MSVC target and its linker); no third-party C library is built or linked. chafa is not used there (cover art uses ratatui-image's built-in halfblock renderer), TLS goes through SChannel and audio through WASAPI. Windows builds are not produced or tested by CI yet.
+
 ### Requirements
 
 - Linux with PipeWire for audio (the ALSA backend is deprecated), and the chafa shared library at runtime
@@ -245,7 +247,7 @@ The repository's `config/default.toml` is embedded at build time and is the sing
 | `small_window_display` | `true` | Compact layouts for small terminals |
 | `home_more_recommend` | `false` | Expand the home page beyond the three pinned tiles |
 | `scrobble` | `false` | General Settings → Scrobble to NetEase: report each listen of 20 s or more (paused time excluded) to NetEase listening history when switching songs, when playback stops and on exit; may carry account risk-control risk |
-| `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer` |
+| `mpris_name` | `""` | General Settings → MPRIS Service Name: plain text or `@play` for the current title (retained while paused); empty input or no current title uses `CNMPlayer`. On Windows the row is shown as Media Source Name and is disabled for now, because SMTC takes the source name from the app registration rather than this setting |
 | `default_opening_title` | `""` | Replaces the ASCII banner on the login and loading pages; supports `\n` |
 | `audio_quality` | `exhigh` | `standard`, `higher`, `exhigh`, `lossless`, `hires`, `jyeffect`, `sky`, `dolby`, `jymaster`; clamped to `exhigh` without VIP |
 | `download_audio_quality` | `exhigh` | Download quality: same option set as `audio_quality`, VIP-aware as well |
@@ -354,8 +356,8 @@ Fullscreen page:
 
 ## Notes
 
-- There are no command line flags. The environment variables are `CNMPLAYER_ASSET_DIR` (asset root) and `COLORTERM` / `TERM` (color capability detection).
-- Prebuilt artifacts and AUR packages are produced for Linux `amd64` and `aarch64` only. MPRIS is Linux-only as well.
+- There are no command line flags. The environment variables are `CNMPLAYER_ASSET_DIR` (asset root) and `COLORTERM` / `TERM` (color capability detection); on Windows, color detection also reads `WT_SESSION` (Windows Terminal), `TERM_PROGRAM` and `ConEmuANSI`, and defaults to true color when the console accepts VT sequences.
+- Prebuilt artifacts and AUR packages are produced for Linux `amd64` and `aarch64` only. Media control is MPRIS on Linux and SMTC on Windows (Windows 10 1607 or later); other platforms have none.
 - API responses and cover downloads have a 30-second deadline covering headers and the complete body; slow audio bodies stay cooperatively cancellable instead of imposing a total song-download deadline.
 - Cover art never falls back to ASCII art: at most a transient halfblock preview is shown while loading, and missing or failed artwork stays blank.
 
@@ -365,11 +367,11 @@ Fullscreen page:
 - TUI: ratatui + crossterm
 - Async and networking: compio + cyper
 - NetEase API client: [CRIA](https://github.com/alpaca-herd/cria) (crate `cria-api`, imported as `cria`), split out of this repository; see *Related Projects*
-- Playback: rodio + symphonia (mp3 / flac) over PipeWire
+- Playback: rodio + symphonia (mp3 / flac) over PipeWire (WASAPI on Windows)
 - Metadata, artwork and download tags: image + qrcode + lofty
-- Image rendering: ratatui-image + chafa
+- Image rendering: ratatui-image + chafa (built-in halfblocks on Windows)
 - Visualization: internal Cava Rust spectrum port (realfft) fed by a shared playback PCM tap
-- Linux media control: mpris-server
+- System media control: mpris-server on Linux, SMTC through the `windows` crate on Windows
 - Fullscreen playback: embedded `src/tmplayer/` UI using host playback and shared configuration
 
 ## Development
@@ -384,6 +386,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 CI (`ci.yml`) runs check and test for the default and `--no-default-features` builds on stable, then fmt and clippy gates. The API client is checked in the CRIA repository's own CI.
 Release (`release.yml`) runs the test gates before publishing, publishes `SHA256SUMS` alongside the `x86_64` and `aarch64` tarballs, and maintains the AUR packages.
+
+Windows-only code lives in `windows/` and is mounted with `#[cfg(windows)]` + `#[path]`, so Linux builds never compile it. Check it from Linux with `rustup target add x86_64-pc-windows-gnu` and `cargo clippy --target x86_64-pc-windows-gnu --all-targets --all-features -- -D warnings`.
 
 ## Related Projects
 
