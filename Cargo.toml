@@ -51,8 +51,9 @@ lofty = "0.25.4"
 libc = "0.2"
 
 # chafa 需要 pkg-config 能找到的原生 C 库（及运行期 glib），Windows 上没有可用的分发方式；
-# Windows 改用 ratatui-image 自带的半块渲染。
-[target.'cfg(not(windows))'.dependencies]
+# macOS 暂时同样不用（以后可能改由 Homebrew 分发并重新启用）。这两个平台改用
+# ratatui-image 自带的半块渲染。
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
 ratatui-image = { version = "11", default-features = false, features = ["chafa-dyn"] }
 
 [target.'cfg(windows)'.dependencies]
