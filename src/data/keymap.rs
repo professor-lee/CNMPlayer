@@ -142,9 +142,17 @@ pub(crate) const SLOTS: [KeySlot; 26] = [
 
 pub(crate) const KEY_FORCE_QUIT: &str = "Ctrl+C";
 pub(crate) const KEY_TOGGLE_KEYBINDS: &str = "Ctrl+K";
+#[cfg(not(target_os = "macos"))]
 pub(crate) const KEY_RESET_KEYBINDS: &str = "Ctrl+Alt+R";
+#[cfg(not(target_os = "macos"))]
 pub(crate) const KEY_SIDEBAR_SECTION_PREV: &str = "Ctrl+Up";
+#[cfg(not(target_os = "macos"))]
 pub(crate) const KEY_SIDEBAR_SECTION_NEXT: &str = "Ctrl+Down";
+// macOS 上 Option 组合与 Ctrl+↑/↓ 都到不了终端程序，换用另一组固定键。
+#[cfg(target_os = "macos")]
+pub(crate) use crate::mac::keybinds::{
+    KEY_RESET_KEYBINDS, KEY_SIDEBAR_SECTION_NEXT, KEY_SIDEBAR_SECTION_PREV,
+};
 pub(crate) const KEY_LOGIN_QR: &str = "F1";
 pub(crate) const KEY_LOGIN_ACCOUNT: &str = "F2";
 pub(crate) const KEY_LOGIN_PHONE: &str = "F3";

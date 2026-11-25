@@ -193,6 +193,15 @@ pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["媒体来源名称", "Media Sou
 #[cfg(target_os = "macos")]
 pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["正在播放名称", "Now Playing Name"];
 
+/// 按键绑定页底部提示 `[中文, 英文]`；macOS 的恢复默认键不同，见 `macos/keybinds.rs`。
+#[cfg(not(target_os = "macos"))]
+const KEYBIND_PAGE_HINT: [&str; 2] = [
+    "Enter 重绑  Ctrl+Alt+R 重置  Ctrl+K 关闭  Esc 返回",
+    "Enter rebind  Ctrl+Alt+R reset  Ctrl+K close  Esc back",
+];
+#[cfg(target_os = "macos")]
+use crate::mac::keybinds::KEYBIND_PAGE_HINT;
+
 fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -832,12 +841,7 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             )
         )
     } else {
-        l(
-            app,
-            "Enter 重绑  Ctrl+Alt+R 重置  Ctrl+K 关闭  Esc 返回",
-            "Enter rebind  Ctrl+Alt+R reset  Ctrl+K close  Esc back",
-        )
-        .to_string()
+        l(app, KEYBIND_PAGE_HINT[0], KEYBIND_PAGE_HINT[1]).to_string()
     };
 
     frame.render_widget(

@@ -1,6 +1,9 @@
 mod app;
 mod data;
 mod lyrics;
+#[cfg(target_os = "macos")]
+#[path = "../macos/mod.rs"]
+mod mac;
 mod render;
 mod status;
 mod tmplayer;

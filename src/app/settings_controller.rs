@@ -42,6 +42,15 @@ pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_ITEMS;
 #[cfg(windows)]
 pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_MPRIS_ROW;
 
+/// 试图把槽位绑到恢复默认键时的提示；macOS 的恢复默认键不同，见 `macos/keybinds.rs`。
+#[cfg(not(target_os = "macos"))]
+const RESERVED_RESET_NOTICE: [&str; 2] = [
+    "Ctrl+Alt+R 为保留快捷键，不能重新绑定",
+    "Ctrl+Alt+R is reserved and cannot be rebound",
+];
+#[cfg(target_os = "macos")]
+use crate::mac::keybinds::RESERVED_RESET_NOTICE;
+
 const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 
 const SETTINGS_LYRICS_ITEMS: usize = 5;
@@ -796,10 +805,9 @@ impl App {
                     };
 
                     if binding == RESERVED_RESET_KEYBIND {
-                        status::info(self.lang_text(
-                            "Ctrl+Alt+R 为保留快捷键，不能重新绑定",
-                            "Ctrl+Alt+R is reserved and cannot be rebound",
-                        ));
+                        status::info(
+                            self.lang_text(RESERVED_RESET_NOTICE[0], RESERVED_RESET_NOTICE[1]),
+                        );
                         return;
                     }
 
