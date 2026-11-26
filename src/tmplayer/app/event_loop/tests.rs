@@ -555,7 +555,7 @@ async fn settings_preserve_sidebar_visibility_focus_and_modal_input() {
     }
 }
 
-// 依赖键盘导航能落到名称行；Windows 上该行暂时禁用、macOS 上不显示（见 SETTINGS_GENERAL_SELECTABLE）。
+// 依赖键盘导航能落到名称行；Windows 与 macOS 上不显示该行（见 SETTINGS_GENERAL_ROWS）。
 #[cfg(not(any(windows, target_os = "macos")))]
 #[compio::test]
 async fn name_edit_cancels_to_general_then_root_without_saving() {

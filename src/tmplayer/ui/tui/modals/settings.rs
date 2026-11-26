@@ -189,7 +189,7 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
         .map(Some)
         .chain(std::iter::once(None))
         .enumerate()
-        // macOS 不显示末行的名称输入框，见 SETTINGS_GENERAL_ROWS。
+        // Windows、macOS 不显示末行的名称输入框，见 SETTINGS_GENERAL_ROWS。
         .take(crate::app::settings_controller::SETTINGS_GENERAL_ROWS)
         .skip(app.general_settings_scroll)
         .take(visible)
@@ -200,10 +200,7 @@ pub(in crate::tmplayer::ui::tui) fn render_general_settings_modal(
             width: rows[1].width,
             height: 1,
         };
-        let style = if idx >= crate::app::settings_controller::SETTINGS_GENERAL_SELECTABLE {
-            // Windows 上暂时禁用的媒体来源名称行，见 SETTINGS_GENERAL_SELECTABLE。
-            Style::default().fg(app.theme.color_subtext())
-        } else if idx == app.general_settings_selected {
+        let style = if idx == app.general_settings_selected {
             Style::default()
                 .fg(app.theme.color_accent2())
                 .add_modifier(Modifier::BOLD)
