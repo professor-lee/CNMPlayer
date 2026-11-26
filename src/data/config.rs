@@ -305,7 +305,7 @@ struct DefaultConfig {
 }
 
 static DEFAULT_CONFIG: LazyLock<DefaultConfig> = LazyLock::new(|| {
-    let table: toml::Table = toml::from_str(assets::DEFAULT_CONFIG_TOML)
+    let table: toml::Table = toml::from_str(assets::default_config_toml())
         .expect("invalid embedded config/default.toml: malformed TOML");
     // Config and CacheConfig have no serde defaults: an incomplete template is
     // a development error, never a recursive request for Config::default().
@@ -356,7 +356,7 @@ impl Config {
     fn load_from_path(path: &std::path::Path) -> Result<Self> {
         if !path.exists() {
             let cfg = Self::default();
-            atomic_file::write_atomic(path, assets::DEFAULT_CONFIG_TOML.as_bytes())?;
+            atomic_file::write_atomic(path, assets::default_config_toml().as_bytes())?;
             return Ok(cfg);
         }
 

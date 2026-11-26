@@ -51,13 +51,24 @@ lofty = "0.25.4"
 libc = "0.2"
 
 # chafa 需要 pkg-config 能找到的原生 C 库（及运行期 glib），Windows 上没有可用的分发方式；
-# Windows 改用 ratatui-image 自带的半块渲染。
-[target.'cfg(not(windows))'.dependencies]
+# macOS 暂时同样不用（以后可能改由 Homebrew 分发并重新启用）。这两个平台改用
+# ratatui-image 自带的半块渲染。
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
 ratatui-image = { version = "11", default-features = false, features = ["chafa-dyn"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 windows = { version = "0.62", features = ["Foundation", "Media", "Media_Playback", "Storage", "Storage_Streams"] }
+
+# 「正在播放」（MPNowPlayingInfoCenter / MPRemoteCommandCenter）与主线程 Cocoa 事件循环。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDate", "NSDictionary", "NSGeometry", "NSObject", "NSPort", "NSRunLoop", "NSString", "NSValue"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder", "NSRunningApplication"] }
+objc2-media-player = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "MPMediaItem", "MPNowPlayingInfoCenter", "MPRemoteCommand", "MPRemoteCommandCenter", "MPRemoteCommandEvent"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = "0.10"

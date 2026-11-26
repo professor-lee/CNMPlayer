@@ -13,6 +13,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// 侧边栏空闲时的操作提示 `[中文, 英文]`；macOS 换了分区切换键，见 `macos/keybinds.rs`。
+#[cfg(not(target_os = "macos"))]
+const SIDEBAR_HINT: [&str; 2] = [
+    "Ctrl+上下切换分区 上下切换歌单 Enter进入 Esc收起",
+    "Ctrl+Up/Down switch section, Up/Down switch playlist, Enter open, Esc collapse",
+];
+#[cfg(target_os = "macos")]
+use crate::mac::keybinds::SIDEBAR_HINT;
+
 pub fn draw_home(frame: &mut Frame, app: &mut App) -> Option<Rect> {
     app.clear_player_bar_hits();
     app.clear_content_hits();
@@ -357,11 +366,8 @@ fn render_home_sidebar(buffer: &mut Buffer, app: &mut App, sidebar: Rect) {
         }
     } else if app.browse.home_sidebar.status_line.trim().is_empty() {
         match app.config.language {
-            Language::Zh => "Ctrl+上下切换分区 上下切换歌单 Enter进入 Esc收起".to_string(),
-            Language::En => {
-                "Ctrl+Up/Down switch section, Up/Down switch playlist, Enter open, Esc collapse"
-                    .to_string()
-            }
+            Language::Zh => SIDEBAR_HINT[0].to_string(),
+            Language::En => SIDEBAR_HINT[1].to_string(),
         }
     } else {
         app.browse.home_sidebar.status_line.clone()

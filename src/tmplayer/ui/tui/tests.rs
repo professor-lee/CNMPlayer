@@ -1501,6 +1501,23 @@ fn draw_page_reveal<B: ratatui::backend::Backend>(
     draw_page_reveal_with_snapshot(terminal, app, covers, sidebar, None, progress)
 }
 
+/// Windows 与 macOS 上通用设置不绘制名称行，也不登记它的点击区域。
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn general_modal_has_no_name_row_without_mpris() {
+    use crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW as NAME_ROW;
+    let mut app = state(Overlay::GeneralSettingsModal);
+    app.general_settings_selected = NAME_ROW - 1;
+    let (rows, buf) = render_to_buffer_sized(80, 24, &mut app, |f, app, rows| {
+        render_general_settings_modal(f, f.area(), app, rows)
+    });
+    assert_eq!(rows.len(), NAME_ROW);
+    let label = crate::ui::settings::MEDIA_NAME_LABEL[0];
+    assert!((0..buf.area.height).all(|y| !compact(&line_text(&buf, y)).contains(label)));
+}
+
+// 只有 Linux 显示名称行（见 SETTINGS_GENERAL_ROWS），以下三个测试只在 Linux 等平台上成立。
+#[cfg(not(any(windows, target_os = "macos")))]
 #[test]
 fn general_modal_scrolling_preserves_viewport_and_drawn_hit_rows() {
     use crate::app::settings_controller::SETTINGS_GENERAL_MPRIS_ROW as NAME_ROW;
@@ -1535,6 +1552,7 @@ fn general_modal_scrolling_preserves_viewport_and_drawn_hit_rows() {
     assert_eq!(app.general_settings_scroll, 0);
 }
 
+#[cfg(not(any(windows, target_os = "macos")))]
 #[test]
 fn empty_name_edit_draws_value_only_caret_and_ignores_row_clicks() {
     for language in [
@@ -1582,6 +1600,7 @@ fn empty_name_edit_draws_value_only_caret_and_ignores_row_clicks() {
     }
 }
 
+#[cfg(not(any(windows, target_os = "macos")))]
 #[test]
 fn long_chinese_name_edit_scrolls_only_when_caret_crosses_value_boundary() {
     let mut app = state(Overlay::MprisNameEditModal);

@@ -9,6 +9,19 @@ const ENV_ASSET_DIR: &str = "CNMPLAYER_ASSET_DIR";
 
 pub(crate) const DEFAULT_CONFIG_TOML: &str = include_str!("../../config/default.toml");
 
+/// 首次运行写盘与 `Config::default` 共用的默认配置模板。
+/// macOS 换掉了依赖 Option 键的默认快捷键，见 `macos/keybinds.rs`。
+pub(crate) fn default_config_toml() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        crate::mac::keybinds::default_config_toml()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        DEFAULT_CONFIG_TOML
+    }
+}
+
 const THEME_SYSTEM_TOML: &str = include_str!("../../themes/system.toml");
 const THEME_LATTE_TOML: &str = include_str!("../../themes/catppuccin_latte.toml");
 const THEME_FRAPPE_TOML: &str = include_str!("../../themes/catppuccin_frappe.toml");
@@ -61,7 +74,7 @@ fn ensure_all_assets(root: &Path) -> Result<()> {
     ensure_dir(&root.join("config"))?;
     ensure_dir(&root.join("themes"))?;
 
-    write_if_missing(&root.join("config/default.toml"), DEFAULT_CONFIG_TOML)?;
+    write_if_missing(&root.join("config/default.toml"), default_config_toml())?;
     ensure_themes(root)?;
 
     Ok(())

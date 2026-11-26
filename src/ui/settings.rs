@@ -184,12 +184,18 @@ fn draw_root_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     }
 }
 
-/// 通用设置末行（媒体服务名称输入框）的中英文标签。Linux 上对应 MPRIS 的 Identity，
-/// Windows 上对应系统媒体控件（SMTC）里的媒体来源。
-#[cfg(not(windows))]
+/// 通用设置末行（MPRIS 服务名称输入框）的中英文标签，对应 MPRIS 的 Identity。
+/// 只有 Linux 显示该行，见 `SETTINGS_GENERAL_ROWS`。
 pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["MPRIS服务名称", "MPRIS Service Name"];
-#[cfg(windows)]
-pub(crate) const MEDIA_NAME_LABEL: [&str; 2] = ["媒体来源名称", "Media Source Name"];
+
+/// 按键绑定页底部提示 `[中文, 英文]`；macOS 的恢复默认键不同，见 `macos/keybinds.rs`。
+#[cfg(not(target_os = "macos"))]
+const KEYBIND_PAGE_HINT: [&str; 2] = [
+    "Enter 重绑  Ctrl+Alt+R 重置  Ctrl+K 关闭  Esc 返回",
+    "Enter rebind  Ctrl+Alt+R reset  Ctrl+K close  Esc back",
+];
+#[cfg(target_os = "macos")]
+use crate::mac::keybinds::KEYBIND_PAGE_HINT;
 
 fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let rows = Layout::default()
@@ -245,22 +251,19 @@ fn draw_general_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
     let visible = usize::from(rows[1].height);
     app.settings.general_scroll = scroll_for_focus(
         app.settings.general_scroll,
-        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
+        crate::app::settings_controller::SETTINGS_GENERAL_ROWS,
         visible,
         selected,
     );
     let visible_rows = scrolled_rows(
-        crate::app::settings_controller::SETTINGS_GENERAL_ITEMS,
+        crate::app::settings_controller::SETTINGS_GENERAL_ROWS,
         visible,
         app.settings.general_scroll,
     );
     let lines: Vec<Line> = visible_rows
         .iter()
         .map(|&(idx, _)| {
-            let style = if idx >= crate::app::settings_controller::SETTINGS_GENERAL_SELECTABLE {
-                // Windows 上暂时禁用的媒体来源名称行，见 SETTINGS_GENERAL_SELECTABLE。
-                Style::default().fg(app.theme.color_subtext())
-            } else if idx == selected {
+            let style = if idx == selected {
                 Style::default().fg(accent2).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(text_color)
@@ -830,12 +833,7 @@ fn draw_keybind_settings(frame: &mut Frame, app: &mut App, inner: Rect) {
             )
         )
     } else {
-        l(
-            app,
-            "Enter 重绑  Ctrl+Alt+R 重置  Ctrl+K 关闭  Esc 返回",
-            "Enter rebind  Ctrl+Alt+R reset  Ctrl+K close  Esc back",
-        )
-        .to_string()
+        l(app, KEYBIND_PAGE_HINT[0], KEYBIND_PAGE_HINT[1]).to_string()
     };
 
     frame.render_widget(

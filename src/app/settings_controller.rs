@@ -31,16 +31,24 @@ pub(crate) const SETTINGS_GENERAL_ITEMS: usize = 7;
 pub(crate) const SETTINGS_GENERAL_MPRIS_ROW: usize = SETTINGS_GENERAL_ITEMS - 1;
 const MPRIS_NAME_MAX_CHARS: usize = 256;
 
-/// 通用设置里可选中的行数（从第 0 行起连续）。
+/// 通用设置实际显示（也是可选中）的行数，从第 0 行起连续。
 ///
-/// Windows 版暂时禁用末行的「媒体来源名称」：系统媒体控件（SMTC）显示的来源名取自进程的
-/// AppUserModelID 与开始菜单快捷方式，`windows/smtc.rs` 并不读取 `mpris_name`，这一项改了也
-/// 不会生效。该行在 Windows 上灰置，键盘、滚轮、鼠标都选不中，也进不了编辑。
-/// 这是暂定做法：以后接入 AUMID 注册、让来源名可配置时，可能重新启用或改造这一项。
-#[cfg(not(windows))]
-pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_ITEMS;
-#[cfg(windows)]
-pub(crate) const SETTINGS_GENERAL_SELECTABLE: usize = SETTINGS_GENERAL_MPRIS_ROW;
+/// Windows 与 macOS 不显示末行的名称输入框：系统媒体控件（SMTC）与控制中心「正在播放」显示的
+/// 应用名都由系统决定（SMTC 取进程的 AppUserModelID 与开始菜单快捷方式，macOS 按进程），
+/// `windows/smtc.rs`、`macos/now_playing.rs` 都不读取 `mpris_name`，这一项在两个平台上没有作用。
+#[cfg(not(any(windows, target_os = "macos")))]
+pub(crate) const SETTINGS_GENERAL_ROWS: usize = SETTINGS_GENERAL_ITEMS;
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) const SETTINGS_GENERAL_ROWS: usize = SETTINGS_GENERAL_MPRIS_ROW;
+
+/// 试图把槽位绑到恢复默认键时的提示；macOS 的恢复默认键不同，见 `macos/keybinds.rs`。
+#[cfg(not(target_os = "macos"))]
+const RESERVED_RESET_NOTICE: [&str; 2] = [
+    "Ctrl+Alt+R 为保留快捷键，不能重新绑定",
+    "Ctrl+Alt+R is reserved and cannot be rebound",
+];
+#[cfg(target_os = "macos")]
+use crate::mac::keybinds::RESERVED_RESET_NOTICE;
 
 const SETTINGS_PLAYBACK_ITEMS: usize = 7;
 
@@ -202,10 +210,6 @@ impl App {
                 }
             }
             Overlay::SettingsGeneral => {
-                // 灰置行（Windows 上的媒体来源名称）不可选中，见 SETTINGS_GENERAL_SELECTABLE。
-                if index >= SETTINGS_GENERAL_SELECTABLE {
-                    return;
-                }
                 self.settings.general_selected = index;
                 self.activate_settings_general_item(1).await;
             }
@@ -264,10 +268,9 @@ impl App {
 
         match self.overlay {
             Some(Overlay::Settings) => step(&mut self.settings.selected, SETTINGS_ROOT_ITEMS),
-            Some(Overlay::SettingsGeneral) => step(
-                &mut self.settings.general_selected,
-                SETTINGS_GENERAL_SELECTABLE,
-            ),
+            Some(Overlay::SettingsGeneral) => {
+                step(&mut self.settings.general_selected, SETTINGS_GENERAL_ROWS)
+            }
             Some(Overlay::SettingsPlayback) => step(
                 &mut self.settings.playback_selected,
                 SETTINGS_PLAYBACK_ITEMS,
@@ -379,12 +382,12 @@ impl App {
             }
             KeyCode::Up | KeyCode::BackTab => {
                 self.settings.general_selected =
-                    (self.settings.general_selected + SETTINGS_GENERAL_SELECTABLE - 1)
-                        % SETTINGS_GENERAL_SELECTABLE;
+                    (self.settings.general_selected + SETTINGS_GENERAL_ROWS - 1)
+                        % SETTINGS_GENERAL_ROWS;
             }
             KeyCode::Down | KeyCode::Tab => {
                 self.settings.general_selected =
-                    (self.settings.general_selected + 1) % SETTINGS_GENERAL_SELECTABLE;
+                    (self.settings.general_selected + 1) % SETTINGS_GENERAL_ROWS;
             }
             KeyCode::Left => self.apply_settings_general_delta(-1).await,
             KeyCode::Right | KeyCode::Enter => self.activate_settings_general_item(1).await,
@@ -796,10 +799,9 @@ impl App {
                     };
 
                     if binding == RESERVED_RESET_KEYBIND {
-                        status::info(self.lang_text(
-                            "Ctrl+Alt+R 为保留快捷键，不能重新绑定",
-                            "Ctrl+Alt+R is reserved and cannot be rebound",
-                        ));
+                        status::info(
+                            self.lang_text(RESERVED_RESET_NOTICE[0], RESERVED_RESET_NOTICE[1]),
+                        );
                         return;
                     }
 

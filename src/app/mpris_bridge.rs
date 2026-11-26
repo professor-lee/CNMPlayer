@@ -6,8 +6,8 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub(super) struct MprisSyncPayload {
     // Every latest-value snapshot retains Identity, even when updates coalesce.
-    // Windows 的 SMTC 显示名取自可执行文件，读不到这个字段。
-    #[cfg_attr(windows, allow(dead_code))]
+    // Windows 的 SMTC 与 macOS 的「正在播放」显示名都由系统按进程决定，读不到这个字段。
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     pub(super) identity: Arc<String>,
     pub(super) playback: PlaybackRuntimeState,
     pub(super) position: Duration,
@@ -24,7 +24,8 @@ pub(super) enum MprisControlEvent {
     Stop,
     Next,
     Previous,
-    #[cfg_attr(windows, allow(dead_code))]
+    // macOS 的「正在播放」同样只有绝对定位。
+    #[cfg_attr(any(windows, target_os = "macos"), allow(dead_code))]
     SeekRelativeMicros(i64),
     SeekAbsoluteMicros(i64),
 }
@@ -346,7 +347,12 @@ mod imp {
 #[path = "../../windows/smtc.rs"]
 mod imp;
 
-#[cfg(not(any(target_os = "linux", windows)))]
+/// macOS「正在播放」（MPNowPlayingInfoCenter / MPRemoteCommandCenter），实现放在仓库的 macos/ 补丁目录。
+#[cfg(target_os = "macos")]
+#[path = "../../macos/now_playing.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 mod imp {
     use super::MprisControlEvent;
     use super::MprisSyncPayload;
